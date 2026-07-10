@@ -127,8 +127,8 @@ function formatTokens(value: number | undefined): string {
 }
 
 // Agents the openscience CLI exposes to the user. `research` is the default harness;
-// `biology`/`physics`/`ml` are the domain specialists; `plan` is read-only planning.
-type AgentName = "research" | "biology" | "physics" | "ml" | "plan"
+// `biology`/`physics`/`ml`/`humanities` are the domain specialists; `plan` is read-only planning.
+type AgentName = "research" | "biology" | "physics" | "ml" | "humanities" | "plan"
 
 interface AgentOption {
   name: AgentName
@@ -141,6 +141,7 @@ const AGENT_OPTIONS: AgentOption[] = [
   { name: "biology", label: "biology", hint: "computational biology" },
   { name: "physics", label: "physics", hint: "simulation + theory" },
   { name: "ml", label: "ml", hint: "train + evaluate models" },
+  { name: "humanities", label: "humanities", hint: "sources + interpretation" },
   { name: "plan", label: "plan", hint: "think first, no edits" },
 ]
 

@@ -1604,6 +1604,7 @@ const WELCOME_MODES: { name: string; hint: string }[] = [
   { name: "biology", hint: "computational biology" },
   { name: "physics", hint: "simulation + theory" },
   { name: "ml", hint: "train + evaluate models" },
+  { name: "humanities", hint: "sources + interpretation" },
 ]
 
 const WELCOME_PROMPTS: string[] = [
