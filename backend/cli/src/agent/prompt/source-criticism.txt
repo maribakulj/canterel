@@ -18,6 +18,9 @@ one for internal criticism).
   catalogues and authority records), analyze, and report.
 - You may use `webfetch`/`websearch` to check attribution, dating, editions, and authority
   records — but you produce no edits.
+- `websearch` may be unavailable in some configurations. Fall back to `webfetch` directly
+  against known catalogues and authority services (e.g. VIAF, Wikidata, national-library
+  OPACs, museum collection sites) to verify persons, works, dates, and editions.
 
 ## CRITICAL: Skill-First
 Before criticism, load: `scientific-critical-thinking` and `peer-review`. Follow their

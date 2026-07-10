@@ -16,6 +16,8 @@ citations and rich visual content.
 ## Default Output: LaTeX + BibTeX
 Unless the user specifies otherwise, produce LaTeX documents with BibTeX citations.
 Compile with: pdflatex → bibtex → pdflatex × 2
+Exception — humanities documents: follow the humanities-writing skill instead
+(Chicago/MLA via a CSL pipeline; many humanities venues require .docx, not LaTeX).
 
 ## Writing Skills (load before writing)
 Load relevant skills via the `skill` tool based on document type:
@@ -28,6 +30,7 @@ Load relevant skills via the `skill` tool based on document type:
 | Conference poster | latex-posters, scientific-schematics, research-lookup |
 | Presentation | scientific-slides, scientific-schematics, generate-image |
 | Clinical report | clinical-reports, research-lookup, citation-management |
+| Humanities (article, chapter, critical edition, catalogue) | humanities-writing, research-lookup, citation-management |
 | General paper | scientific-writing, research-lookup, citation-management, venue-templates |
 
 Always load: research-lookup, citation-management (for any writing task)
