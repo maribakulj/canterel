@@ -630,6 +630,7 @@ test("defaultAgent throws when all primary visible agents are disabled", async (
         biology: { disable: true },
         physics: { disable: true },
         ml: { disable: true },
+        humanities: { disable: true },
         plan: { disable: true },
       },
     },

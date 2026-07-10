@@ -16,6 +16,7 @@ import PROMPT_LITERATURE_REVIEW from "./prompt/literature-review.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import PROMPT_PHYSICS_CRITIQUE from "./prompt/physics-critique.txt"
 import PROMPT_REVIEWER from "./prompt/reviewer.txt"
+import PROMPT_SOURCE_CRITICISM from "./prompt/source-criticism.txt"
 import { PermissionNext } from "@/permission/next"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -134,6 +135,23 @@ export namespace Agent {
           "Machine learning agent — trains, evaluates, and analyzes models end-to-end (deep learning, LLMs, classical ML, RL) with rigorous evaluation, and builds specialized models to replace frontier APIs.",
         options: {},
         color: "#6366f1",
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            question: "allow",
+          }),
+          user,
+        ),
+        mode: "all",
+        native: true,
+      },
+      // --- Digital humanities ---
+      humanities: {
+        name: "humanities",
+        description:
+          "Digital humanities agent — source criticism, close & distant reading, corpus and network analysis, and situated interpretation across history, art history & iconography, literature, linguistics, and archaeology.",
+        options: {},
+        color: "#d97706",
         permission: PermissionNext.merge(
           defaults,
           PermissionNext.fromConfig({
@@ -316,6 +334,30 @@ export namespace Agent {
         prompt: PROMPT_REVIEWER,
         options: {},
         color: "#f59e0b",
+        mode: "subagent",
+        native: true,
+      },
+      "source-criticism": {
+        name: "source-criticism",
+        steps: 60,
+        description:
+          "Source-criticism specialist. Evaluates primary sources — provenance, dating, authenticity, authorship, transmission, internal reliability and bias — before interpretive claims are built on them. Read-only.",
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            "*": "deny",
+            read: "allow",
+            glob: "allow",
+            grep: "allow",
+            skill: "allow",
+            webfetch: "allow",
+            websearch: "allow",
+          }),
+          user,
+        ),
+        prompt: PROMPT_SOURCE_CRITICISM,
+        options: {},
+        color: "#b45309",
         mode: "subagent",
         native: true,
       },

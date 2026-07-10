@@ -24,6 +24,7 @@ import PROMPT_ML from "../agent/prompt/ml.txt"
 import PROMPT_RESEARCH from "../agent/prompt/research.txt"
 import PROMPT_BIOLOGY from "../agent/prompt/biology.txt"
 import PROMPT_PHYSICS from "../agent/prompt/physics.txt"
+import PROMPT_HUMANITIES from "../agent/prompt/humanities.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { defer } from "../util/defer"
@@ -1548,6 +1549,16 @@ export namespace SessionPrompt {
           synthetic: true,
         })
       }
+      if (input.agent.name === "humanities") {
+        userMessage.parts.push({
+          id: Identifier.ascending("part"),
+          messageID: userMessage.info.id,
+          sessionID: userMessage.info.sessionID,
+          type: "text",
+          text: PROMPT_HUMANITIES,
+          synthetic: true,
+        })
+      }
       const wasPlan = input.messages.some((msg) => msg.info.role === "assistant" && msg.info.agent === "plan")
       if (wasPlan && input.agent.name !== "plan") {
         userMessage.parts.push({
@@ -1610,6 +1621,16 @@ export namespace SessionPrompt {
         sessionID: userMessage.info.sessionID,
         type: "text",
         text: PROMPT_PHYSICS,
+        synthetic: true,
+      })
+    }
+    if (input.agent.name === "humanities") {
+      userMessage.parts.push({
+        id: Identifier.ascending("part"),
+        messageID: userMessage.info.id,
+        sessionID: userMessage.info.sessionID,
+        type: "text",
+        text: PROMPT_HUMANITIES,
         synthetic: true,
       })
     }
