@@ -141,7 +141,7 @@ const AGENT_OPTIONS: AgentOption[] = [
   { name: "biology", label: "biology", hint: "computational biology" },
   { name: "physics", label: "physics", hint: "simulation + theory" },
   { name: "ml", label: "ml", hint: "train + evaluate models" },
-  { name: "humanities", label: "humanities", hint: "sources + interpretation" },
+  { name: "humanities", label: "humanities", hint: "sources, corpora + interpretation" },
   { name: "plan", label: "plan", hint: "think first, no edits" },
 ]
 
