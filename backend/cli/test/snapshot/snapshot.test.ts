@@ -595,6 +595,52 @@ test("revert only removes files in invoking worktree", async () => {
   }
 })
 
+test("revert ignores malformed patch files outside the worktree", async () => {
+  await using tmp = await bootstrap()
+  const outside = `${tmp.path}-outside.txt`
+  await Bun.write(outside, "keep")
+
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const before = await Snapshot.track()
+        expect(before).toBeTruthy()
+
+        await Snapshot.revert([{ hash: before!, files: [outside] }])
+
+        expect(await Bun.file(outside).text()).toBe("keep")
+      },
+    })
+  } finally {
+    await $`rm -f ${outside}`.quiet()
+  }
+})
+
+test("revert ignores malformed patch files through a symlinked parent", async () => {
+  await using tmp = await bootstrap()
+  const outside = `${tmp.path}-outside`
+  await $`mkdir -p ${outside}`.quiet()
+  await Bun.write(`${outside}/owned.txt`, "keep")
+
+  try {
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const before = await Snapshot.track()
+        expect(before).toBeTruthy()
+
+        await $`ln -s ${outside} ${tmp.path}/linked`.quiet()
+        await Snapshot.revert([{ hash: before!, files: [`${tmp.path}/linked/owned.txt`] }])
+
+        expect(await Bun.file(`${outside}/owned.txt`).text()).toBe("keep")
+      },
+    })
+  } finally {
+    await $`rm -rf ${outside}`.quiet()
+  }
+})
+
 test("diff reports worktree-only/shared edits and ignores primary-only", async () => {
   await using tmp = await bootstrap()
   const worktreePath = `${tmp.path}-worktree`

@@ -13,6 +13,7 @@
  */
 
 import type { RateLimit } from "./types"
+import { Network } from "@/settings/network"
 
 const USER_AGENT = "openscience-science/1.0 (+https://syntheticsciences.ai)"
 const DEFAULT_TIMEOUT = 30_000
@@ -154,6 +155,7 @@ async function throttle(url: string, limit?: RateLimit): Promise<() => void> {
  * Returns a normalized response object with `json()` / `text()` helpers.
  */
 export async function request(url: string, opts: HttpOptions = {}) {
+  await Network.assertAllowed(url)
   const method = (opts.method ?? "GET").toUpperCase()
   const timeout = opts.timeout ?? DEFAULT_TIMEOUT
   const retries = opts.retries ?? DEFAULT_RETRIES

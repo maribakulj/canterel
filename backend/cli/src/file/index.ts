@@ -9,15 +9,22 @@ import path from "path"
 import fs from "fs"
 import ignore from "ignore"
 import { Log } from "../util/log"
-import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Ripgrep } from "./ripgrep"
 import fuzzysort from "fuzzysort"
 import { Global } from "../global"
 import { FileWatcher } from "./watcher"
+import { createSearchCache } from "./search-cache"
+import { ScienceFile } from "./science"
+import { ArtifactFile } from "./artifacts"
+import { PublicationFile } from "./publication"
+import { PublicationReview } from "./review"
+import { SessionFilesystem } from "../session/filesystem"
+import { Filesystem } from "../util/filesystem"
 
 export namespace File {
   const log = Log.create({ service: "file" })
+  const preview = 8 * 1024 * 1024
 
   export const Info = z
     .object({
@@ -73,6 +80,8 @@ export namespace File {
         .optional(),
       encoding: z.literal("base64").optional(),
       mimeType: z.string().optional(),
+      size: z.number().optional(),
+      truncated: z.boolean().optional(),
     })
     .meta({
       ref: "FileContent",
@@ -125,87 +134,109 @@ export namespace File {
     ),
   }
 
-  const state = Instance.state(async () => {
-    type Entry = { files: string[]; dirs: string[] }
-    let cache: Entry = { files: [], dirs: [] }
-    let fetching = false
+  const state = Instance.state(
+    async () => {
+      type Entry = { files: string[]; dirs: string[] }
+      const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
 
-    const isGlobalHome = Instance.directory === Global.Path.home && Instance.project.id === "global"
+      const scan = async () => {
+        const result: Entry = { files: [], dirs: [] }
 
-    const fn = async (result: Entry) => {
-      // Disable scanning if in root of file system
-      if (Instance.directory === path.parse(Instance.directory).root) return
-      fetching = true
+        // Disable scanning if in root of file system.
+        if (Instance.directory === path.parse(Instance.directory).root) return result
 
-      if (isGlobalHome) {
-        const dirs = new Set<string>()
-        const ignore = new Set<string>()
+        if (isGlobalHome) {
+          const dirs = new Set<string>()
+          const ignore = new Set<string>()
 
-        if (process.platform === "darwin") ignore.add("Library")
-        if (process.platform === "win32") ignore.add("AppData")
+          if (process.platform === "darwin") ignore.add("Library")
+          if (process.platform === "win32") ignore.add("AppData")
 
-        const ignoreNested = new Set(["node_modules", "dist", "build", "target", "vendor"])
-        const shouldIgnore = (name: string) => name.startsWith(".") || ignore.has(name)
-        const shouldIgnoreNested = (name: string) => name.startsWith(".") || ignoreNested.has(name)
+          const ignoreNested = new Set(["node_modules", "dist", "build", "target", "vendor"])
+          const shouldIgnore = (name: string) => name.startsWith(".") || ignore.has(name)
+          const shouldIgnoreNested = (name: string) => name.startsWith(".") || ignoreNested.has(name)
 
-        const top = await fs.promises
-          .readdir(Instance.directory, { withFileTypes: true })
-          .catch(() => [] as fs.Dirent[])
+          const top = await fs.promises
+            .readdir(Instance.directory, { withFileTypes: true })
+            .catch(() => [] as fs.Dirent[])
 
-        for (const entry of top) {
-          if (!entry.isDirectory()) continue
-          if (shouldIgnore(entry.name)) continue
-          dirs.add(entry.name + "/")
+          for (const entry of top) {
+            if (!entry.isDirectory()) continue
+            if (shouldIgnore(entry.name)) continue
+            dirs.add(entry.name + "/")
 
-          const base = path.join(Instance.directory, entry.name)
-          const children = await fs.promises.readdir(base, { withFileTypes: true }).catch(() => [] as fs.Dirent[])
-          for (const child of children) {
-            if (!child.isDirectory()) continue
-            if (shouldIgnoreNested(child.name)) continue
-            dirs.add(entry.name + "/" + child.name + "/")
+            const base = path.join(Instance.directory, entry.name)
+            const children = await fs.promises.readdir(base, { withFileTypes: true }).catch(() => [] as fs.Dirent[])
+            for (const child of children) {
+              if (!child.isDirectory()) continue
+              if (shouldIgnoreNested(child.name)) continue
+              dirs.add(entry.name + "/" + child.name + "/")
+            }
+          }
+
+          result.dirs = Array.from(dirs).toSorted()
+          return result
+        }
+
+        const set = new Set<string>()
+        for await (const file of Ripgrep.files({ cwd: Instance.directory })) {
+          result.files.push(file)
+          let current = file
+          while (true) {
+            const dir = path.dirname(current)
+            if (dir === ".") break
+            if (dir === current) break
+            current = dir
+            if (set.has(dir)) continue
+            set.add(dir)
+            result.dirs.push(dir + "/")
           }
         }
-
-        result.dirs = Array.from(dirs).toSorted()
-        cache = result
-        fetching = false
-        return
+        return result
       }
 
-      const set = new Set<string>()
-      for await (const file of Ripgrep.files({ cwd: Instance.directory })) {
-        result.files.push(file)
-        let current = file
-        while (true) {
-          const dir = path.dirname(current)
-          if (dir === ".") break
-          if (dir === current) break
-          current = dir
-          if (set.has(dir)) continue
-          set.add(dir)
-          result.dirs.push(dir + "/")
-        }
-      }
-      cache = result
-      fetching = false
-    }
-    fn(cache)
+      const cache = createSearchCache({
+        scan,
+        empty: () => ({ files: [], dirs: [] }),
+        maxAgeMs: 5_000,
+      })
+      cache.prime()
 
-    return {
-      async files() {
-        if (!fetching) {
-          fn({
-            files: [],
-            dirs: [],
-          })
-        }
-        return cache
-      },
-    }
-  })
+      const unsubscribe = Bus.subscribe(FileWatcher.Event.Updated, (event) => {
+        if (event.properties.event === "change") return
+        cache.invalidate()
+      })
+
+      return {
+        files: cache.read,
+        unsubscribe,
+      }
+    },
+    async (entry) => {
+      entry.unsubscribe()
+    },
+  )
 
   export function init() {
     state()
+  }
+
+  type AccessOptions = {
+    sessionID?: string
+  }
+
+  async function contained(file: string, access: SessionFilesystem.Access, options?: AccessOptions): Promise<string> {
+    if (options?.sessionID) {
+      return SessionFilesystem.authorize({
+        sessionID: options.sessionID,
+        path: file,
+        access,
+      }).then((result) => result.path)
+    }
+    const full = path.isAbsolute(file) ? file : path.resolve(Instance.directory, file)
+    const canonical = await Filesystem.canonical(full)
+    if (canonical && (await Instance.containsCanonicalPath(canonical))) return canonical
+    throw new Error(`Access denied: path escapes project directory`)
   }
 
   export async function status() {
@@ -282,16 +313,9 @@ export namespace File {
     }))
   }
 
-  export async function read(file: string): Promise<Content> {
+  async function readPath(file: string, full: string): Promise<Content> {
     using _ = log.time("read", { file })
     const project = Instance.project
-    const full = path.join(Instance.directory, file)
-
-    // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
-    // TODO: On Windows, cross-drive paths bypass this check. Consider realpath canonicalization.
-    if (!Instance.containsPath(full)) {
-      throw new Error(`Access denied: path escapes project directory`)
-    }
 
     const bunFile = Bun.file(full)
 
@@ -299,26 +323,45 @@ export namespace File {
       return { type: "text", content: "" }
     }
 
-    const encode = await shouldEncode(bunFile)
+    const encode = ScienceFile.binary(file) || (await shouldEncode(bunFile))
 
     if (encode) {
+      if (bunFile.size > 16 * 1024 * 1024) {
+        return {
+          type: "text",
+          content: "",
+          mimeType: bunFile.type || "application/octet-stream",
+          encoding: "base64",
+          size: bunFile.size,
+          truncated: true,
+        }
+      }
       const buffer = await bunFile.arrayBuffer().catch(() => new ArrayBuffer(0))
       const content = Buffer.from(buffer).toString("base64")
       const mimeType = bunFile.type || "application/octet-stream"
-      return { type: "text", content, mimeType, encoding: "base64" }
+      return { type: "text", content, mimeType, encoding: "base64", size: bunFile.size }
     }
 
-    // Return the file content verbatim — callers like the web editor write
-    // it back, so trimming here would silently strip leading/trailing
-    // whitespace and the trailing newline on the first save.
-    const content = await bunFile.text().catch(() => "")
+    const truncated = bunFile.size > preview
+    // Keep scientific/text previews bounded. The UI treats this response as
+    // read-only, so a partial preview can never overwrite the source file.
+    const content = await (truncated ? bunFile.slice(0, preview) : bunFile).text().catch(() => "")
+    if (truncated) {
+      return {
+        type: "text",
+        content,
+        size: bunFile.size,
+        truncated: true,
+      }
+    }
 
-    if (project.vcs === "git") {
-      let diff = await $`git diff ${file}`.cwd(Instance.directory).quiet().nothrow().text()
-      if (!diff.trim()) diff = await $`git diff --staged ${file}`.cwd(Instance.directory).quiet().nothrow().text()
+    if (project.vcs === "git" && (await Instance.containsCanonicalPath(full))) {
+      const relative = path.relative(Instance.directory, full)
+      let diff = await $`git diff ${relative}`.cwd(Instance.directory).quiet().nothrow().text()
+      if (!diff.trim()) diff = await $`git diff --staged ${relative}`.cwd(Instance.directory).quiet().nothrow().text()
       if (diff.trim()) {
-        const original = await $`git show HEAD:${file}`.cwd(Instance.directory).quiet().nothrow().text()
-        const patch = structuredPatch(file, file, original, content, "old", "new", {
+        const original = await $`git show HEAD:${relative}`.cwd(Instance.directory).quiet().nothrow().text()
+        const patch = structuredPatch(relative, relative, original, content, "old", "new", {
           context: Infinity,
           ignoreWhitespace: true,
         })
@@ -329,12 +372,79 @@ export namespace File {
     return { type: "text", content }
   }
 
-  export async function write(file: string, content: string): Promise<Content> {
+  export async function read(file: string, options?: AccessOptions): Promise<Content> {
+    const full = await contained(file, "read", options)
+    return readPath(file, full)
+  }
+
+  export async function inspect(file: string, options?: AccessOptions): Promise<ScienceFile.Inspection> {
+    const full = await contained(file, "read", options)
+    return ScienceFile.inspect(full, file)
+  }
+
+  export async function raw(file: string, options?: AccessOptions): Promise<BunFile> {
+    const full = await contained(file, "read", options)
+    const content = Bun.file(full)
+    if (!(await content.exists())) throw new HTTPException(404, { message: `File not found: ${file}` })
+    return content
+  }
+
+  export async function artifacts(options?: AccessOptions): Promise<ArtifactFile.Info[]> {
+    const root = options?.sessionID ? await SessionFilesystem.workspace(options.sessionID) : Instance.directory
+    return ArtifactFile.scan(root)
+  }
+
+  export async function provenance(file: string, options?: AccessOptions): Promise<ArtifactFile.Provenance> {
+    await contained(file, "read", options)
+    return ArtifactFile.provenance(Instance.directory, file)
+  }
+
+  export async function reproducibility(): Promise<ArtifactFile.Audit> {
+    return ArtifactFile.audit(Instance.directory)
+  }
+
+  export async function manifest(): Promise<ArtifactFile.Manifest> {
+    return ArtifactFile.manifest(Instance.directory)
+  }
+
+  export async function publicationCapabilities(): Promise<PublicationFile.Capabilities> {
+    return PublicationFile.capabilities()
+  }
+
+  export async function publication(input: PublicationFile.Input): Promise<PublicationFile.Result> {
+    return PublicationFile.render(Instance.directory, input)
+  }
+
+  export async function review(input: PublicationReview.RunInput): Promise<PublicationReview.Report> {
+    return PublicationReview.run(input)
+  }
+
+  export async function reviewCurrent(file: string): Promise<PublicationReview.State | undefined> {
+    return PublicationReview.current(file)
+  }
+
+  export async function reviewHistory(file: string): Promise<PublicationReview.Report[]> {
+    return PublicationReview.history(file)
+  }
+
+  export async function reviewResolve(
+    id: string,
+    finding: string,
+    input: PublicationReview.ResolveInput,
+  ): Promise<PublicationReview.Report> {
+    return PublicationReview.resolve(id, finding, input)
+  }
+
+  export async function reviewFinalize(
+    id: string,
+    input: PublicationReview.FinalizeInput,
+  ): Promise<PublicationReview.Report> {
+    return PublicationReview.finalize(id, input)
+  }
+
+  export async function write(file: string, content: string, options?: AccessOptions): Promise<Content> {
     using _ = log.time("write", { file })
-    const full = path.join(Instance.directory, file)
-    if (!Instance.containsPath(full)) {
-      throw new Error(`Access denied: path escapes project directory`)
-    }
+    const full = await contained(file, "write", options)
 
     const exists = await Bun.file(full).exists()
     await Bun.write(full, content)
@@ -345,10 +455,10 @@ export namespace File {
       file: full,
       event: exists ? "change" : "add",
     })
-    return read(file)
+    return readPath(file, full)
   }
 
-  export async function list(dir?: string) {
+  export async function list(dir?: string, options?: AccessOptions) {
     const exclude = [".git", ".DS_Store"]
     const project = Instance.project
     let ignored = (_: string) => false
@@ -364,13 +474,9 @@ export namespace File {
       }
       ignored = ig.ignores.bind(ig)
     }
-    const resolved = dir ? path.join(Instance.directory, dir) : Instance.directory
-
-    // TODO: Filesystem.contains is lexical only - symlinks inside the project can escape.
-    // TODO: On Windows, cross-drive paths bypass this check. Consider realpath canonicalization.
-    if (!Instance.containsPath(resolved)) {
-      throw new Error(`Access denied: path escapes project directory`)
-    }
+    const root = options?.sessionID ? await SessionFilesystem.workspace(options.sessionID) : Instance.directory
+    const resolved = await contained(dir || root, "read", options)
+    const local = Filesystem.contains(root, resolved)
 
     const nodes: Node[] = []
     const entries: fs.Dirent[] = await fs.promises
@@ -400,17 +506,18 @@ export namespace File {
     for (const entry of entries) {
       if (exclude.includes(entry.name)) continue
       const fullPath = path.join(resolved, entry.name)
-      const relativePath = path.relative(Instance.directory, fullPath)
+      const relativePath = path.relative(root, fullPath)
+      const nodePath = local ? relativePath : fullPath
       const type = entry.isDirectory() ? "directory" : "file"
       // Stat each entry for the file-explorer size / modified columns. Failures
       // (broken symlink, races) degrade to undefined rather than dropping the row.
       const stat = await fs.promises.stat(fullPath).catch(() => undefined)
       nodes.push({
         name: entry.name,
-        path: relativePath,
+        path: nodePath,
         absolute: fullPath,
         type,
-        ignored: ignored(type === "directory" ? relativePath + "/" : relativePath),
+        ignored: local ? ignored(type === "directory" ? relativePath + "/" : relativePath) : false,
         size: stat && type === "file" ? stat.size : undefined,
         mtime: stat ? Math.round(stat.mtimeMs) : undefined,
       })

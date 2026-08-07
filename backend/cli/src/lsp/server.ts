@@ -10,6 +10,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
 import { Archive } from "../util/archive"
+import { ProjectTrust } from "../project/trust"
 
 export namespace LSPServer {
   const log = Log.create({ service: "lsp.server" })
@@ -22,6 +23,8 @@ export namespace LSPServer {
   export interface Handle {
     process: ChildProcessWithoutNullStreams
     initialization?: Record<string, any>
+    /** This server can execute project-controlled binaries, config, or plugins. */
+    project?: boolean
   }
 
   type RootFunction = (file: string) => Promise<string | undefined>
@@ -58,6 +61,13 @@ export namespace LSPServer {
     spawn(root: string): Promise<Handle | undefined>
   }
 
+  async function projectBinary(bin: string) {
+    const local = Instance.containsPath(bin) || (await Instance.containsCanonicalPath(bin))
+    if (!local) return false
+    await ProjectTrust.require(Instance.project, "project_lsp")
+    return true
+  }
+
   export const Deno: Info = {
     id: "deno",
     root: async (file) => {
@@ -78,10 +88,12 @@ export namespace LSPServer {
         log.info("deno not found, please install deno first")
         return
       }
+      const project = await projectBinary(deno)
       return {
         process: spawn(deno, ["lsp"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -97,6 +109,7 @@ export namespace LSPServer {
       const tsserver = await Bun.resolve("typescript/lib/tsserver.js", Instance.directory).catch(() => {})
       log.info("typescript server", { tsserver })
       if (!tsserver) return
+      const project = await projectBinary(tsserver)
       const proc = spawn(BunProc.which(), ["x", "typescript-language-server", "--stdio"], {
         cwd: root,
         env: {
@@ -106,6 +119,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
         initialization: {
           tsserver: {
             path: tsserver,
@@ -148,6 +162,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("--stdio")
+      const project = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -157,6 +172,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
         initialization: {
           // Leave empty; the server will auto-detect workspace TypeScript.
         },
@@ -171,6 +187,7 @@ export namespace LSPServer {
     async spawn(root) {
       const eslint = await Bun.resolve("eslint", Instance.directory).catch(() => {})
       if (!eslint) return
+      const project = await projectBinary(eslint)
       log.info("spawning eslint server")
       const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
       if (!(await Bun.file(serverPath).exists())) {
@@ -218,6 +235,7 @@ export namespace LSPServer {
 
       return {
         process: proc,
+        project,
       }
     },
   }
@@ -263,6 +281,7 @@ export namespace LSPServer {
       }
 
       if (lintBin) {
+        const project = await projectBinary(lintBin)
         const proc = Bun.spawn([lintBin, "--help"], { stdout: "pipe" })
         await proc.exited
         const help = await readableStreamToText(proc.stdout)
@@ -271,6 +290,7 @@ export namespace LSPServer {
             process: spawn(lintBin, ["--lsp"], {
               cwd: root,
             }),
+            project,
           }
         }
       }
@@ -281,10 +301,12 @@ export namespace LSPServer {
         if (found) serverBin = found
       }
       if (serverBin) {
+        const project = await projectBinary(serverBin)
         return {
           process: spawn(serverBin, [], {
             cwd: root,
           }),
+          project,
         }
       }
 
@@ -333,10 +355,12 @@ export namespace LSPServer {
       }
 
       let args = ["lsp-proxy", "--stdio"]
+      let project = bin ? await projectBinary(bin) : false
 
       if (!bin) {
         const resolved = await Bun.resolve("biome", root).catch(() => undefined)
         if (!resolved) return
+        project = await projectBinary(resolved)
         bin = BunProc.which()
         args = ["x", "biome", "lsp-proxy", "--stdio"]
       }
@@ -351,6 +375,7 @@ export namespace LSPServer {
 
       return {
         process: proc,
+        project,
       }
     },
   }
@@ -389,10 +414,12 @@ export namespace LSPServer {
           bin,
         })
       }
+      const project = await projectBinary(bin!)
       return {
         process: spawn(bin!, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -430,10 +457,12 @@ export namespace LSPServer {
           bin,
         })
       }
+      const project = await projectBinary(bin!)
       return {
         process: spawn(bin!, ["--lsp"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -458,6 +487,7 @@ export namespace LSPServer {
       let binary = Bun.which("ty")
 
       const initialization: Record<string, string> = {}
+      let project = false
 
       const potentialVenvPaths = [process.env["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
         (p): p is string => p !== undefined,
@@ -468,6 +498,7 @@ export namespace LSPServer {
           ? path.join(venvPath, "Scripts", "python.exe")
           : path.join(venvPath, "bin", "python")
         if (await Bun.file(potentialPythonPath).exists()) {
+          project = (await projectBinary(potentialPythonPath)) || project
           initialization["pythonPath"] = potentialPythonPath
           break
         }
@@ -480,6 +511,7 @@ export namespace LSPServer {
             ? path.join(venvPath, "Scripts", "ty.exe")
             : path.join(venvPath, "bin", "ty")
           if (await Bun.file(potentialTyPath).exists()) {
+            project = (await projectBinary(potentialTyPath)) || project
             binary = potentialTyPath
             break
           }
@@ -491,12 +523,14 @@ export namespace LSPServer {
         return
       }
 
+      project = (await projectBinary(binary)) || project
       const proc = spawn(binary, ["server"], {
         cwd: root,
       })
 
       return {
         process: proc,
+        project,
         initialization,
       }
     },
@@ -527,6 +561,7 @@ export namespace LSPServer {
       args.push("--stdio")
 
       const initialization: Record<string, string> = {}
+      let project = false
 
       const potentialVenvPaths = [process.env["VIRTUAL_ENV"], path.join(root, ".venv"), path.join(root, "venv")].filter(
         (p): p is string => p !== undefined,
@@ -537,11 +572,13 @@ export namespace LSPServer {
           ? path.join(venvPath, "Scripts", "python.exe")
           : path.join(venvPath, "bin", "python")
         if (await Bun.file(potentialPythonPath).exists()) {
+          project = (await projectBinary(potentialPythonPath)) || project
           initialization["pythonPath"] = potentialPythonPath
           break
         }
       }
 
+      project = (await projectBinary(binary)) || project
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -551,6 +588,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
         initialization,
       }
     },
@@ -610,10 +648,12 @@ export namespace LSPServer {
         }
       }
 
+      const project = await projectBinary(binary)
       return {
         process: spawn(binary, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -722,10 +762,12 @@ export namespace LSPServer {
         log.info(`installed zls`, { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -762,10 +804,12 @@ export namespace LSPServer {
         log.info(`installed csharp-ls`, { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -802,10 +846,12 @@ export namespace LSPServer {
         log.info(`installed fsautocomplete`, { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -819,27 +865,33 @@ export namespace LSPServer {
       // This is installed with the Swift toolchain
       const sourcekit = Bun.which("sourcekit-lsp")
       if (sourcekit) {
+        const project = await projectBinary(sourcekit)
         return {
           process: spawn(sourcekit, {
             cwd: root,
           }),
+          project,
         }
       }
 
       // If sourcekit-lsp not found, check if xcrun is available
       // This is specific to macOS where sourcekit-lsp is typically installed with Xcode
-      if (!Bun.which("xcrun")) return
+      const xcrun = Bun.which("xcrun")
+      if (!xcrun) return
+      await projectBinary(xcrun)
 
-      const lspLoc = await $`xcrun --find sourcekit-lsp`.quiet().nothrow()
+      const lspLoc = await $`${xcrun} --find sourcekit-lsp`.quiet().nothrow()
 
       if (lspLoc.exitCode !== 0) return
 
       const bin = lspLoc.text().trim()
+      const project = await projectBinary(bin)
 
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -882,10 +934,12 @@ export namespace LSPServer {
         log.info("rust-analyzer not found in path, please install it")
         return
       }
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -898,20 +952,24 @@ export namespace LSPServer {
       const args = ["--background-index", "--clang-tidy"]
       const fromPath = Bun.which("clangd")
       if (fromPath) {
+        const project = await projectBinary(fromPath)
         return {
           process: spawn(fromPath, args, {
             cwd: root,
           }),
+          project,
         }
       }
 
       const ext = process.platform === "win32" ? ".exe" : ""
       const direct = path.join(Global.Path.bin, "clangd" + ext)
       if (await Bun.file(direct).exists()) {
+        const project = await projectBinary(direct)
         return {
           process: spawn(direct, args, {
             cwd: root,
           }),
+          project,
         }
       }
 
@@ -921,10 +979,12 @@ export namespace LSPServer {
         if (!entry.name.startsWith("clangd_")) continue
         const candidate = path.join(Global.Path.bin, entry.name, "bin", "clangd" + ext)
         if (await Bun.file(candidate).exists()) {
+          const project = await projectBinary(candidate)
           return {
             process: spawn(candidate, args, {
               cwd: root,
             }),
+            project,
           }
         }
       }
@@ -1028,10 +1088,12 @@ export namespace LSPServer {
 
       log.info(`installed clangd`, { bin })
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, args, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1062,6 +1124,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("--stdio")
+      const project = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -1071,6 +1134,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
         initialization: {},
       }
     },
@@ -1086,6 +1150,7 @@ export namespace LSPServer {
         log.info("typescript not found, required for Astro language server")
         return
       }
+      const project = await projectBinary(tsserver)
       const tsdk = path.dirname(tsserver)
 
       let binary = Bun.which("astro-ls")
@@ -1109,6 +1174,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("--stdio")
+      const binaryProject = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -1118,6 +1184,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project: project || binaryProject,
         initialization: {
           typescript: {
             tsdk,
@@ -1137,7 +1204,8 @@ export namespace LSPServer {
         log.error("Java 21 or newer is required to run the JDTLS. Please install it first.")
         return
       }
-      const javaMajorVersion = await $`java -version`
+      const project = await projectBinary(java)
+      const javaMajorVersion = await $`${java} -version`
         .quiet()
         .nothrow()
         .then(({ stderr }) => {
@@ -1224,6 +1292,7 @@ export namespace LSPServer {
             cwd: root,
           },
         ),
+        project,
       }
     },
   }
@@ -1311,10 +1380,12 @@ export namespace LSPServer {
         log.error(`Failed to locate the Kotlin LS launcher script in the installed directory: ${distPath}.`)
         return
       }
+      const project = await projectBinary(launcherScript)
       return {
         process: spawn(launcherScript, ["--stdio"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1354,6 +1425,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("--stdio")
+      const project = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -1363,6 +1435,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
       }
     },
   }
@@ -1499,10 +1572,12 @@ export namespace LSPServer {
         log.info(`installed lua-language-server`, { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1533,6 +1608,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("--stdio")
+      const project = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -1542,6 +1618,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
         initialization: {
           telemetry: {
             enabled: false,
@@ -1561,10 +1638,12 @@ export namespace LSPServer {
         log.info("prisma not found, please install prisma")
         return
       }
+      const project = await projectBinary(prisma)
       return {
         process: spawn(prisma, ["language-server"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1579,10 +1658,12 @@ export namespace LSPServer {
         log.info("dart not found, please install dart first")
         return
       }
+      const project = await projectBinary(dart)
       return {
         process: spawn(dart, ["language-server", "--lsp"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1597,10 +1678,12 @@ export namespace LSPServer {
         log.info("ocamllsp not found, please install ocaml-lsp-server")
         return
       }
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1630,6 +1713,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("start")
+      const project = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -1639,6 +1723,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
       }
     },
   }
@@ -1719,10 +1804,12 @@ export namespace LSPServer {
         log.info(`installed terraform-ls`, { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, ["serve"], {
           cwd: root,
         }),
+        project,
         initialization: {
           experimentalFeatures: {
             prefillRequiredFields: true,
@@ -1815,10 +1902,12 @@ export namespace LSPServer {
         log.info("installed texlab", { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1849,6 +1938,7 @@ export namespace LSPServer {
         args.push("run", js)
       }
       args.push("--stdio")
+      const project = await projectBinary(binary)
       const proc = spawn(binary, args, {
         cwd: root,
         env: {
@@ -1858,6 +1948,7 @@ export namespace LSPServer {
       })
       return {
         process: proc,
+        project,
       }
     },
   }
@@ -1872,10 +1963,12 @@ export namespace LSPServer {
         log.info("gleam not found, please install gleam first")
         return
       }
+      const project = await projectBinary(gleam)
       return {
         process: spawn(gleam, ["lsp"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1893,10 +1986,12 @@ export namespace LSPServer {
         log.info("clojure-lsp not found, please install clojure-lsp first")
         return
       }
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, ["listen"], {
           cwd: root,
         }),
+        project,
       }
     },
   }
@@ -1921,6 +2016,7 @@ export namespace LSPServer {
         log.info("nixd not found, please install nixd first")
         return
       }
+      const project = await projectBinary(nixd)
       return {
         process: spawn(nixd, [], {
           cwd: root,
@@ -1928,6 +2024,7 @@ export namespace LSPServer {
             ...process.env,
           },
         }),
+        project,
       }
     },
   }
@@ -2020,8 +2117,10 @@ export namespace LSPServer {
         log.info("installed tinymist", { bin })
       }
 
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, { cwd: root }),
+        project,
       }
     },
   }
@@ -2036,10 +2135,12 @@ export namespace LSPServer {
         log.info("haskell-language-server-wrapper not found, please install haskell-language-server")
         return
       }
+      const project = await projectBinary(bin)
       return {
         process: spawn(bin, ["--lsp"], {
           cwd: root,
         }),
+        project,
       }
     },
   }

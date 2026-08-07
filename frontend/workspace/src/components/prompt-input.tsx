@@ -14,7 +14,7 @@ import {
 } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createFocusSignal } from "@solid-primitives/active-element"
-import { useLocal } from "@/context/local"
+import { useLocal, type ModelKey } from "@/context/local"
 import { useFile, type FileSelection } from "@/context/file"
 import {
   ContentPart,
@@ -34,33 +34,39 @@ import { useComments } from "@/context/comments"
 import { FileIcon } from "@synsci/ui/file-icon"
 import { Button } from "@synsci/ui/button"
 import { Icon } from "@synsci/ui/icon"
-import { ProviderIcon } from "@synsci/ui/provider-icon"
-import type { IconName } from "@synsci/ui/icons/provider"
-import { Tooltip, TooltipKeybind } from "@synsci/ui/tooltip"
+import { Tooltip } from "@synsci/ui/tooltip"
 import { IconButton } from "@synsci/ui/icon-button"
-import { Select } from "@synsci/ui/select"
 import { getDirectory, getFilename, getFilenameTruncated } from "@synsci/util/path"
 import { useDialog } from "@synsci/ui/context/dialog"
 import { ImagePreview } from "@synsci/ui/image-preview"
-import { ModelSelectorPopover } from "@/components/dialog-select-model"
-import { DialogSelectModelUnpaid } from "@/components/dialog-select-model-unpaid"
-import { useProviders } from "@/hooks/use-providers"
 import { useCommand } from "@/context/command"
 import { Persist, persisted } from "@/utils/persist"
 import { Identifier } from "@/utils/id"
 import { Worktree as WorktreeState } from "@/utils/worktree"
-import { SessionContextUsage } from "@/components/session-context-usage"
-import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { useGlobalSync } from "@/context/global-sync"
 import { usePlatform } from "@/context/platform"
-import { createOpenScienceClient, type Message, type Part } from "@synsci/sdk/v2/client"
+import { createOpenScienceClient, type Agent, type Message, type Part } from "@synsci/sdk/v2/client"
 import { Binary } from "@synsci/util/binary"
 import { showToast } from "@synsci/ui/toast"
-import { base64Encode } from "@synsci/util/encode"
-
-const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"]
-const ACCEPTED_FILE_TYPES = [...ACCEPTED_IMAGE_TYPES, "application/pdf"]
+import { uiStore } from "@/atlas/store/ui"
+import { projectHref, projectPathname } from "@/utils/project-route"
+import { canonicalKey, displayProviderForModel } from "@/context/model-catalog"
+import { RECOMMENDED_MODELS } from "@/context/models"
+import { DialogSelectModel } from "./dialog-select-model"
+import { ModelSettingsPopover, modelSummary } from "./model-settings-popover"
+import { DialogSettings } from "./dialog-settings"
+import "./prompt-input.css"
+import { ATTACHMENT_ACCEPT, MAX_ATTACHMENT_BYTES, attachmentMime, attachmentSize } from "./prompt-attachment"
+import { settingsApi } from "./settings/api"
+import {
+  delegatedSpecialist,
+  isCoreSpecialist,
+  specialistLabel,
+  type CapabilityPreferences,
+  type ReviewPreferences,
+  type SpecialistOption,
+} from "./prompt-capabilities"
 
 type PendingPrompt = {
   abort: AbortController
@@ -75,6 +81,10 @@ interface PromptInputProps {
   newSessionWorktree?: string
   onNewSessionWorktreeReset?: () => void
   onSubmit?: () => void
+}
+
+type ComputePreference = {
+  providers: Array<{ id: string; connected: boolean; enabled: boolean }>
 }
 
 const EXAMPLES = [
@@ -128,14 +138,76 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const comments = useComments()
   const params = useParams()
   const dialog = useDialog()
-  const providers = useProviders()
   const command = useCommand()
-  const permission = usePermission()
   const language = useLanguage()
   let editorRef!: HTMLDivElement
   let fileInputRef!: HTMLInputElement
   let scrollRef!: HTMLDivElement
   let slashPopoverRef!: HTMLDivElement
+  let modeRef: HTMLDetailsElement | undefined
+  const [cap, setCap] = createStore({
+    modeOpen: false,
+    reviewAuto: false,
+    reviewModel: null as ReviewPreferences["model"],
+    delegation: true,
+    specialist: null as string | null,
+    specialists: [] as SpecialistOption[],
+    view: "main" as "main" | "specialists" | "reviewer",
+    busy: false,
+    computeOpen: false,
+    modal: { connected: false, enabled: false },
+  })
+  const modeOpen = () => cap.modeOpen
+  const setModeOpen = (value: boolean) => setCap("modeOpen", value)
+  const reviewAuto = () => cap.reviewAuto
+  const setReviewAuto = (value: boolean) => setCap("reviewAuto", value)
+  const reviewModel = () => cap.reviewModel
+  const setReviewModel = (value: ReviewPreferences["model"]) => setCap("reviewModel", value)
+  const delegation = () => cap.delegation
+  const setDelegation = (value: boolean) => setCap("delegation", value)
+  const specialist = () => cap.specialist
+  const setSpecialist = (value: string | null) => setCap("specialist", value)
+  const specialists = () => cap.specialists
+  const setSpecialists = (value: SpecialistOption[]) => setCap("specialists", value)
+  const capabilityView = () => cap.view
+  const setCapabilityView = (value: "main" | "specialists" | "reviewer") => setCap("view", value)
+  const capabilityBusy = () => cap.busy
+  const setCapabilityBusy = (value: boolean) => setCap("busy", value)
+  const computeOpen = () => cap.computeOpen
+  const setComputeOpen = (value: boolean) => setCap("computeOpen", value)
+  const modal = () => cap.modal
+  const setModal = (value: { connected: boolean; enabled: boolean }) => setCap("modal", value)
+
+  const reviewModels = createMemo(() => {
+    const recommendations = RECOMMENDED_MODELS.map((item) => {
+      const key = canonicalKey(item.providerID, item.modelID)
+      return local.model.list().find((model) => canonicalKey(model.provider.id, model.id) === key)
+    }).filter((model): model is NonNullable<typeof model> => Boolean(model))
+    const options = [
+      ...local.model.pinned(),
+      ...recommendations,
+      local.model.current(),
+      ...local.model.recent(),
+    ].filter((model): model is NonNullable<typeof model> => Boolean(model))
+    const seen = new Set<string>()
+    return options
+      .filter((model) => {
+        const key = canonicalKey(model.provider.id, model.id)
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, 3)
+  })
+
+  const reviewerLabel = createMemo(() => {
+    const selected = reviewModel()
+    if (!selected) return "Same as session"
+    return (
+      local.model.list().find((model) => model.provider.id === selected.providerID && model.id === selected.modelID)
+        ?.name ?? selected.modelID
+    )
+  })
 
   const mirror = { input: false }
 
@@ -171,6 +243,174 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
   const sessionKey = createMemo(() => `${params.dir}${params.id ? "/" + params.id : ""}`)
   const tabs = createMemo(() => layout.tabs(sessionKey))
+
+  const attach = () => {
+    queueMicrotask(() => fileInputRef.click())
+  }
+
+  const openCompute = () => {
+    setModeOpen(false)
+    queueMicrotask(() => dialog.show(() => <DialogSettings initial="compute" />))
+  }
+
+  const loadCompute = () => {
+    void settingsApi<ComputePreference>(sdk.url, platform.fetch ?? fetch, "/settings/compute")
+      .then((state) => {
+        const provider = state.providers.find((item) => item.id === "modal")
+        setModal({ connected: provider?.connected ?? false, enabled: provider?.enabled ?? false })
+      })
+      .catch(() => undefined)
+  }
+
+  const loadCapabilities = () => {
+    setCapabilityBusy(true)
+    loadCompute()
+    void Promise.all([
+      settingsApi<ReviewPreferences>(sdk.url, platform.fetch ?? fetch, "/settings/review"),
+      settingsApi<CapabilityPreferences>(sdk.url, platform.fetch ?? fetch, "/settings/preferences"),
+      sdk.client.app.agents(),
+    ])
+      .then(([review, preferences, response]) => {
+        setReviewAuto(review.auto)
+        setReviewModel(review.model)
+        setDelegation(preferences.delegation_enabled)
+        setSpecialist(preferences.delegation_specialist)
+        setSpecialists(
+          ((response.data ?? []) as Agent[])
+            .filter((agent) => agent.mode === "subagent" && isCoreSpecialist(agent.name))
+            .map((agent) => ({ name: agent.name, description: agent.description })),
+        )
+      })
+      .catch(() => undefined)
+      .finally(() => setCapabilityBusy(false))
+  }
+
+  const saveDelegation = (patch: Partial<CapabilityPreferences>) =>
+    settingsApi<CapabilityPreferences>(sdk.url, platform.fetch ?? fetch, "/settings/preferences", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    })
+
+  const toggleDelegation = () => {
+    const previous = delegation()
+    const next = !previous
+    setDelegation(next)
+    setCapabilityBusy(true)
+    void saveDelegation({ delegation_enabled: next })
+      .then((preferences) => {
+        setDelegation(preferences.delegation_enabled)
+        setSpecialist(preferences.delegation_specialist)
+      })
+      .catch((error) => {
+        setDelegation(previous)
+        showToast({ variant: "error", title: "Could not update delegation", description: String(error) })
+      })
+      .finally(() => setCapabilityBusy(false))
+  }
+
+  const selectSpecialist = (name: string | null) => {
+    const previous = specialist()
+    setSpecialist(name)
+    setCapabilityBusy(true)
+    void saveDelegation({ delegation_specialist: name })
+      .then((preferences) => {
+        setDelegation(preferences.delegation_enabled)
+        setSpecialist(preferences.delegation_specialist)
+        setCapabilityView("main")
+      })
+      .catch((error) => {
+        setSpecialist(previous)
+        showToast({ variant: "error", title: "Could not select specialist", description: String(error) })
+      })
+      .finally(() => setCapabilityBusy(false))
+  }
+
+  const toggleReview = () => {
+    const previous = reviewAuto()
+    const next = !previous
+    setReviewAuto(next)
+    setCapabilityBusy(true)
+    void settingsApi<ReviewPreferences>(sdk.url, platform.fetch ?? fetch, "/settings/review", {
+      method: "PUT",
+      body: JSON.stringify({ auto: next, model: reviewModel() }),
+    })
+      .then((state) => {
+        setReviewAuto(state.auto)
+        setReviewModel(state.model)
+      })
+      .catch((error) => {
+        setReviewAuto(previous)
+        showToast({ variant: "error", title: "Could not update auto-review", description: String(error) })
+      })
+      .finally(() => setCapabilityBusy(false))
+  }
+
+  const selectReviewerModel = (model: ModelKey | null, returnToMenu = true) => {
+    const previous = reviewModel()
+    setReviewModel(model)
+    setCapabilityBusy(true)
+    void settingsApi<ReviewPreferences>(sdk.url, platform.fetch ?? fetch, "/settings/review", {
+      method: "PUT",
+      body: JSON.stringify({ auto: reviewAuto(), model }),
+    })
+      .then((state) => {
+        setReviewAuto(state.auto)
+        setReviewModel(state.model)
+        if (returnToMenu) setCapabilityView("main")
+      })
+      .catch((error) => {
+        setReviewModel(previous)
+        showToast({ variant: "error", title: "Could not select reviewer model", description: String(error) })
+      })
+      .finally(() => setCapabilityBusy(false))
+  }
+
+  const openReviewerModels = () => {
+    setModeOpen(false)
+    queueMicrotask(() =>
+      dialog.show(() => (
+        <DialogSelectModel
+          title="Reviewer model"
+          current={reviewModel()}
+          onSelect={(model) => selectReviewerModel(model, false)}
+        />
+      )),
+    )
+  }
+
+  const toggleModal = () => {
+    const previous = modal()
+    if (!previous.connected) {
+      openCompute()
+      return
+    }
+    const enabled = !previous.enabled
+    setModal({ ...previous, enabled })
+    setCapabilityBusy(true)
+    void settingsApi<ComputePreference>(sdk.url, platform.fetch ?? fetch, "/settings/compute/provider/modal/enabled", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    })
+      .then((state) => {
+        const provider = state.providers.find((item) => item.id === "modal")
+        setModal({ connected: provider?.connected ?? false, enabled: provider?.enabled ?? false })
+      })
+      .catch((error) => {
+        setModal(previous)
+        showToast({ variant: "error", title: "Could not update Modal", description: String(error) })
+      })
+      .finally(() => setCapabilityBusy(false))
+  }
+
+  onMount(() => {
+    const dismiss = (event: PointerEvent) => {
+      if (!modeOpen()) return
+      if (event.target instanceof Node && modeRef?.contains(event.target)) return
+      setModeOpen(false)
+    }
+    document.addEventListener("pointerdown", dismiss)
+    onCleanup(() => document.removeEventListener("pointerdown", dismiss))
+  })
 
   const commentInReview = (path: string) => {
     const sessionID = params.id
@@ -325,23 +565,53 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const [composing, setComposing] = createSignal(false)
   const isImeComposing = (event: KeyboardEvent) => event.isComposing || composing() || event.keyCode === 229
 
-  const addImageAttachment = async (file: File) => {
-    if (!ACCEPTED_FILE_TYPES.includes(file.type)) return
-
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      const attachment: ImageAttachmentPart = {
-        type: "image",
-        id: crypto.randomUUID(),
-        filename: file.name,
-        mime: file.type,
-        dataUrl,
-      }
-      const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
-      prompt.set([...prompt.current(), attachment], cursorPosition)
+  const addAttachment = async (file: File) => {
+    const mime = attachmentMime(file)
+    if (!mime) {
+      showToast({
+        variant: "error",
+        title: "file not attached",
+        description: `${file.name} is not a supported image, PDF, text, code, or scientific data file.`,
+      })
+      return
     }
-    reader.readAsDataURL(file)
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      showToast({
+        variant: "error",
+        title: "file not attached",
+        description: `${file.name} is ${attachmentSize(file.size)}; attachments are limited to ${attachmentSize(MAX_ATTACHMENT_BYTES)}.`,
+      })
+      return
+    }
+
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error ?? new Error("file read failed"))
+      reader.readAsDataURL(file)
+    }).then(
+      (value) => value,
+      (error: unknown) => {
+        showToast({
+          variant: "error",
+          title: "file not attached",
+          description: error instanceof Error ? error.message : String(error),
+        })
+        return undefined
+      },
+    )
+    if (!dataUrl) return
+
+    const attachment: ImageAttachmentPart = {
+      type: "image",
+      id: crypto.randomUUID(),
+      filename: file.name,
+      mime,
+      dataUrl,
+      size: file.size,
+    }
+    const cursorPosition = prompt.cursor() ?? getCursorPosition(editorRef)
+    prompt.set([...prompt.current(), attachment], cursorPosition)
   }
 
   const removeImageAttachment = (id: string) => {
@@ -360,13 +630,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     const items = Array.from(clipboardData.items)
     const fileItems = items.filter((item) => item.kind === "file")
-    const imageItems = fileItems.filter((item) => ACCEPTED_FILE_TYPES.includes(item.type))
+    const files = fileItems.flatMap((item) => {
+      const file = item.getAsFile()
+      return file && attachmentMime(file) ? [file] : []
+    })
 
-    if (imageItems.length > 0) {
-      for (const item of imageItems) {
-        const file = item.getAsFile()
-        if (file) await addImageAttachment(file)
-      }
+    if (files.length > 0) {
+      for (const file of files) await addAttachment(file)
       return
     }
 
@@ -412,9 +682,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!dropped) return
 
     for (const file of Array.from(dropped)) {
-      if (ACCEPTED_FILE_TYPES.includes(file.type)) {
-        await addImageAttachment(file)
-      }
+      await addAttachment(file)
     }
   }
 
@@ -422,6 +690,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     document.addEventListener("dragover", handleGlobalDragOver)
     document.addEventListener("dragleave", handleGlobalDragLeave)
     document.addEventListener("drop", handleGlobalDrop)
+    if (!params.id || params.id === "new") queueMicrotask(() => editorRef.focus())
   })
   onCleanup(() => {
     document.removeEventListener("dragover", handleGlobalDragOver)
@@ -444,7 +713,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     | { type: "file"; path: string; display: string; recent?: boolean }
 
   const agentList = createMemo(() =>
-    sync.data.agent
+    (Array.isArray(sync.data.agent) ? sync.data.agent : [])
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
       .map((agent): AtOption => ({ type: "agent", name: agent.name, display: agent.name })),
   )
@@ -1170,6 +1439,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       return
     }
 
+    const model = {
+      modelID: currentModel.id,
+      providerID: currentModel.provider.id,
+    }
+    const agent = currentAgent.name
+    const variant = local.model.variant.prompt()
+    const tier = local.model.tier.prompt()
+    const capabilityDelegation = delegation()
+    const capabilitySpecialist = specialist()
+
     const errorMessage = (err: unknown) => {
       if (err && typeof err === "object" && "data" in err) {
         const data = (err as { data?: { message?: string } }).data
@@ -1184,7 +1463,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     setStore("savedPrompt", null)
 
     const projectDirectory = sdk.directory
-    const isNewSession = !params.id
+    const isNewSession = !params.id || params.id === "new"
     const worktreeSelection = props.newSessionWorktree ?? "main"
 
     let sessionDirectory = projectDirectory
@@ -1223,9 +1502,10 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           baseUrl: sdk.url,
           fetch: platform.fetch,
           directory: sessionDirectory,
+          projectID: sdk.projectID,
           throwOnError: true,
         })
-        globalSync.child(sessionDirectory)
+        globalSync.child(sessionDirectory, { projectID: sdk.projectID })
       }
 
       props.onNewSessionWorktreeReset?.()
@@ -1243,18 +1523,17 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           })
           return undefined
         })
-      if (session) navigate(`/${base64Encode(sessionDirectory)}/session/${session.id}`)
+      if (session) {
+        const project = sync.project
+        const href = project
+          ? projectHref(project, sessionDirectory, session.id)
+          : projectPathname(sdk.scope, session.id)
+        navigate(href)
+      }
     }
     if (!session) return
 
     props.onSubmit?.()
-
-    const model = {
-      modelID: currentModel.id,
-      providerID: currentModel.provider.id,
-    }
-    const agent = currentAgent.name
-    const variant = local.model.variant.current()
 
     const clearInput = () => {
       prompt.reset()
@@ -1306,6 +1585,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             agent,
             model: `${model.providerID}/${model.modelID}`,
             variant,
+            tier,
             parts: images.map((attachment) => ({
               id: Identifier.ascending("part"),
               type: "file" as const,
@@ -1364,6 +1644,21 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         end: attachment.end,
       },
     }))
+
+    const selectedSpecialist = delegatedSpecialist(
+      capabilityDelegation,
+      capabilitySpecialist,
+      agentAttachments.map((attachment) => attachment.name),
+    )
+    const specialistParts = selectedSpecialist
+      ? [
+          {
+            id: Identifier.ascending("part"),
+            type: "agent" as const,
+            name: selectedSpecialist,
+          },
+        ]
+      : []
 
     const usedUrls = new Set(fileAttachmentParts.map((part) => part.url))
 
@@ -1450,6 +1745,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       textPart,
       ...fileAttachmentParts,
       ...contextParts,
+      ...specialistParts,
       ...agentAttachmentParts,
       ...imageAttachmentParts,
     ]
@@ -1612,7 +1908,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         model,
         messageID,
         parts: requestParts,
+        delegation: capabilityDelegation,
         variant,
+        tier,
       })
     }
 
@@ -1640,6 +1938,22 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       restoreInput()
     })
   }
+
+  createEffect(() => {
+    const text = uiStore.prefill()
+    if (!text || !editorRef) return
+    const send = uiStore.prefillSend()
+    editorRef.textContent = text
+    prompt.set([{ type: "text", content: text, start: 0, end: text.length }], text.length)
+    uiStore.setPrefill(undefined)
+    uiStore.setPrefillSend(false)
+    requestAnimationFrame(() => {
+      editorRef.focus()
+      setCursorPosition(editorRef, text.length)
+      queueScroll()
+      if (send) void handleSubmit(new Event("submit"))
+    })
+  })
 
   return (
     <div class="relative size-full flex flex-col gap-3">
@@ -1743,12 +2057,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           </Switch>
         </div>
       </Show>
+      <Show when={store.mode === "normal" && !local.model.current()}>
+        <div class="workspace-composer__setup" role="status">
+          <span>
+            <strong>Choose a model to start</strong>
+            <small>Connect ChatGPT, add a provider key, or use managed inference.</small>
+          </span>
+          <button type="button" onClick={() => dialog.show(() => <DialogSettings />)}>
+            Set up model
+          </button>
+        </div>
+      </Show>
       <form
         onSubmit={handleSubmit}
         classList={{
           "group/prompt-input": true,
-          "bg-surface-raised-stronger-non-alpha shadow-xs-border relative": true,
-          "rounded-[14px] overflow-clip focus-within:shadow-xs-border": true,
+          "workspace-composer": true,
+          "relative overflow-visible": true,
           "border-icon-info-active border-dashed": store.dragging,
           [props.class ?? ""]: !!props.class,
         }}
@@ -1834,38 +2159,42 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
           </div>
         </Show>
         <Show when={imageAttachments().length > 0}>
-          <div class="flex flex-wrap gap-2 px-3 pt-3">
+          <div class="workspace-composer__attachments" aria-label="Attached files">
             <For each={imageAttachments()}>
               {(attachment) => (
-                <div class="relative group">
+                <div class="workspace-composer__attachment" data-image={attachment.mime.startsWith("image/")}>
                   <Show
                     when={attachment.mime.startsWith("image/")}
                     fallback={
-                      <div class="size-16 rounded-md bg-surface-base flex items-center justify-center border border-border-base">
-                        <Icon name="folder" class="size-6 text-text-weak" />
+                      <div class="workspace-composer__attachment-icon" aria-hidden="true">
+                        <Icon name="folder" class="size-4" />
                       </div>
                     }
                   >
                     <img
                       src={attachment.dataUrl}
                       alt={attachment.filename}
-                      class="size-16 rounded-md object-cover border border-border-base hover:border-border-strong-base transition-colors"
+                      class="workspace-composer__attachment-preview"
                       onClick={() =>
                         dialog.show(() => <ImagePreview src={attachment.dataUrl} alt={attachment.filename} />)
                       }
                     />
                   </Show>
+                  <div class="workspace-composer__attachment-copy">
+                    <strong title={attachment.filename}>{attachment.filename}</strong>
+                    <span>
+                      {attachment.mime.split("/").pop()?.replace("x-", "") ?? "file"}
+                      <Show when={attachment.size !== undefined}> · {attachmentSize(attachment.size!)}</Show>
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={() => removeImageAttachment(attachment.id)}
-                    class="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-surface-raised-stronger-non-alpha border border-border-base flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-raised-base-hover"
+                    class="workspace-composer__attachment-remove"
                     aria-label={language.t("prompt.attachment.remove")}
                   >
                     <Icon name="close" class="size-3 text-text-weak" />
                   </button>
-                  <div class="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/50 rounded-b-md">
-                    <span class="text-10-regular text-white truncate block">{attachment.filename}</span>
-                  </div>
                 </div>
               )}
             </For>
@@ -1897,14 +2226,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             onKeyDown={handleKeyDown}
             classList={{
               "select-text": true,
-              "w-full p-3 pr-12 text-[15px] leading-relaxed text-text-strong focus:outline-none whitespace-pre-wrap": true,
+              "w-full p-3 pb-2.5 pr-14 text-[15px] leading-[1.45] text-text-strong focus:outline-none whitespace-pre-wrap": true,
               "[&_[data-type=file]]:text-syntax-property": true,
               "[&_[data-type=agent]]:text-syntax-type": true,
               "font-mono!": store.mode === "shell",
             }}
           />
           <Show when={!prompt.dirty()}>
-            <div class="absolute top-0 inset-x-0 p-3 pr-12 text-14-regular text-text-weak pointer-events-none whitespace-nowrap truncate">
+            <div class="workspace-composer__placeholder absolute top-0 inset-x-0 text-[15px] leading-[1.45] text-text-weak pointer-events-none whitespace-nowrap truncate">
               {store.mode === "shell"
                 ? language.t("prompt.placeholder.shell")
                 : commentCount() > 1
@@ -1915,8 +2244,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
             </div>
           </Show>
         </div>
-        <div class="relative p-3 flex items-center justify-between">
-          <div data-slot="prompt-controls" class="flex items-center justify-start gap-2">
+        <div class="workspace-composer__footer">
+          <div data-slot="prompt-controls" class="workspace-composer__controls flex items-center justify-start gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ATTACHMENT_ACCEPT}
+              class="hidden"
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0]
+                if (file) void addAttachment(file)
+                e.currentTarget.value = ""
+              }}
+            />
             <Switch>
               <Match when={store.mode === "shell"}>
                 <div class="flex items-center gap-2 px-2 h-6">
@@ -1926,158 +2266,273 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 </div>
               </Match>
               <Match when={store.mode === "normal"}>
-                <TooltipKeybind
-                  placement="top"
-                  title={language.t("command.agent.cycle")}
-                  keybind={command.keybind("agent.cycle")}
-                >
-                  <Select
-                    options={(() => {
-                      const visible = local.agent.list().map((a) => a.name)
-                      const current = local.agent.current()?.name
-                      if (current && !visible.includes(current)) return [current, ...visible]
-                      return visible
-                    })()}
-                    current={local.agent.current()?.name ?? ""}
-                    onSelect={local.agent.set}
-                    label={(name) => (name === "ml" ? "ML" : name)}
-                    class="capitalize"
-                    variant="ghost"
-                  />
-                </TooltipKeybind>
-                {/* Research mode selector */}
-                <Show when={local.research.current() && local.research.list().length > 1}>
-                  <TooltipKeybind placement="top" title="Research Mode" keybind={command.keybind("research.cycle")}>
-                    <Select
-                      options={local.research.list()}
-                      current={local.research.current()}
-                      placeholder="mode"
-                      onSelect={(name) => {
-                        if (name) local.agent.set(name)
-                      }}
-                      label={(name) => {
-                        if (!name) return "mode"
-                        if (name === "research") return "default"
-                        if (name === "ml") return "ML"
-                        return name
-                      }}
-                      class="capitalize"
-                      variant="ghost"
-                    />
-                  </TooltipKeybind>
-                </Show>
-                {/* Model selector */}
-                <>
-                  <Show
-                    when={providers.paid().length > 0}
-                    fallback={
-                      <TooltipKeybind
-                        placement="top"
-                        title={language.t("command.model.choose")}
-                        keybind={command.keybind("model.choose")}
-                      >
-                        <Button as="div" variant="ghost" onClick={() => dialog.show(() => <DialogSelectModelUnpaid />)}>
-                          <Show when={local.model.current()?.provider?.id}>
-                            <ProviderIcon id={local.model.current()!.provider.id as IconName} class="size-4 shrink-0" />
-                          </Show>
-                          {local.model.current()?.name ?? language.t("dialog.model.select.title")}
-                          <Icon name="chevron-down" size="small" />
-                        </Button>
-                      </TooltipKeybind>
-                    }
-                  >
-                    <TooltipKeybind
-                      placement="top"
-                      title={language.t("command.model.choose")}
-                      keybind={command.keybind("model.choose")}
-                    >
-                      <ModelSelectorPopover triggerAs={Button} triggerProps={{ variant: "ghost" }}>
-                        <Show when={local.model.current()?.provider?.id}>
-                          <ProviderIcon id={local.model.current()!.provider.id as IconName} class="size-4 shrink-0" />
-                        </Show>
-                        {local.model.current()?.name ?? language.t("dialog.model.select.title")}
-                        <Icon name="chevron-down" size="small" />
-                      </ModelSelectorPopover>
-                    </TooltipKeybind>
-                  </Show>
-                </>
-                {/* Variant selector */}
-                <Show when={local.model.variant.list().length > 0}>
-                  <TooltipKeybind
-                    placement="top"
-                    title={language.t("command.model.variant.cycle")}
-                    keybind={command.keybind("model.variant.cycle")}
-                  >
-                    <Button
-                      data-action="model-variant-cycle"
-                      variant="ghost"
-                      class="text-text-base group-hover/prompt-input:inline-block capitalize"
-                      onClick={() => local.model.variant.cycle()}
-                    >
-                      {local.model.variant.current() ?? language.t("common.default")}
-                    </Button>
-                  </TooltipKeybind>
-                </Show>
-                <Show when={permission.permissionsEnabled() && params.id}>
-                  <TooltipKeybind
-                    placement="top"
-                    title={language.t("command.permissions.autoaccept.enable")}
-                    keybind={command.keybind("permissions.autoaccept")}
-                  >
-                    <Button
-                      variant="ghost"
-                      onClick={() => permission.toggleAutoAccept(params.id!, sdk.directory)}
-                      classList={{
-                        "group-hover/prompt-input:flex size-6 items-center justify-center": true,
-                        "text-text-base": !permission.isAutoAccepting(params.id!, sdk.directory),
-                        "hover:bg-surface-success-base": permission.isAutoAccepting(params.id!, sdk.directory),
-                      }}
-                      aria-label={
-                        permission.isAutoAccepting(params.id!, sdk.directory)
-                          ? language.t("command.permissions.autoaccept.disable")
-                          : language.t("command.permissions.autoaccept.enable")
-                      }
-                      aria-pressed={permission.isAutoAccepting(params.id!, sdk.directory)}
-                    >
-                      <Icon
-                        name="chevron-double-right"
-                        size="small"
-                        classList={{ "text-icon-success-base": permission.isAutoAccepting(params.id!, sdk.directory) }}
-                      />
-                    </Button>
-                  </TooltipKeybind>
-                </Show>
-              </Match>
-            </Switch>
-          </div>
-          <div class="flex items-center gap-3 absolute right-3 bottom-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPTED_FILE_TYPES.join(",")}
-              class="hidden"
-              onChange={(e) => {
-                const file = e.currentTarget.files?.[0]
-                if (file) addImageAttachment(file)
-                e.currentTarget.value = ""
-              }}
-            />
-            <div class="flex items-center gap-2">
-              <SessionContextUsage />
-              <Show when={store.mode === "normal"}>
                 <Tooltip placement="top" value={language.t("prompt.action.attachFile")}>
                   <Button
                     type="button"
                     variant="ghost"
-                    class="size-6"
-                    onClick={() => fileInputRef.click()}
+                    class="workspace-composer__attach size-9 shrink-0"
+                    onClick={attach}
                     aria-label={language.t("prompt.action.attachFile")}
                   >
-                    <Icon name="photo" class="size-4.5" />
+                    <Icon name="plus" class="size-5" />
                   </Button>
                 </Tooltip>
-              </Show>
-            </div>
+                <details
+                  ref={modeRef}
+                  class="workspace-composer__overflow"
+                  open={modeOpen()}
+                  onMouseLeave={() => setComputeOpen(false)}
+                  onToggle={(event) => {
+                    const open = event.currentTarget.open
+                    setModeOpen(open)
+                    if (open) {
+                      setCapabilityView("main")
+                      loadCapabilities()
+                      return
+                    }
+                    setComputeOpen(false)
+                  }}
+                >
+                  <summary
+                    role="button"
+                    aria-label="Research capabilities"
+                    aria-haspopup="menu"
+                    aria-expanded={modeOpen()}
+                    title="Research capabilities"
+                  >
+                    <Icon name="sliders" />
+                  </summary>
+                  <div role="menu" aria-label="Research capabilities">
+                    <Switch>
+                      <Match when={capabilityView() === "main"}>
+                        <div class="workspace-composer__capability-list">
+                          <button
+                            type="button"
+                            role="menuitemcheckbox"
+                            aria-checked={delegation()}
+                            disabled={capabilityBusy()}
+                            onClick={toggleDelegation}
+                          >
+                            <span>Delegation</span>
+                            <span
+                              aria-hidden="true"
+                              class="workspace-composer__capability-switch"
+                              data-checked={delegation() ? "true" : "false"}
+                            >
+                              <span />
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitemcheckbox"
+                            aria-checked={reviewAuto()}
+                            disabled={capabilityBusy()}
+                            onClick={toggleReview}
+                          >
+                            <span>Auto-review</span>
+                            <span
+                              aria-hidden="true"
+                              class="workspace-composer__capability-switch"
+                              data-checked={reviewAuto() ? "true" : "false"}
+                            >
+                              <span />
+                            </span>
+                          </button>
+                          <button type="button" role="menuitem" onClick={() => setCapabilityView("reviewer")}>
+                            <span>Reviewer model</span>
+                            <span class="workspace-composer__capability-value">
+                              {reviewerLabel()} <span class="workspace-composer__capability-chevron">›</span>
+                            </span>
+                          </button>
+                          <div role="separator" class="workspace-composer__capability-divider" />
+                          <button type="button" role="menuitem" onClick={() => setCapabilityView("specialists")}>
+                            <span>Specialist</span>
+                            <span class="workspace-composer__capability-value">
+                              {specialist() ? specialistLabel(specialist()!) : "Research"}
+                              <span class="workspace-composer__capability-chevron">›</span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            aria-haspopup="menu"
+                            aria-expanded={computeOpen()}
+                            onMouseEnter={() => setComputeOpen(true)}
+                            onFocus={() => setComputeOpen(true)}
+                            onClick={() => setComputeOpen(true)}
+                          >
+                            <span>Compute</span>
+                            <span class="workspace-composer__capability-value">
+                              {modal().enabled ? "Modal" : "Local"}
+                              <span class="workspace-composer__capability-chevron">›</span>
+                            </span>
+                          </button>
+                        </div>
+                      </Match>
+                      <Match when={capabilityView() === "specialists"}>
+                        <div class="workspace-composer__specialist-list">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            class="workspace-composer__specialist-back"
+                            onClick={() => setCapabilityView("main")}
+                          >
+                            <span aria-hidden="true">‹</span>
+                            <strong>Specialist</strong>
+                          </button>
+                          <div role="separator" class="workspace-composer__capability-divider" />
+                          <button
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={!specialist()}
+                            disabled={capabilityBusy()}
+                            class="workspace-composer__specialist-option"
+                            onClick={() => selectSpecialist(null)}
+                          >
+                            <span>
+                              <strong>Research</strong>
+                              <small>General research with adaptive delegation.</small>
+                            </span>
+                            <Show when={!specialist()}>
+                              <Icon name="check" size="small" />
+                            </Show>
+                          </button>
+                          <For each={specialists()}>
+                            {(option) => (
+                              <button
+                                type="button"
+                                role="menuitemradio"
+                                aria-checked={specialist() === option.name}
+                                disabled={capabilityBusy()}
+                                class="workspace-composer__specialist-option"
+                                onClick={() => selectSpecialist(option.name)}
+                              >
+                                <span>
+                                  <strong>{specialistLabel(option.name)}</strong>
+                                  <Show when={option.description}>
+                                    {(description) => <small>{description()}</small>}
+                                  </Show>
+                                </span>
+                                <Show when={specialist() === option.name}>
+                                  <Icon name="check" size="small" />
+                                </Show>
+                              </button>
+                            )}
+                          </For>
+                        </div>
+                      </Match>
+                      <Match when={capabilityView() === "reviewer"}>
+                        <div class="workspace-composer__specialist-list">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            class="workspace-composer__specialist-back"
+                            onClick={() => setCapabilityView("main")}
+                          >
+                            <span aria-hidden="true">‹</span>
+                            <strong>Reviewer model</strong>
+                          </button>
+                          <div role="separator" class="workspace-composer__capability-divider" />
+                          <button
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={!reviewModel()}
+                            disabled={capabilityBusy()}
+                            class="workspace-composer__specialist-option"
+                            onClick={() => selectReviewerModel(null)}
+                          >
+                            <span>
+                              <strong>Same as session</strong>
+                              <small>Follow the model selected in the composer.</small>
+                            </span>
+                            <Show when={!reviewModel()}>
+                              <Icon name="check" size="small" />
+                            </Show>
+                          </button>
+                          <For each={reviewModels()}>
+                            {(model) => {
+                              const selected = () =>
+                                reviewModel()?.providerID === model.provider.id && reviewModel()?.modelID === model.id
+                              return (
+                                <button
+                                  type="button"
+                                  role="menuitemradio"
+                                  aria-checked={selected()}
+                                  disabled={capabilityBusy()}
+                                  class="workspace-composer__specialist-option"
+                                  onClick={() =>
+                                    selectReviewerModel({ providerID: model.provider.id, modelID: model.id })
+                                  }
+                                >
+                                  <span>
+                                    <strong>{model.name}</strong>
+                                    <small>
+                                      {modelSummary({
+                                        reasoning: model.capabilities.reasoning,
+                                        context: model.limit.context,
+                                        provider: displayProviderForModel(model.provider, model.id).name,
+                                      })}
+                                    </small>
+                                  </span>
+                                  <Show when={selected()}>
+                                    <Icon name="check" size="small" />
+                                  </Show>
+                                </button>
+                              )
+                            }}
+                          </For>
+                          <div role="separator" class="workspace-composer__capability-divider" />
+                          <button
+                            type="button"
+                            role="menuitem"
+                            class="workspace-composer__specialist-option workspace-composer__reviewer-more"
+                            onClick={openReviewerModels}
+                          >
+                            <span>
+                              <strong>More models</strong>
+                              <small>Browse the full model catalog.</small>
+                            </span>
+                            <span class="workspace-composer__capability-chevron">›</span>
+                          </button>
+                        </div>
+                      </Match>
+                    </Switch>
+                  </div>
+                  <Show when={computeOpen() && capabilityView() === "main"}>
+                    <div class="workspace-composer__compute-menu" role="menu" aria-label="Compute providers">
+                      <span class="workspace-composer__compute-label">Cloud</span>
+                      <button
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={modal().enabled}
+                        disabled={capabilityBusy() || !modal().connected}
+                        onClick={toggleModal}
+                      >
+                        <span>Modal</span>
+                        <span
+                          aria-hidden="true"
+                          class="workspace-composer__capability-switch"
+                          data-checked={modal().enabled ? "true" : "false"}
+                        >
+                          <span />
+                        </span>
+                      </button>
+                      <Show when={!modal().connected}>
+                        <span class="workspace-composer__compute-hint">Configure Modal before enabling it.</span>
+                      </Show>
+                      <div role="separator" class="workspace-composer__capability-divider" />
+                      <button type="button" role="menuitem" onClick={openCompute}>
+                        <Icon name="settings-gear" size="small" />
+                        <span>Manage compute…</span>
+                      </button>
+                    </div>
+                  </Show>
+                </details>
+              </Match>
+            </Switch>
+          </div>
+          <div class="workspace-composer__actions flex items-center gap-3">
+            <ModelSettingsPopover />
             <Tooltip
               placement="top"
               inactive={!prompt.dirty() && !working()}
@@ -2103,7 +2558,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 disabled={!prompt.dirty() && !working()}
                 icon={working() ? "stop" : "arrow-up"}
                 variant="primary"
-                class="size-6"
+                class="workspace-composer__send size-10 rounded-full"
                 aria-label={working() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
               />
             </Tooltip>

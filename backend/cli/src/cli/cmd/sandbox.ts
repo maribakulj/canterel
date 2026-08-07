@@ -30,15 +30,15 @@ function printStatus(config?: Config.Sandbox) {
     }`,
   )
   if (enabled) {
-    UI.println(`  network   ${config?.network ?? "allow"}`)
-    UI.println(`  on missing backend   ${config?.onUnavailable ?? "warn"}`)
+    UI.println(`  network   ${config?.network ?? "deny"}`)
+    UI.println(`  on missing backend   ${config?.onUnavailable ?? "error"}`)
     if (config?.allowWrite?.length) UI.println(`  extra writable   ${config.allowWrite.join(", ")}`)
   }
   if (enabled && !d.available) {
     UI.println("")
     UI.println(
       `  ${S.TEXT_WARNING_BOLD}Note:${S.TEXT_NORMAL} sandbox is on but no backend exists here — ` +
-        `commands run per "${config?.onUnavailable ?? "warn"}". It takes effect on machines with a backend.`,
+        `commands run per "${config?.onUnavailable ?? "error"}". It takes effect on machines with a backend.`,
     )
   }
 }
@@ -68,7 +68,7 @@ const EnableCommand = cmd({
     yargs
       .option("network", {
         choices: ["allow", "deny"] as const,
-        describe: "allow or deny network egress from sandboxed commands (default: allow)",
+        describe: "allow or deny network egress from sandboxed commands (default: deny)",
       })
       .option("allow", {
         type: "string",
@@ -77,7 +77,7 @@ const EnableCommand = cmd({
       })
       .option("on-unavailable", {
         choices: ["warn", "error", "allow"] as const,
-        describe: "what to do when no backend exists on a machine (default: warn)",
+        describe: "what to do when no backend exists on a machine (default: error)",
       }),
   handler: async (args) => {
     await Instance.provide({

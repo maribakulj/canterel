@@ -21,6 +21,8 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { lazy } from "../../util/lazy"
+import { projectSelection } from "../project-selection"
+import { probeProtectedFolderAccess } from "../../file/protected-folder-access"
 
 const HOME = os.homedir()
 
@@ -160,13 +162,11 @@ function run(command: string, args: string[]): Promise<string> {
 export const FolderResolveRoutes = lazy(() =>
   new Hono()
     .get("/probe", async (c) => {
-      // macOS Full Disk Access check: can we read ~/Desktop? On Linux/Windows
-      // there's no TCC equivalent so we always answer "yes".
-      if (process.platform !== "darwin") return c.json({ fda: true })
-      const desktop = path.join(HOME, "Desktop")
-      const r = await listDirectory(desktop)
-      const fda = r.ok && (r.entries?.length ?? 0) > 0
-      return c.json({ fda, reason: fda ? undefined : (r.error ?? "Desktop unreadable (TCC blocking)") })
+      const result = await probeProtectedFolderAccess()
+      return c.json({
+        fda: !result.blocked,
+        reason: result.reason,
+      })
     })
     .get("/dialog", async (c) => {
       // Only macOS gets a reliable scriptable native dialog. Linux/Windows
@@ -189,18 +189,23 @@ export const FolderResolveRoutes = lazy(() =>
       }
     })
     .post("/validate", async (c) => {
-      let body: { path?: string } = {}
+      let body: { path?: string; project?: string; projectID?: string } = {}
       try {
         body = await c.req.json()
       } catch {
         return c.json({ ok: false, error: "invalid json" }, 400)
       }
       const absolute = expandPath(body.path)
-      if (!absolute) return c.json({ ok: false, error: "path required" }, 400)
-      const stat = await fs.stat(absolute).catch(() => undefined)
-      if (!stat) return c.json({ ok: false, absolute, error: "path not found" }, 400)
-      if (!stat.isDirectory()) return c.json({ ok: false, absolute, error: "path is not a directory" }, 400)
-      const real = await fs.realpath(absolute).catch(() => absolute)
+      const selected = await projectSelection(c, {
+        projectID: body.projectID ?? body.project,
+        directory: absolute || undefined,
+      })
+      const directory = selected.directory
+      if (!directory) return c.json({ ok: false, error: "path required" }, 400)
+      const stat = await fs.stat(directory).catch(() => undefined)
+      if (!stat) return c.json({ ok: false, absolute: directory, error: "path not found" }, 400)
+      if (!stat.isDirectory()) return c.json({ ok: false, absolute: directory, error: "path is not a directory" }, 400)
+      const real = await fs.realpath(directory).catch(() => directory)
       const listed = await listDirectory(real)
       return c.json({
         ok: true,

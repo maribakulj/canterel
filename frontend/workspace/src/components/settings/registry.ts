@@ -20,19 +20,18 @@ import type { IconProps } from "@synsci/ui/icon"
 // HARD RULE: no dead buttons. A panel either wires to a real backend or omits
 // the control. Placeholder panels below ship with zero interactive controls.
 
-export type SettingsSection = "capabilities" | "workspace"
+export type SettingsSection = "inference" | "capabilities" | "runtime" | "app"
 
 export type SettingsPanelId =
+  | "models"
+  | "skills"
   | "connectors"
   | "specialists"
-  | "memory"
   | "compute"
-  | "local-models"
   | "network"
   | "permissions"
   | "sandbox"
   | "credentials"
-  | "billing"
   | "storage"
   | "general"
 
@@ -51,9 +50,22 @@ export interface SettingsPanel {
 
 // Order here is the render order in the rail (top→bottom within each section).
 export const SETTINGS_PANELS: SettingsPanel[] = [
+  // ── Inference ──
+  {
+    id: "models",
+    title: "Models",
+    icon: "models",
+    section: "inference",
+    component: lazy(() => import("./Models")),
+  },
   // ── Capabilities ──
-  // Skills moved to a dedicated center-pane tab (thesis/SkillsPage) — it's a
-  // first-class catalog now, not a settings row.
+  {
+    id: "skills",
+    title: "Skills",
+    icon: "brain",
+    section: "capabilities",
+    component: lazy(() => import("./Skills")),
+  },
   {
     id: "connectors",
     title: "Connectors",
@@ -68,82 +80,66 @@ export const SETTINGS_PANELS: SettingsPanel[] = [
     section: "capabilities",
     component: lazy(() => import("./Specialists")),
   },
-  {
-    id: "memory",
-    title: "Memory",
-    icon: "archive",
-    section: "capabilities",
-    component: lazy(() => import("./Memory")),
-  },
+  // Local models remain implemented but hidden until chat, tool-call, and
+  // streaming behavior pass a full runtime smoke.
+  // ── Runtime ──
   {
     id: "compute",
     title: "Compute",
     icon: "server",
-    section: "capabilities",
+    section: "runtime",
     component: lazy(() => import("./Compute")),
-  },
-  {
-    id: "local-models",
-    title: "Local models",
-    icon: "models",
-    section: "capabilities",
-    component: lazy(() => import("./LocalModels")),
   },
   {
     id: "network",
     title: "Network",
     icon: "share",
-    section: "capabilities",
+    section: "runtime",
     component: lazy(() => import("./Network")),
   },
-  // ── Workspace ──
   {
     id: "permissions",
     title: "Permissions",
     icon: "check",
-    section: "workspace",
+    section: "runtime",
     component: lazy(() => import("./Permissions")),
   },
   {
     id: "sandbox",
     title: "Sandbox",
     icon: "console",
-    section: "workspace",
+    section: "runtime",
     component: lazy(() => import("./Sandbox")),
   },
   {
     id: "credentials",
     title: "Credentials",
     icon: "providers",
-    section: "workspace",
+    section: "runtime",
     component: lazy(() => import("./Credentials")),
   },
-  // Wallet + Spend + Usage merged into one Billing panel (they each rendered a
-  // duplicate balance card). Balance · Spend routing · Usage · Ledger.
-  {
-    id: "billing",
-    title: "Billing",
-    icon: "sliders",
-    section: "workspace",
-    component: lazy(() => import("./Billing")),
-  },
-  { id: "storage", title: "Storage", icon: "folder", section: "workspace", component: lazy(() => import("./Storage")) },
+  // ── App ──
+  // Managed inference and its wallet live in Models. Usage stays hidden until
+  // the product can report it reliably; General links to account billing.
+  { id: "storage", title: "Storage", icon: "folder", section: "app", component: lazy(() => import("./Storage")) },
   {
     id: "general",
     title: "General",
     icon: "settings-gear",
-    section: "workspace",
+    section: "app",
     component: lazy(() => import("./General")),
   },
 ]
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
+  { id: "inference", label: "Inference" },
   { id: "capabilities", label: "Capabilities" },
-  { id: "workspace", label: "Workspace" },
+  { id: "runtime", label: "Runtime" },
+  { id: "app", label: "App" },
 ]
 
 export function findPanel(id: SettingsPanelId): SettingsPanel {
   return SETTINGS_PANELS.find((p) => p.id === id) ?? SETTINGS_PANELS[0]
 }
 
-export const DEFAULT_PANEL: SettingsPanelId = "connectors"
+export const DEFAULT_PANEL: SettingsPanelId = "models"

@@ -92,6 +92,12 @@ export const dict = {
   "ui.permission.deny": "拒絕",
   "ui.permission.allowAlways": "永遠允許",
   "ui.permission.allowOnce": "允許一次",
+  "ui.permission.allow": "允許範圍…",
+  "ui.permission.allowSession": "此對話",
+  "ui.permission.allowProject": "此專案",
+  "ui.permission.grantRead": "授予對 {path} 的唯讀存取權限",
+  "ui.permission.grantWrite": "授予對 {path} 的讀寫存取權限",
+  "ui.permission.allowHost": "允許網路存取 {host}",
 
   "ui.message.expand": "展開訊息",
   "ui.message.collapse": "收合訊息",

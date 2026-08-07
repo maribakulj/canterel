@@ -5,6 +5,7 @@ import { useParams } from "@solidjs/router"
 import type { FileSelection } from "@/context/file"
 import { Persist, persisted } from "@/utils/persist"
 import { checksum } from "@synsci/util/encode"
+import { useSDK } from "./sdk"
 
 interface PartBase {
   content: string
@@ -33,6 +34,7 @@ export interface ImageAttachmentPart {
   filename: string
   mime: string
   dataUrl: string
+  size?: number
 }
 
 export type ContentPart = TextPart | FileAttachmentPart | AgentPart | ImageAttachmentPart
@@ -187,6 +189,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
   gate: false,
   init: () => {
     const params = useParams()
+    const sdk = useSDK()
     const cache = new Map<string, PromptCacheEntry>()
 
     const disposeAll = () => {
@@ -227,7 +230,7 @@ export const { use: usePrompt, provider: PromptProvider } = createSimpleContext(
       return entry.value
     }
 
-    const session = createMemo(() => load(params.dir!, params.id))
+    const session = createMemo(() => load(sdk.scope, params.id))
 
     return {
       ready: () => session().ready(),

@@ -43,27 +43,22 @@ The CLI uses a **dual-layer prompt system**: provider-level system prompts + age
 ```
 User request with agent name (e.g., "research")
   │
-  ├─ Layer 1: SYSTEM role ← session prompt (provider-specific)
-  │   src/session/system.ts selects by model provider
+  ├─ Layer 1: SYSTEM role ← provider-neutral product contract
+  │   src/session/system.ts supplies one contract to every model
   │
   └─ Layer 2: USER role injection ← agent prompt (task-specific)
       src/session/prompt.ts selects by agent name + tier
 ```
 
-### Session prompts (`src/session/prompt/`) (6 provider + 4 utility)
+### Session prompts (`src/session/prompt/`)
 
-| File                                      | Purpose          |
-| ----------------------------------------- | ---------------- |
-| `anthropic.txt`                           | Claude models    |
-| `beast.txt`                               | GPT-4o / o1 / o3 |
-| `codex_header.txt`                        | GPT-5 / Codex    |
-| `gemini.txt`                              | Gemini models    |
-| `qwen.txt`                                | Qwen / fallback  |
-| `copilot-gpt-5.txt`                       | Copilot GPT-5    |
-| `plan.txt`, `plan-reminder-anthropic.txt` | Plan mode        |
-| `build-switch.txt`, `max-steps.txt`       | Utility          |
+| File                                | Purpose                                  |
+| ----------------------------------- | ---------------------------------------- |
+| `core.txt`                          | Provider-neutral operating contract      |
+| `plan.txt`                          | Read-only Plan mode contract             |
+| `build-switch.txt`, `max-steps.txt` | Mode transition and step-limit utilities |
 
-Routing logic: `src/session/system.ts` → `SystemPrompt.provider(model)`.
+Routing logic: `src/session/system.ts` supplies the same product contract to every model.
 
 ### Agent prompts (`src/agent/prompt/`)
 
@@ -103,18 +98,18 @@ Custom agents can be added via config file (`openscience.json` → `agent` key).
 
 1. **Which agent is active?** → `src/agent/agent.ts`, find the agent by name, check its `mode`, `model`, `prompt` fields
 2. **Which prompt is injected?** → `src/session/prompt.ts`, follow the `input.agent.name` switch
-3. **Which system prompt?** → `src/session/system.ts`, `SystemPrompt.provider(model)` selects by provider
+3. **Which system prompt?** → `src/session/system.ts`, `SystemPrompt.provider(model)` returns the shared product contract
 
 ### Common failure patterns:
 
-| Symptom                    | Likely cause                                     | Where to look                                                       |
-| -------------------------- | ------------------------------------------------ | ------------------------------------------------------------------- |
-| Agent ignores skills       | Skill catalog missing/truncated in prompt        | `src/agent/prompt/{agent}.txt`, check toolkit section               |
-| Wrong model used           | Agent/model config incorrect                     | `src/agent/agent.ts` + `openscience.json` `agent` config            |
-| Agent skips stages         | Stage gates not mandatory in prompt              | `src/agent/prompt/{agent}.txt`, check BLOCKING vs advisory language |
-| Critique not triggered     | Critique is advisory, not mandatory              | `src/agent/prompt/critique.txt` + parent prompt's critique section  |
-| Sub-agent returns empty    | Context window exhaustion or bad prompt          | `src/agent/agent.ts`, check subagent's `steps` limit                |
-| Custom agent not appearing | Config not in `openscience.json` or wrong `mode` | Config file `agent` key → `src/agent/agent.ts`                      |
+| Symptom                               | Likely cause                                        | Where to look                                              |
+| ------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| Agent over-processes a simple request | Workflow prompt is too procedural                   | `src/agent/prompt/{agent}.txt`, preserve adaptive behavior |
+| Wrong model used                      | Agent/model config incorrect                        | `src/agent/agent.ts` + `openscience.json` `agent` config   |
+| Agent delegates excessively           | Task contract or prompt lost the zero-child default | `src/tool/task.txt` + `src/session/prompt/core.txt`        |
+| Review runs on trivial work           | Review threshold is too broad                       | `src/agent/prompt/{agent}.txt` + `reviewer.txt`            |
+| Sub-agent returns empty               | Context window exhaustion or bad prompt             | `src/agent/agent.ts`, check subagent's `steps` limit       |
+| Custom agent not appearing            | Config not in `openscience.json` or wrong `mode`    | Config file `agent` key → `src/agent/agent.ts`             |
 
 ### Key files for prompt debugging (read these first):
 

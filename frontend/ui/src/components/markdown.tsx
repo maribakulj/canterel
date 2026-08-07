@@ -3,7 +3,17 @@ import { useI18n } from "../context/i18n"
 import DOMPurify from "dompurify"
 import morphdom from "morphdom"
 import { checksum } from "@synsci/util/encode"
-import { ComponentProps, createEffect, createResource, createSignal, onCleanup, splitProps } from "solid-js"
+import {
+  ComponentProps,
+  ParentProps,
+  createContext,
+  createEffect,
+  createResource,
+  createSignal,
+  onCleanup,
+  splitProps,
+  useContext,
+} from "solid-js"
 import { isServer } from "solid-js/web"
 
 type Entry = {
@@ -32,6 +42,8 @@ const config = {
   SANITIZE_NAMED_PROPS: true,
   FORBID_TAGS: ["style"],
   FORBID_CONTENTS: ["style", "script"],
+  ADD_TAGS: ["semantics", "annotation", "annotation-xml"],
+  ADD_ATTR: ["encoding"],
 }
 
 const iconPaths = {
@@ -39,9 +51,36 @@ const iconPaths = {
   check: '<path d="M5 11.9657L8.37838 14.7529L15 5.83398" stroke="currentColor" stroke-linecap="square"/>',
 }
 
-function sanitize(html: string) {
+export function sanitize(html: string) {
   if (!DOMPurify.isSupported) return ""
   return DOMPurify.sanitize(html, config)
+}
+
+type Resolve = (src: string) => string
+
+const images = createContext<Resolve>()
+
+/**
+ * Provide a default image resolver for every Markdown rendered below — the
+ * workspace uses this to point relative image references at the backend
+ * /file/raw endpoint. A `resolveImage` prop on an individual Markdown wins.
+ */
+export function MarkdownImages(props: ParentProps<{ resolve: Resolve }>) {
+  return <images.Provider value={props.resolve}>{props.children}</images.Provider>
+}
+
+/**
+ * Rewrite <img> references in place. Runs on already-sanitized markup right
+ * before it reaches the live DOM, so DOMPurify stays fully in charge of what
+ * renders — only the src attribute value changes.
+ */
+export function resolveImages(root: ParentNode, resolve: Resolve) {
+  root.querySelectorAll("img").forEach((img) => {
+    const src = img.getAttribute("src")
+    if (!src) return
+    const next = resolve(src)
+    if (next !== src) img.setAttribute("src", next)
+  })
 }
 
 type CopyLabels = {
@@ -165,9 +204,11 @@ export function Markdown(
     cacheKey?: string
     class?: string
     classList?: Record<string, boolean>
+    resolveImage?: Resolve
   },
 ) {
-  const [local, others] = splitProps(props, ["text", "cacheKey", "class", "classList"])
+  const [local, others] = splitProps(props, ["text", "cacheKey", "class", "classList", "resolveImage"])
+  const shared = useContext(images)
   const marked = useMarked()
   const i18n = useI18n()
   const [root, setRoot] = createSignal<HTMLDivElement>()
@@ -211,6 +252,9 @@ export function Markdown(
 
     const temp = document.createElement("div")
     temp.innerHTML = content
+
+    const resolve = local.resolveImage ?? shared
+    if (resolve) resolveImages(temp, resolve)
 
     morphdom(container, temp, {
       childrenOnly: true,

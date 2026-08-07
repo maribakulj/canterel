@@ -5,7 +5,8 @@ import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler 
 import { Hono } from "hono"
 import { cors } from "hono/cors"
 import { streamSSE } from "hono/streaming"
-import { serveWebAsset } from "../web/serve"
+import { serveWebAsset, wantsJson } from "../web/serve"
+import { webAssetContentSecurityPolicy } from "../web/csp"
 import { isAllowedHost, isAllowedOrigin, isCrossOrigin } from "./host-guard"
 import { timingSafeEqual } from "../util/timing-safe"
 import { FolderResolveRoutes } from "./routes/folder-resolve"
@@ -17,6 +18,7 @@ import { NamedError } from "@synsci/util/error"
 import { LSP } from "../lsp"
 import { Format } from "../format"
 import { Instance } from "../project/instance"
+import { Project } from "../project/project"
 import { Vcs } from "../project/vcs"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill/skill"
@@ -28,6 +30,8 @@ import { SessionRoutes } from "./routes/session"
 import { PtyRoutes } from "./routes/pty"
 import { McpRoutes } from "./routes/mcp"
 import { FileRoutes } from "./routes/file"
+import { NotebookRoutes } from "./routes/notebook"
+import { ProvenanceRoutes } from "./routes/provenance"
 import { ConfigRoutes } from "./routes/config"
 import { ExperimentalRoutes } from "./routes/experimental"
 import { ProviderRoutes } from "./routes/provider"
@@ -40,21 +44,23 @@ import { HTTPException } from "hono/http-exception"
 import { errors } from "./error"
 import { QuestionRoutes } from "./routes/question"
 import { PermissionRoutes } from "./routes/permission"
+import { ReviewSettingsRoutes } from "./routes/settings/review"
+import { SearchRoutes } from "./routes/search"
 import { GlobalRoutes } from "./routes/global"
 import { AccountRoutes } from "./routes/account"
 import { SettingsSkillsRoutes } from "./routes/settings/skills"
-import { MemorySettingsRoutes } from "./routes/settings/memory"
 import { NetworkSettingsRoutes } from "./routes/settings/network"
 import { CredentialsRoutes } from "./routes/settings/credentials"
 import { StorageRoutes } from "./routes/settings/storage"
 import { ComputeSettingsRoutes } from "./routes/settings/compute"
-import { RegistryPermissionsRoutes } from "./routes/settings/registry-permissions"
 import { SettingsPreferencesRoutes } from "./routes/settings/preferences"
 import { LocalModelsRoutes } from "./routes/settings/local"
 import { SandboxSettingsRoutes } from "./routes/settings/sandbox"
 import { BillingSettingsRoutes } from "./routes/settings/billing"
 import { WalletSettingsRoutes } from "./routes/settings/wallet"
 import { SettingsUsageRoutes } from "./routes/settings/usage"
+import { UpdatesSettingsRoutes } from "./routes/settings/updates"
+import { projectSelection } from "./project-selection"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -80,11 +86,23 @@ export namespace Server {
     return _server?.requestIP(req)?.address
   }
 
-  const app = new Hono()
+  const app = new Hono({ strict: false })
   export const App: () => Hono = lazy(
     () =>
       // TODO: Break server.ts into smaller route files to fix type inference
       app
+        // 404/410 and friends are cacheable by default (RFC 7231 §6.1), and a
+        // JSON body with no Cache-Control is fair game for heuristic caching
+        // too. A browser that cached one stale-project 410 for /provider then
+        // answered every later request from its own cache — the server saw no
+        // traffic at all while the app stayed broken across restarts and
+        // reloads. Applied to JSON only, so the SPA's hashed assets keep their
+        // caching.
+        .use(async (c, next) => {
+          await next()
+          if (!c.res.headers.get("content-type")?.includes("application/json")) return
+          c.res.headers.set("cache-control", "no-store")
+        })
         .onError((err, c) => {
           log.error("failed", {
             error: err,
@@ -93,6 +111,17 @@ export namespace Server {
             let status: ContentfulStatusCode
             if (err instanceof Storage.NotFoundError) status = 404
             else if (err instanceof Provider.ModelNotFoundError) status = 400
+            else if (err.name === "SessionFilesystemDeniedError") status = 403
+            else if (err.name === "SessionFilesystemInvalidPathError") status = 400
+            else if (err.name === "SessionDirectoryMismatchError" || err.name === "SessionDirectoryImmutableError")
+              status = 409
+            else if (err.name === "ProjectUnknownError") status = 404
+            else if (err.name === "ProjectStaleError") status = 410
+            else if (err.name === "ProjectMismatchError") status = 409
+            else if (err.name === "ProjectDirectoryError") status = 400
+            else if (err.name === "ProjectTrustDeniedError") status = 403
+            else if (err.name === "ProjectTrustRootMismatchError") status = 409
+            else if (err.name === "ExecutionAuthorityDeniedError") status = 403
             else if (err.name.startsWith("Worktree")) status = 400
             else status = 500
             return c.json(err.toObject(), { status })
@@ -159,12 +188,13 @@ export namespace Server {
         .route("/settings/credentials", CredentialsRoutes())
         .route("/settings/storage", StorageRoutes())
         .route("/settings/compute", ComputeSettingsRoutes())
-        .route("/settings/permissions", RegistryPermissionsRoutes())
+        .route("/settings/review", ReviewSettingsRoutes())
         .route("/settings/preferences", SettingsPreferencesRoutes())
         .route("/settings/local", LocalModelsRoutes())
         .route("/settings/sandbox", SandboxSettingsRoutes())
         .route("/settings/billing", BillingSettingsRoutes())
         .route("/settings/wallet", WalletSettingsRoutes())
+        .route("/settings/updates", UpdatesSettingsRoutes())
         .put(
           "/auth/:providerID",
           describeRoute({
@@ -196,6 +226,12 @@ export namespace Server {
             await Auth.set(providerID, info)
             // Don't depend on the client remembering to call global.sync —
             // stale provider state would keep serving the old credential.
+            // Auth.set writes the auth FILE, which no config write covers, so
+            // this call is still the one that makes the new key visible. (When
+            // it also flips billing.llm managed -> byok, Config's global write
+            // has already invalidated before announcing the disposal — see
+            // disposeGlobalInstances — so the SPA refetch that event triggers
+            // cannot beat us to a stale re-memoisation.)
             Provider.invalidate()
             return c.json(true)
           },
@@ -231,25 +267,28 @@ export namespace Server {
             return c.json(true)
           },
         )
-        // Folder-resolve endpoints are filesystem-global (no project Instance
-        // needed), so mount before the Instance.provide wrapper below.
+        // Folder picker discovery remains filesystem-global; path validation
+        // resolves project capabilities inside the route when one is supplied.
         .route("/api/resolve-folder", FolderResolveRoutes())
-        // Atlas graph bridge — proxies /api/thesis/* to the Atlas REST API
+        // Atlas graph bridge — proxies /api/atlas/* to the Atlas REST API
         // using the user's stored thk_ key (see routes/atlas-bridge.ts).
-        .route("/api/thesis", AtlasBridgeRoutes())
+        .route("/api/atlas", AtlasBridgeRoutes())
         // Repository tab (status/commit/push/remote) — shells out to git.
         .route("/api/repo", RepoRoutes())
         .use(async (c, next) => {
-          let directory = c.req.query("directory") || c.req.header("x-openscience-directory") || process.cwd()
-          try {
-            directory = decodeURIComponent(directory)
-          } catch {
-            // fallback to original value
-          }
+          const selected = await projectSelection(c)
+          if (selected.selector) await Project.assertDirectory(selected.selector)
+          const directory = selected.directory ?? process.cwd()
           return Instance.provide({
             directory,
             init: InstanceBootstrap,
             async fn() {
+              if (selected.project && Instance.project.id !== selected.project.id) {
+                throw new Project.MismatchError({
+                  projectID: selected.project.id,
+                  directory: Instance.directory,
+                })
+              }
               return next()
             },
           })
@@ -273,13 +312,15 @@ export namespace Server {
         .route("/config", ConfigRoutes())
         .route("/experimental", ExperimentalRoutes())
         .route("/session", SessionRoutes())
+        .route("/search", SearchRoutes())
         .route("/permission", PermissionRoutes())
         .route("/question", QuestionRoutes())
         .route("/provider", ProviderRoutes())
         .route("/", FileRoutes())
+        .route("/notebook", NotebookRoutes())
+        .route("/provenance", ProvenanceRoutes())
         .route("/mcp", McpRoutes())
         .route("/settings/skills", SettingsSkillsRoutes())
-        .route("/settings/memory", MemorySettingsRoutes())
         .route("/settings/network", NetworkSettingsRoutes())
         .route("/settings/usage", SettingsUsageRoutes())
         .post(
@@ -633,16 +674,18 @@ export namespace Server {
           },
         )
         .all("/*", async (c) => {
-          const csp =
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; media-src 'self' data:; connect-src 'self' data: https://syntheticsciences.ai https://*.syntheticsciences.ai; object-src 'self' data: blob:; frame-src 'self' blob:"
-
           // Unmatched /api/* must 404 — never SPA-fallback (the SPA would
           // try to JSON.parse `<!doctype`) and never proxy upstream.
           if (c.req.path.startsWith("/api/")) return c.notFound()
 
+          if (wantsJson(c.req.header("accept") ?? null, c.req.header("content-type") ?? null)) {
+            log.warn("unmatched API-shaped request", { method: c.req.method, path: c.req.path })
+            return c.json({ error: "not_found", path: c.req.path }, 404)
+          }
+
           const local = await serveWebAsset(c)
           if (local) {
-            local.headers.set("Content-Security-Policy", csp)
+            local.headers.set("Content-Security-Policy", webAssetContentSecurityPolicy(c.req.path))
             return local
           }
           return c.notFound()

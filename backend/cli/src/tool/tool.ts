@@ -3,6 +3,8 @@ import type { MessageV2 } from "../session/message-v2"
 import type { Agent } from "../agent/agent"
 import type { PermissionNext } from "../permission/next"
 import { Truncate } from "./truncation"
+import { PlanMode } from "./plan-mode"
+import { SearchDedupe } from "@/session/search-dedupe"
 
 export namespace Tool {
   interface Metadata {
@@ -55,6 +57,7 @@ export namespace Tool {
         const toolInfo = init instanceof Function ? await init(initCtx) : init
         const execute = toolInfo.execute
         toolInfo.execute = async (args, ctx) => {
+          PlanMode.enforce(id, ctx.agent)
           try {
             toolInfo.parameters.parse(args)
           } catch (error) {
@@ -66,6 +69,8 @@ export namespace Tool {
               { cause: error },
             )
           }
+          const cached = SearchDedupe.find(ctx.messages, id, args)
+          if (cached) return SearchDedupe.reuse(cached) as unknown as Awaited<ReturnType<typeof execute>>
           const result = await execute(args, ctx)
           // skip truncation for tools that handle it themselves
           if (result.metadata.truncated !== undefined) {

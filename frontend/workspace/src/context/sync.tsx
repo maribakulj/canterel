@@ -18,7 +18,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     type Child = ReturnType<(typeof globalSync)["child"]>
     type Setter = Child[1]
 
-    const current = createMemo(() => globalSync.child(sdk.directory))
+    const child = () => globalSync.child(sdk.directory, { projectID: sdk.projectID })
+    const current = createMemo(child)
     const absolute = (path: string) => (current()[0].path.directory + "/" + path).replace("//", "/")
     const chunk = 400
     const inflight = new Map<string, Promise<void>>()
@@ -134,9 +135,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           )
         },
         async sync(sessionID: string) {
-          const directory = sdk.directory
+          const directory = sdk.scope
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = child()
           const key = keyFor(directory, sessionID)
           const hasSession = (() => {
             const match = Binary.search(store.session, sessionID, (s) => s.id)
@@ -191,9 +192,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return promise
         },
         async diff(sessionID: string) {
-          const directory = sdk.directory
+          const directory = sdk.scope
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = child()
           if (store.session_diff[sessionID] !== undefined) return
 
           const key = keyFor(directory, sessionID)
@@ -213,7 +214,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async revert(sessionID: string, messageID: string) {
           const client = sdk.client
-          const [, setStore] = globalSync.child(sdk.directory)
+          const [, setStore] = child()
           const res = await client.session.revert({ sessionID, messageID })
           if (res.data)
             setStore(
@@ -230,7 +231,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async unrevert(sessionID: string) {
           const client = sdk.client
-          const [, setStore] = globalSync.child(sdk.directory)
+          const [, setStore] = child()
           const res = await client.session.unrevert({ sessionID })
           if (res.data)
             setStore(
@@ -246,9 +247,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("session_diff", sessionID, reconcile(next, { key: "file" }))
         },
         async todo(sessionID: string) {
-          const directory = sdk.directory
+          const directory = sdk.scope
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = child()
           if (store.todo[sessionID] !== undefined) return
 
           const key = keyFor(directory, sessionID)
@@ -269,20 +270,20 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         history: {
           more(sessionID: string) {
             const store = current()[0]
-            const key = keyFor(sdk.directory, sessionID)
+            const key = keyFor(sdk.scope, sessionID)
             if (store.message[sessionID] === undefined) return false
             if (meta.limit[key] === undefined) return false
             if (meta.complete[key]) return false
             return true
           },
           loading(sessionID: string) {
-            const key = keyFor(sdk.directory, sessionID)
+            const key = keyFor(sdk.scope, sessionID)
             return meta.loading[key] ?? false
           },
           async loadMore(sessionID: string, count = chunk) {
-            const directory = sdk.directory
+            const directory = sdk.scope
             const client = sdk.client
-            const [, setStore] = globalSync.child(directory)
+            const [, setStore] = child()
             const key = keyFor(directory, sessionID)
             if (meta.loading[key]) return
             if (meta.complete[key]) return
@@ -298,9 +299,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           },
         },
         fetch: async (count = 10) => {
-          const directory = sdk.directory
           const client = sdk.client
-          const [store, setStore] = globalSync.child(directory)
+          const [store, setStore] = child()
           setStore("limit", (x) => x + count)
           await client.session.list().then((x) => {
             const sessions = (x.data ?? [])
@@ -312,9 +312,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         more: createMemo(() => current()[0].session.length >= current()[0].limit),
         archive: async (sessionID: string) => {
-          const directory = sdk.directory
           const client = sdk.client
-          const [, setStore] = globalSync.child(directory)
+          const [, setStore] = child()
           await client.session.update({ sessionID, time: { archived: Date.now() } })
           setStore(
             produce((draft) => {
@@ -323,10 +322,32 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }),
           )
         },
-        rename: async (sessionID: string, title: string) => {
-          const directory = sdk.directory
+        pin: async (sessionID: string, pinned: boolean) => {
           const client = sdk.client
-          const [, setStore] = globalSync.child(directory)
+          const [, setStore] = child()
+          const value = pinned ? Date.now() : 0
+          const previous: { value?: number } = {}
+          setStore(
+            produce((draft) => {
+              const match = Binary.search(draft.session, sessionID, (session) => session.id)
+              if (!match.found) return
+              previous.value = draft.session[match.index].time.pinned
+              draft.session[match.index].time.pinned = value || undefined
+            }),
+          )
+          await client.session.update({ sessionID, time: { pinned: value } }).catch((error) => {
+            setStore(
+              produce((draft) => {
+                const match = Binary.search(draft.session, sessionID, (session) => session.id)
+                if (match.found) draft.session[match.index].time.pinned = previous.value
+              }),
+            )
+            throw error
+          })
+        },
+        rename: async (sessionID: string, title: string) => {
+          const client = sdk.client
+          const [, setStore] = child()
           // Optimistically retitle in place so the row renames instantly; if the
           // backend rejects it we roll the title back so the UI stays honest.
           let prev: string | undefined
@@ -352,9 +373,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           }
         },
         delete: async (sessionID: string) => {
-          const directory = sdk.directory
           const client = sdk.client
-          const [, setStore] = globalSync.child(directory)
+          const [, setStore] = child()
           // Optimistically remove from the per-directory store. If the
           // backend call rejects we re-add it so the UI stays honest.
           let snapshot: any

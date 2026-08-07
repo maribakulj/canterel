@@ -50,15 +50,17 @@ await $`bun install`
 await import(`../sdk/js/script/build.ts`)
 
 if (Script.release) {
-  await $`git commit -am "release: v${Script.version}"`.nothrow()
-  await $`git tag v${Script.version}`.nothrow()
-  // Tags are exempt from branch protection; push the tag on its own so the
-  // release assets and npm publishes can proceed regardless of what happens
-  // to the branch push below.
-  const tagPush = await $`git push origin refs/tags/v${Script.version} --no-verify`.nothrow()
-  if (tagPush.exitCode !== 0) {
-    console.warn(`::warning::tag push failed for v${Script.version} (already pushed?)`)
+  const commit = await $`git commit -am "release: v${Script.version}"`.nothrow()
+  if (commit.exitCode !== 0) {
+    console.warn(`::warning::release commit failed or had no changes for v${Script.version}`)
   }
+  const sha = await $`git rev-parse HEAD`.text().then((x) => x.trim())
+  await $`git tag -f v${Script.version} ${sha}`
+  // Tags are exempt from branch protection; push the tag on its own so the
+  // release commit exists on GitHub before the draft release targets its SHA.
+  // GitHub rejects a local-only target_commitish with HTTP 422.
+  await $`git push origin refs/tags/v${Script.version} --force --no-verify`
+  await $`gh release edit v${Script.version} --target ${sha}`
   // Branch protection rejects direct pushes to main, and the old .nothrow()
   // swallowed that — every release left its version-bump commit orphaned and
   // main's package versions permanently stale. Try the direct push (works if
@@ -105,10 +107,6 @@ try {
 console.log("\n=== launcher (openscience) ===\n")
 try {
   const launcherDir = new URL("../launcher", import.meta.url).pathname
-  // Pin @synsci/openscience dependency to the version being published.
-  // Defensive: initialize `dependencies` if the launcher's package.json
-  // was authored without it — happened on the v1.1.117 publish (broken
-  // launcher step). Empty object is fine since we only need the pin.
   const launcherPkg = await Bun.file(`${launcherDir}/package.json`).json()
   // Keep the launcher version in lockstep with the just-released @synsci/openscience.
   // Without this, each subsequent publish would npm-error with "cannot
@@ -136,6 +134,11 @@ try {
     // chase (`npm owner add <token-user> synsci`), not a broken release —
     // every other package shipped, so warn loudly instead of failing.
     if (stderr.includes("E403") || stderr.includes("do not have permission")) {
+      if (process.env.OPENSCIENCE_REQUIRE_LAUNCHER_PUBLISH === "true") {
+        throw new Error(
+          "npm token's account is not an owner of the 'synsci' package; refusing to pass the test publish without launcher coverage",
+        )
+      }
       // A GitHub Actions annotation, so this shows on the run summary
       // instead of being a log line nobody reads on a green run.
       console.warn(

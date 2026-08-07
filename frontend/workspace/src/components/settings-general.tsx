@@ -7,7 +7,7 @@ import { useTheme, type ColorScheme } from "@synsci/ui/theme"
 import { showToast } from "@synsci/ui/toast"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
-import { useSettings, monoFontFamily } from "@/context/settings"
+import { useSettings } from "@/context/settings"
 import { playSound, SOUND_OPTIONS } from "@/utils/sound"
 import { URLS } from "@/config/urls"
 import { Link } from "./link"
@@ -133,22 +133,6 @@ export const AppearanceSections: Component = () => {
     })),
   )
 
-  const fontOptions = [
-    { value: "ibm-plex-mono", label: "font.option.ibmPlexMono" },
-    { value: "cascadia-code", label: "font.option.cascadiaCode" },
-    { value: "fira-code", label: "font.option.firaCode" },
-    { value: "hack", label: "font.option.hack" },
-    { value: "inconsolata", label: "font.option.inconsolata" },
-    { value: "intel-one-mono", label: "font.option.intelOneMono" },
-    { value: "iosevka", label: "font.option.iosevka" },
-    { value: "jetbrains-mono", label: "font.option.jetbrainsMono" },
-    { value: "meslo-lgs", label: "font.option.mesloLgs" },
-    { value: "roboto-mono", label: "font.option.robotoMono" },
-    { value: "source-code-pro", label: "font.option.sourceCodePro" },
-    { value: "ubuntu-mono", label: "font.option.ubuntuMono" },
-  ] as const
-  const fontOptionsList = [...fontOptions]
-
   const soundOptions = [...SOUND_OPTIONS]
 
   return (
@@ -163,6 +147,7 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.row.language.description")}
           >
             <Select
+              aria-label={language.t("settings.general.row.language.title")}
               options={languageOptions()}
               current={languageOptions().find((o) => o.value === language.locale())}
               value={(o) => o.value}
@@ -216,6 +201,7 @@ export const AppearanceSections: Component = () => {
             {(swatch) => (
               <button
                 type="button"
+                aria-label={`Use ${swatch.name} theme (${swatch.id})`}
                 class="group flex flex-col gap-2 p-2 rounded-[4px] text-left transition-all"
                 style={{
                   border:
@@ -266,9 +252,12 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.layout.showChanges.description")}
           >
             <Switch
+              hideLabel
               checked={settings.ui.showChangesView()}
               onChange={(checked) => settings.ui.setShowChangesView(checked)}
-            />
+            >
+              {language.t("settings.general.layout.showChanges.title")}
+            </Switch>
           </SettingsRow>
         </div>
       </div>
@@ -285,9 +274,12 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.notifications.agent.description")}
           >
             <Switch
+              hideLabel
               checked={settings.notifications.agent()}
               onChange={(checked) => settings.notifications.setAgent(checked)}
-            />
+            >
+              {language.t("settings.general.notifications.agent.title")}
+            </Switch>
           </SettingsRow>
 
           <SettingsRow
@@ -295,9 +287,12 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.notifications.permissions.description")}
           >
             <Switch
+              hideLabel
               checked={settings.notifications.permissions()}
               onChange={(checked) => settings.notifications.setPermissions(checked)}
-            />
+            >
+              {language.t("settings.general.notifications.permissions.title")}
+            </Switch>
           </SettingsRow>
 
           <SettingsRow
@@ -305,9 +300,12 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.notifications.errors.description")}
           >
             <Switch
+              hideLabel
               checked={settings.notifications.errors()}
               onChange={(checked) => settings.notifications.setErrors(checked)}
-            />
+            >
+              {language.t("settings.general.notifications.errors.title")}
+            </Switch>
           </SettingsRow>
         </div>
       </div>
@@ -324,6 +322,7 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.sounds.agent.description")}
           >
             <Select
+              aria-label={language.t("settings.general.sounds.agent.title")}
               options={soundOptions}
               current={soundOptions.find((o) => o.id === settings.sounds.agent())}
               value={(o) => o.id}
@@ -348,6 +347,7 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.sounds.permissions.description")}
           >
             <Select
+              aria-label={language.t("settings.general.sounds.permissions.title")}
               options={soundOptions}
               current={soundOptions.find((o) => o.id === settings.sounds.permissions())}
               value={(o) => o.id}
@@ -372,6 +372,7 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.general.sounds.errors.description")}
           >
             <Select
+              aria-label={language.t("settings.general.sounds.errors.title")}
               options={soundOptions}
               current={soundOptions.find((o) => o.id === settings.sounds.errors())}
               value={(o) => o.id}
@@ -405,20 +406,31 @@ export const AppearanceSections: Component = () => {
             description={language.t("settings.updates.row.startup.description")}
           >
             <Switch
+              hideLabel
               checked={settings.updates.startup()}
               disabled={!platform.checkUpdate}
               onChange={(checked) => settings.updates.setStartup(checked)}
-            />
+            >
+              {language.t("settings.updates.row.startup.title")}
+            </Switch>
           </SettingsRow>
 
           <SettingsRow
             title={language.t("settings.general.row.releaseNotes.title")}
             description={language.t("settings.general.row.releaseNotes.description")}
           >
-            <Switch
-              checked={settings.general.releaseNotes()}
-              onChange={(checked) => settings.general.setReleaseNotes(checked)}
-            />
+            <div class="flex items-center gap-2">
+              <Button size="small" variant="secondary" onClick={() => platform.openLink(URLS.releases)}>
+                view notes
+              </Button>
+              <Switch
+                hideLabel
+                checked={settings.general.releaseNotes()}
+                onChange={(checked) => settings.general.setReleaseNotes(checked)}
+              >
+                {language.t("settings.general.row.releaseNotes.title")}
+              </Switch>
+            </div>
           </SettingsRow>
 
           <SettingsRow

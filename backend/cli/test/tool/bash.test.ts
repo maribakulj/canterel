@@ -2,19 +2,23 @@ import { describe, expect, test } from "bun:test"
 import path from "path"
 import { BashTool } from "../../src/tool/bash"
 import { Instance } from "../../src/project/instance"
-import { tmpdir } from "../fixture/fixture"
+import { executionSession, tmpdir } from "../fixture/fixture"
 import type { PermissionNext } from "../../src/permission/next"
 import { Truncate } from "../../src/tool/truncation"
+import { SessionFilesystem } from "../../src/session/filesystem"
 
-const ctx = {
-  sessionID: "test",
-  messageID: "",
-  callID: "",
-  agent: "research",
-  abort: AbortSignal.any([]),
-  messages: [],
-  metadata: () => {},
-  ask: async () => {},
+async function context() {
+  const session = await executionSession()
+  return {
+    sessionID: session.id,
+    messageID: "",
+    callID: "",
+    agent: "research",
+    abort: AbortSignal.any([]),
+    messages: [],
+    metadata: () => {},
+    ask: async () => {},
+  }
 }
 
 const projectRoot = path.join(__dirname, "../..")
@@ -30,7 +34,7 @@ describe("tool.bash", () => {
             command: "echo 'test'",
             description: "Echo test message",
           },
-          ctx,
+          await context(),
         )
         expect(result.metadata.exit).toBe(0)
         expect(result.metadata.output).toContain("test")
@@ -48,7 +52,7 @@ describe("tool.bash permissions", () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
         const testCtx = {
-          ...ctx,
+          ...(await context()),
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
           },
@@ -75,7 +79,7 @@ describe("tool.bash permissions", () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
         const testCtx = {
-          ...ctx,
+          ...(await context()),
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
           },
@@ -102,10 +106,20 @@ describe("tool.bash permissions", () => {
       fn: async () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
+        const base = await context()
         const testCtx = {
-          ...ctx,
+          ...base,
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
+            const filesystem = req.metadata.filesystem
+            if (!filesystem) return
+            await SessionFilesystem.grant({
+              sessionID: base.sessionID,
+              path: filesystem.path,
+              access: filesystem.access,
+              scope: "session",
+              source: "permission",
+            })
           },
         }
         await bash.execute(
@@ -121,7 +135,7 @@ describe("tool.bash permissions", () => {
     })
   })
 
-  test("asks for external_directory permission when workdir is outside project", async () => {
+  test("rejects an external workdir instead of mounting it into the shell", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({
       directory: tmp.path,
@@ -129,22 +143,23 @@ describe("tool.bash permissions", () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
         const testCtx = {
-          ...ctx,
+          ...(await context()),
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
           },
         }
-        await bash.execute(
-          {
-            command: "ls",
-            workdir: "/tmp",
-            description: "List /tmp",
-          },
-          testCtx,
-        )
+        await expect(
+          bash.execute(
+            {
+              command: "ls",
+              workdir: "/tmp",
+              description: "List /tmp",
+            },
+            testCtx,
+          ),
+        ).rejects.toThrow("External paths are read-only to shell commands")
         const extDirReq = requests.find((r) => r.permission === "external_directory")
-        expect(extDirReq).toBeDefined()
-        expect(extDirReq!.patterns).toContain("/tmp")
+        expect(extDirReq).toBeUndefined()
       },
     })
   })
@@ -157,7 +172,7 @@ describe("tool.bash permissions", () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
         const testCtx = {
-          ...ctx,
+          ...(await context()),
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
           },
@@ -187,7 +202,7 @@ describe("tool.bash permissions", () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
         const testCtx = {
-          ...ctx,
+          ...(await context()),
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
           },
@@ -214,7 +229,7 @@ describe("tool.bash permissions", () => {
         const bash = await BashTool.init()
         const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
         const testCtx = {
-          ...ctx,
+          ...(await context()),
           ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
             requests.push(req)
           },
@@ -245,7 +260,7 @@ describe("tool.bash truncation", () => {
             command: `seq 1 ${lineCount}`,
             description: "Generate lines exceeding limit",
           },
-          ctx,
+          await context(),
         )
         expect((result.metadata as any).truncated).toBe(true)
         expect(result.output).toContain("truncated")
@@ -265,7 +280,7 @@ describe("tool.bash truncation", () => {
             command: `head -c ${byteCount} /dev/zero | tr '\\0' 'a'`,
             description: "Generate bytes exceeding limit",
           },
-          ctx,
+          await context(),
         )
         expect((result.metadata as any).truncated).toBe(true)
         expect(result.output).toContain("truncated")
@@ -284,7 +299,7 @@ describe("tool.bash truncation", () => {
             command: "echo hello",
             description: "Echo hello",
           },
-          ctx,
+          await context(),
         )
         expect((result.metadata as any).truncated).toBe(false)
         expect(result.output).toBe("hello\n")
@@ -303,7 +318,7 @@ describe("tool.bash truncation", () => {
             command: `seq 1 ${lineCount}`,
             description: "Generate lines for file check",
           },
-          ctx,
+          await context(),
         )
         expect((result.metadata as any).truncated).toBe(true)
 

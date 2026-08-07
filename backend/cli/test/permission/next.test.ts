@@ -566,7 +566,7 @@ test("reply - reject throws RejectedError", async () => {
   })
 })
 
-test("reply - always persists approval and resolves", async () => {
+test("reply - always persists a global approval and resolves", async () => {
   await using tmp = await tmpdir({ git: true })
   await Instance.provide({
     directory: tmp.path,
@@ -587,6 +587,12 @@ test("reply - always persists approval and resolves", async () => {
       })
 
       await expect(askPromise).resolves.toBeUndefined()
+
+      const standing = await PermissionNext.standing()
+      expect(standing).toHaveLength(1)
+      expect(standing[0].permission).toBe("bash")
+      expect(standing[0].pattern).toBe("ls")
+      expect(standing[0].scope).toBe("global")
     },
   })
   // Re-provide to reload state with stored permissions
@@ -603,6 +609,242 @@ test("reply - always persists approval and resolves", async () => {
         ruleset: [],
       })
       expect(result).toBeUndefined()
+      // Clean up the machine-scoped entry so it cannot leak into other tests.
+      for (const entry of await PermissionNext.standing()) {
+        expect(await PermissionNext.revoke({ id: entry.id })).toBe(true)
+      }
+      expect(await PermissionNext.standing()).toHaveLength(0)
+    },
+  })
+})
+
+test("reply - project persists for the project and is revocable", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const askPromise = PermissionNext.ask({
+        id: "permission_scope1",
+        sessionID: "session_test",
+        permission: "bash",
+        patterns: ["git status"],
+        metadata: {},
+        always: ["git *"],
+        ruleset: [],
+      })
+      await PermissionNext.reply({ requestID: "permission_scope1", reply: "project" })
+      await expect(askPromise).resolves.toBeUndefined()
+
+      const standing = await PermissionNext.standing()
+      expect(standing).toHaveLength(1)
+      expect(standing[0].scope).toBe("project")
+
+      // Another session in the same project inherits the approval.
+      const result = await PermissionNext.ask({
+        sessionID: "session_other",
+        permission: "bash",
+        patterns: ["git log"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      })
+      expect(result).toBeUndefined()
+
+      // After revocation, the same request asks again.
+      expect(await PermissionNext.revoke({ id: standing[0].id })).toBe(true)
+      const again = PermissionNext.ask({
+        id: "permission_scope2",
+        sessionID: "session_other",
+        permission: "bash",
+        patterns: ["git log"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      })
+      expect(again).toBeInstanceOf(Promise)
+      await PermissionNext.reply({ requestID: "permission_scope2", reply: "reject" })
+      await expect(again).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+    },
+  })
+  // A different project does not inherit project-scoped approvals.
+  await using other = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: other.path,
+    fn: async () => {
+      const foreign = PermissionNext.ask({
+        id: "permission_scope3",
+        sessionID: "session_test",
+        permission: "bash",
+        patterns: ["git status"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      })
+      expect(foreign).toBeInstanceOf(Promise)
+      await PermissionNext.reply({ requestID: "permission_scope3", reply: "reject" })
+      await expect(foreign).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+    },
+  })
+})
+
+test("reply - session approval covers only the same conversation", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const askPromise = PermissionNext.ask({
+        id: "permission_conv1",
+        sessionID: "session_a",
+        permission: "webfetch",
+        patterns: ["https://example.com/data"],
+        metadata: {},
+        always: ["https://example.com/*"],
+        ruleset: [],
+      })
+      await PermissionNext.reply({ requestID: "permission_conv1", reply: "session" })
+      await expect(askPromise).resolves.toBeUndefined()
+
+      // Session approvals are conversation-local, never persisted.
+      expect(await PermissionNext.standing()).toHaveLength(0)
+
+      // Same session: allowed without asking.
+      const same = await PermissionNext.ask({
+        sessionID: "session_a",
+        permission: "webfetch",
+        patterns: ["https://example.com/other"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      })
+      expect(same).toBeUndefined()
+
+      // Different session: asks again.
+      const different = PermissionNext.ask({
+        id: "permission_conv2",
+        sessionID: "session_b",
+        permission: "webfetch",
+        patterns: ["https://example.com/other"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      })
+      expect(different).toBeInstanceOf(Promise)
+      await PermissionNext.reply({ requestID: "permission_conv2", reply: "reject" })
+      await expect(different).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+    },
+  })
+})
+
+test("reply - always on a network request lands in the network allow-list", async () => {
+  const { Network } = await import("../../src/settings/network")
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const askPromise = PermissionNext.ask({
+        id: "permission_net1",
+        sessionID: "session_test",
+        permission: "network",
+        patterns: ["blocked.example"],
+        metadata: { url: "https://blocked.example/data", network: { host: "blocked.example" } },
+        always: ["blocked.example"],
+        ruleset: [],
+      })
+      await PermissionNext.reply({ requestID: "permission_net1", reply: "always" })
+      await expect(askPromise).resolves.toBeUndefined()
+
+      // The grant is visible in the Network settings store, not a shadow list.
+      expect((await Network.get()).custom).toContain("blocked.example")
+      expect(await PermissionNext.standing()).toHaveLength(0)
+
+      const state = await Network.get()
+      await Network.set({ ...state, custom: state.custom.filter((domain) => domain !== "blocked.example") })
+    },
+  })
+})
+
+test("ask - spend permissions ignore wildcard allows", async () => {
+  await using tmp = await tmpdir({ git: true })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      // A blanket "*": allow ruleset must not silently allow paid actions.
+      const paid = PermissionNext.ask({
+        id: "permission_spend1",
+        sessionID: "session_test",
+        permission: "websearch",
+        patterns: ["some query"],
+        metadata: {},
+        always: ["*"],
+        ruleset: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      expect(paid).toBeInstanceOf(Promise)
+      await PermissionNext.reply({ requestID: "permission_spend1", reply: "reject" })
+      await expect(paid).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+
+      const modal = PermissionNext.ask({
+        id: "permission_spend_modal",
+        sessionID: "session_modal",
+        permission: "modal",
+        patterns: ["approved-plan-digest"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      expect(modal).toBeInstanceOf(Promise)
+      await PermissionNext.reply({ requestID: "permission_spend_modal", reply: "reject" })
+      await expect(modal).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+
+      for (const [index, permission] of ["**", "?*", "mod*"].entries()) {
+        const requestID = `permission_spend_glob_${index}`
+        const shaped = PermissionNext.ask({
+          id: requestID,
+          sessionID: "session_modal_glob",
+          permission: "modal",
+          patterns: ["approved-plan-digest"],
+          metadata: {},
+          always: [],
+          ruleset: [{ permission, pattern: "*", action: "allow" }],
+        })
+        expect(shaped).toBeInstanceOf(Promise)
+        await PermissionNext.reply({ requestID, reply: "reject" })
+        await expect(shaped).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+      }
+
+      const exactModal = PermissionNext.ask({
+        id: "permission_spend_modal_exact",
+        sessionID: "session_modal_exact",
+        permission: "modal",
+        patterns: ["approved-plan-digest"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "modal", pattern: "*", action: "allow" }],
+      })
+      expect(exactModal).toBeInstanceOf(Promise)
+      await PermissionNext.reply({ requestID: "permission_spend_modal_exact", reply: "reject" })
+      await expect(exactModal).rejects.toBeInstanceOf(PermissionNext.RejectedError)
+
+      // Other spend permissions may still opt into explicit standing rules.
+      const explicit = await PermissionNext.ask({
+        sessionID: "session_test2",
+        permission: "websearch",
+        patterns: ["some query"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "websearch", pattern: "*", action: "allow" }],
+      })
+      expect(explicit).toBeUndefined()
+
+      // Non-spend permissions keep inheriting the wildcard allow.
+      const free = await PermissionNext.ask({
+        sessionID: "session_test3",
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      expect(free).toBeUndefined()
     },
   })
 })

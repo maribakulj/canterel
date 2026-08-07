@@ -176,6 +176,33 @@ describe("session.message-v2.fromError", () => {
     const result = MessageV2.fromError(error, { providerID: "openai" }) as MessageV2.APIError
     expect(result.data.isRetryable).toBe(true)
   })
+
+  test("explains Muse Spark's United States availability restriction", () => {
+    const error = new APICallError({
+      message: "Provider returned error",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      requestBodyValues: {},
+      statusCode: 403,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: JSON.stringify({
+        error: {
+          message: "Provider returned error",
+          code: 403,
+          metadata: {
+            raw: "This model is only available in the United States.",
+            provider_name: "Meta",
+          },
+        },
+      }),
+      isRetryable: false,
+    })
+
+    const result = MessageV2.fromError(error, { providerID: "openrouter" }) as MessageV2.APIError
+    expect(result.data.message).toBe(
+      "Muse Spark 1.1 is currently restricted by Meta to requests routed from the United States. Choose another model, or retry from a supported U.S. region.",
+    )
+    expect(result.data.isRetryable).toBe(false)
+  })
 })
 
 describe("SessionRetry.isContextOverflow", () => {

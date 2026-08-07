@@ -2,11 +2,17 @@ import z from "zod"
 import { Tool } from "./tool"
 import { Provenance } from "../science/provenance/store"
 import { Review } from "../science/provenance/review"
+import { Instance } from "../project/instance"
 
 /**
  * Agent-facing tools over the provenance DAG. Let the model record what it
  * produced and audit the lineage of any artifact/claim later.
  */
+
+const scope = () => ({
+  projectID: Instance.project.id,
+  directory: Instance.directory,
+})
 
 export const ProvenanceRecordTool = Tool.define("provenance_record", {
   description: [
@@ -30,17 +36,28 @@ export const ProvenanceRecordTool = Tool.define("provenance_record", {
       .describe("Optional id of a parent node this was derived from (creates a 'derived-from' edge)"),
   }),
   async execute(params, ctx) {
-    const node = await Provenance.record({
+    if (params.derived_from) {
+      const graph = await Provenance.project(scope())
+      if (!graph.nodes.some((node) => node.id === params.derived_from)) {
+        throw new Error(`Provenance node ${params.derived_from} is not part of this project`)
+      }
+    }
+    const node = await Provenance.recordOwned(scope(), {
       kind: params.kind,
       label: params.label,
       ...(params.artifact_type ? { artifactType: params.artifact_type } : {}),
       ...(params.path ? { path: params.path } : {}),
       ...(params.tool ? { tool: params.tool } : {}),
-      meta: { sessionID: ctx.sessionID, ...params.meta },
+      meta: {
+        ...params.meta,
+        sessionID: ctx.sessionID,
+        directory: Instance.directory,
+        projectID: Instance.project.id,
+      },
     } as Parameters<typeof Provenance.record>[0])
 
     if (params.derived_from) {
-      await Provenance.link({ from: node.id, to: params.derived_from, relation: "derived-from" })
+      await Provenance.linkOwned(scope(), { from: node.id, to: params.derived_from, relation: "derived-from" })
     }
 
     return {
@@ -68,8 +85,9 @@ export const ProvenanceQueryTool = Tool.define("provenance_query", {
     id: z.string().optional().describe("Node id to trace lineage for. Omit to list everything."),
   }),
   async execute(params, _ctx) {
+    const graph = await Provenance.project(scope())
     if (!params.id) {
-      const nodes = await Provenance.list()
+      const nodes = graph.nodes
       if (!nodes.length) {
         return { title: "Provenance", output: "No provenance nodes recorded yet.", metadata: { count: 0, edges: 0 } }
       }
@@ -81,10 +99,23 @@ export const ProvenanceQueryTool = Tool.define("provenance_query", {
       }
     }
 
-    const { nodes, edges } = await Provenance.query(params.id)
-    if (!nodes.length) {
+    if (!graph.nodes.some((node) => node.id === params.id)) {
       return { title: "Provenance", output: `No node "${params.id}".`, metadata: { count: 0, edges: 0 } }
     }
+    const connected = new Set([params.id])
+    const queue = [params.id]
+    while (queue.length) {
+      const current = queue.shift()!
+      for (const edge of graph.edges) {
+        if (edge.from !== current && edge.to !== current) continue
+        const next = edge.from === current ? edge.to : edge.from
+        if (connected.has(next)) continue
+        connected.add(next)
+        queue.push(next)
+      }
+    }
+    const nodes = graph.nodes.filter((node) => connected.has(node.id))
+    const edges = graph.edges.filter((edge) => connected.has(edge.from) && connected.has(edge.to))
     const nodeRows = nodes.map((n) => `- **${n.id}** [${n.kind}] ${n.label}`)
     const edgeRows = edges.map((e) => `- ${e.from} --${e.relation}--> ${e.to}`)
     return {
@@ -127,6 +158,10 @@ export const ProvenanceReviewTool = Tool.define("provenance_review", {
       .describe("'refutes' flags a defect (default); 'supports' records a verified-sound check"),
   }),
   async execute(params, ctx) {
+    const graph = await Provenance.project(scope())
+    if (!graph.nodes.some((node) => node.id === params.target)) {
+      throw new Error(`Provenance node ${params.target} is not part of this project`)
+    }
     const { node, relation } = await Review.record({
       target: params.target,
       finding: {
@@ -138,6 +173,10 @@ export const ProvenanceReviewTool = Tool.define("provenance_review", {
       verdict: params.verdict,
       reviewer: ctx.agent,
       sessionID: ctx.sessionID,
+      messageID: ctx.messageID,
+      callID: ctx.callID,
+      projectID: Instance.project.id,
+      directory: Instance.directory,
     })
     return {
       title: `Review ${relation}: ${node.id}`,

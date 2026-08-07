@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { getJSON, getText, request, clearCache, resetRateLimits, orFallback } from "../../src/science/connectors/http"
+import { Network } from "../../src/settings/network"
 
 // The shared http helper is the ONLY reliability layer under science/connectors,
 // yet had zero tests. These stub globalThis.fetch to exercise retry/backoff, the
@@ -12,8 +13,9 @@ beforeEach(() => {
   resetRateLimits()
 })
 
-afterEach(() => {
+afterEach(async () => {
   globalThis.fetch = realFetch
+  await Network.set({ allowlistEnabled: false, enabled: ["package-management"], custom: [] })
 })
 
 describe("http retry / backoff", () => {
@@ -108,6 +110,21 @@ describe("http content negotiation", () => {
 
     await getJSON("https://accept.test/json")
     expect(seen.accept).toBe("application/json")
+  })
+})
+
+describe("http network allow-list", () => {
+  test("blocks disallowed hosts before fetch", async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response("ok", { status: 200 })
+    }) as unknown as typeof fetch
+
+    await Network.set({ allowlistEnabled: true, enabled: [], custom: ["allowed.test"] })
+
+    await expect(getText("https://blocked.test/a")).rejects.toThrow("allow-list")
+    expect(calls).toBe(0)
   })
 })
 

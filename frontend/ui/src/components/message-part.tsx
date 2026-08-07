@@ -53,6 +53,9 @@ import { createAutoScroll } from "../hooks"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { NotebookView, type NotebookCellProps } from "./notebook-cell"
 import { skillName, stripRedactedReasoning } from "./tool-display"
+import { ToolRegistry } from "./tool-registry"
+
+export { ARTIFACT_TOOL, ToolRegistry, type ToolComponent, type ToolProps } from "./tool-registry"
 
 interface Diagnostic {
   range: {
@@ -93,6 +96,88 @@ function DiagnosticsDisplay(props: { diagnostics: Diagnostic[] }): JSX.Element {
   )
 }
 
+type PermissionReply = "once" | "session" | "project" | "always" | "reject"
+
+/** The approval card under a tool awaiting permission. States exactly what is
+ *  being granted (access level and target) when the request carries scoped
+ *  metadata; "Allow for…" swaps the row to the three standing scopes so every
+ *  option stays a plain button. */
+function PermissionActions(props: { respond: (response: PermissionReply) => void; metadata?: Record<string, any> }) {
+  const i18n = useI18n()
+  const [scopes, setScopes] = createSignal(false)
+  const compute = () => props.metadata?.compute
+  const summary = () => {
+    const filesystem = props.metadata?.filesystem
+    if (filesystem?.path) {
+      const key = filesystem.access === "write" ? "ui.permission.grantWrite" : "ui.permission.grantRead"
+      return i18n.t(key, { path: filesystem.path })
+    }
+    const network = props.metadata?.network
+    if (network?.host) return i18n.t("ui.permission.allowHost", { host: network.host })
+    return undefined
+  }
+  return (
+    <Show
+      when={compute()?.provider === "modal" && compute()}
+      fallback={
+        <div data-component="permission-prompt">
+          <Show when={summary()}>
+            <div data-slot="permission-summary">{summary()}</div>
+          </Show>
+          <div data-slot="permission-actions">
+            <Show
+              when={scopes()}
+              fallback={
+                <>
+                  <Button variant="ghost" size="small" onClick={() => props.respond("reject")}>
+                    {i18n.t("ui.permission.deny")}
+                  </Button>
+                  <Button variant="secondary" size="small" onClick={() => setScopes(true)}>
+                    {i18n.t("ui.permission.allow")}
+                  </Button>
+                  <Button variant="primary" size="small" onClick={() => props.respond("once")}>
+                    {i18n.t("ui.permission.allowOnce")}
+                  </Button>
+                </>
+              }
+            >
+              <Button variant="ghost" size="small" onClick={() => setScopes(false)}>
+                {i18n.t("ui.common.cancel")}
+              </Button>
+              <Button variant="secondary" size="small" onClick={() => props.respond("session")}>
+                {i18n.t("ui.permission.allowSession")}
+              </Button>
+              <Button variant="secondary" size="small" onClick={() => props.respond("project")}>
+                {i18n.t("ui.permission.allowProject")}
+              </Button>
+              <Button variant="secondary" size="small" onClick={() => props.respond("always")}>
+                {i18n.t("ui.permission.allowAlways")}
+              </Button>
+            </Show>
+          </div>
+        </div>
+      }
+    >
+      {(plan) => (
+        <div data-component="permission-prompt">
+          <div data-slot="permission-summary">
+            Dispatch “{plan().name}” to Modal using {plan().gpu === "none" ? "CPU" : plan().gpu}, image {plan().image},
+            and a {plan().timeout_minutes}-minute limit. This may incur charges.
+          </div>
+          <div data-slot="permission-actions">
+            <Button variant="ghost" size="small" onClick={() => props.respond("reject")}>
+              {i18n.t("ui.permission.deny")}
+            </Button>
+            <Button variant="primary" size="small" onClick={() => props.respond("once")}>
+              Dispatch
+            </Button>
+          </div>
+        </div>
+      )}
+    </Show>
+  )
+}
+
 export interface MessageProps {
   message: MessageType
   parts: PartType[]
@@ -108,11 +193,6 @@ export interface MessagePartProps {
 export type PartComponent = Component<MessagePartProps>
 
 export const PART_MAPPING: Record<string, PartComponent | undefined> = {}
-
-// Openscience science-artifact tool renderer id. tool-renderer.tsx registers a
-// custom renderer under this name and imports it from here; re-exported so that
-// import resolves against the v1.1.116 message-part.
-export const ARTIFACT_TOOL = "__artifact__"
 
 // A file-mutation tool (write/edit/apply_patch) has no diff/content for a brief
 // window right after it starts, which would otherwise render a title-only card
@@ -369,7 +449,14 @@ export function UserMessageDisplay(props: { message: UserMessage; parts: PartTyp
   const attachments = createMemo(() =>
     files()?.filter((f) => {
       const mime = f.mime
-      return mime.startsWith("image/") || mime === "application/pdf"
+      // Images and PDFs are always attachments. A raw uploaded blob (data: URL with
+      // no source.text — e.g. an uploaded .md/.txt) also renders as a filename chip;
+      // @file references carry source.text and stay inline instead.
+      return (
+        mime.startsWith("image/") ||
+        mime === "application/pdf" ||
+        (f.url?.startsWith("data:") === true && f.source?.text === undefined)
+      )
     }),
   )
 
@@ -525,44 +612,6 @@ export function Part(props: MessagePartProps) {
   )
 }
 
-export interface ToolProps {
-  input: Record<string, any>
-  metadata: Record<string, any>
-  tool: string
-  output?: string
-  status?: string
-  partID?: string
-  title?: string
-  hideDetails?: boolean
-  defaultOpen?: boolean
-  forceOpen?: boolean
-  locked?: boolean
-}
-
-export type ToolComponent = Component<ToolProps>
-
-const state: Record<
-  string,
-  {
-    name: string
-    render?: ToolComponent
-  }
-> = {}
-
-export function registerTool(input: { name: string; render?: ToolComponent }) {
-  state[input.name] = input
-  return input
-}
-
-export function getTool(name: string) {
-  return state[name]?.render
-}
-
-export const ToolRegistry = {
-  register: registerTool,
-  render: getTool,
-}
-
 PART_MAPPING["tool"] = function ToolPartDisplay(props) {
   const data = useData()
   const i18n = useI18n()
@@ -610,7 +659,7 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     if (permission() || questionRequest()) setForceOpen(true)
   })
 
-  const respond = (response: "once" | "always" | "reject") => {
+  const respond = (response: PermissionReply) => {
     const perm = permission()
     if (!perm || !data.respondToPermission) return
     data.respondToPermission({
@@ -634,7 +683,7 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
   // @ts-expect-error - title only exists on the running/completed state variants
   const title = () => part.state?.title as string | undefined
 
-  const render = ToolRegistry.render(part.tool) ?? GenericTool
+  const render = createMemo(() => ToolRegistry.render(part.tool, metadata()) ?? GenericTool)
 
   return (
     <div data-component="tool-part-wrapper" data-permission={showPermission()} data-question={showQuestion()}>
@@ -665,7 +714,7 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
         </Match>
         <Match when={true}>
           <Dynamic
-            component={render}
+            component={render()}
             input={input()}
             tool={part.tool}
             metadata={metadata()}
@@ -682,19 +731,7 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
         </Match>
       </Switch>
       <Show when={showPermission() && permission()}>
-        <div data-component="permission-prompt">
-          <div data-slot="permission-actions">
-            <Button variant="ghost" size="small" onClick={() => respond("reject")}>
-              {i18n.t("ui.permission.deny")}
-            </Button>
-            <Button variant="secondary" size="small" onClick={() => respond("always")}>
-              {i18n.t("ui.permission.allowAlways")}
-            </Button>
-            <Button variant="primary" size="small" onClick={() => respond("once")}>
-              {i18n.t("ui.permission.allowOnce")}
-            </Button>
-          </div>
-        </div>
+        <PermissionActions respond={respond} metadata={permission()?.metadata} />
       </Show>
       <Show when={showQuestion() && questionRequest()}>{(request) => <QuestionPrompt request={request()} />}</Show>
     </div>
@@ -815,6 +852,39 @@ ToolRegistry.register({
     const name = skillName({ metadata: props.metadata, input: props.input, title: props.title })
     return (
       <BasicTool {...props} icon="mcp" trigger={{ title: i18n.t("ui.tool.skill", { name }) }}>
+        <Show when={props.output}>
+          {(output) => (
+            <div data-component="tool-output" data-scrollable>
+              <Markdown text={output()} />
+            </div>
+          )}
+        </Show>
+      </BasicTool>
+    )
+  },
+})
+
+ToolRegistry.register({
+  name: "modal",
+  render(props) {
+    const plan = () => props.metadata.compute
+    return (
+      <BasicTool
+        {...props}
+        icon="mcp"
+        trigger={{
+          title: props.title || (props.status === "pending" ? "Review Modal job" : "Modal job"),
+          subtitle: props.input.name,
+          args: [props.input.gpu || "none"],
+        }}
+      >
+        <Show when={plan()}>
+          {(value) => (
+            <div data-component="tool-output" data-scrollable>
+              <Markdown text={`\`\`\`json\n${JSON.stringify(value(), null, 2)}\n\`\`\``} />
+            </div>
+          )}
+        </Show>
         <Show when={props.output}>
           {(output) => (
             <div data-component="tool-output" data-scrollable>
@@ -957,18 +1027,27 @@ ToolRegistry.register({
       return permissions[0]
     })
 
-    const childToolPart = createMemo(() => {
-      const perm = childPermission()
-      if (!perm || !perm.tool) return undefined
+    const childQuestion = createMemo(() => {
       const sessionId = childSessionId()
       if (!sessionId) return undefined
-      // Find the tool part that matches the permission's callID
+      const questions = data.store.question?.[sessionId] ?? []
+      return questions[0]
+    })
+
+    const childRequest = createMemo(() => childPermission() ?? childQuestion())
+
+    const childToolPart = createMemo(() => {
+      const request = childRequest()
+      if (!request || !request.tool) return undefined
+      const sessionId = childSessionId()
+      if (!sessionId) return undefined
+      // Find the tool part that owns the pending permission or question.
       const messages = data.store.message[sessionId] ?? []
-      const message = findLast(messages, (m) => m.id === perm.tool!.messageID)
+      const message = findLast(messages, (m) => m.id === request.tool!.messageID)
       if (!message) return undefined
       const parts = data.store.part[message.id] ?? []
       for (const part of parts) {
-        if (part.type === "tool" && (part as ToolPart).callID === perm.tool!.callID) {
+        if (part.type === "tool" && (part as ToolPart).callID === request.tool!.callID) {
           return { part: part as ToolPart, message }
         }
       }
@@ -976,7 +1055,7 @@ ToolRegistry.register({
       return undefined
     })
 
-    const respond = (response: "once" | "always" | "reject") => {
+    const respond = (response: PermissionReply) => {
       const perm = childPermission()
       if (!perm || !data.respondToPermission) return
       data.respondToPermission({
@@ -997,9 +1076,9 @@ ToolRegistry.register({
       const toolData = childToolPart()
       if (!toolData) return null
       const { part } = toolData
-      const render = ToolRegistry.render(part.tool) ?? GenericTool
       // @ts-expect-error
       const metadata = part.state?.metadata ?? {}
+      const render = ToolRegistry.render(part.tool, metadata) ?? GenericTool
       const input = part.state?.input ?? {}
       return (
         <Dynamic
@@ -1016,7 +1095,7 @@ ToolRegistry.register({
     }
 
     return (
-      <div data-component="tool-part-wrapper" data-permission={!!childPermission()}>
+      <div data-component="tool-part-wrapper" data-permission={!!childPermission()} data-question={!!childQuestion()}>
         <Switch>
           <Match when={childPermission()}>
             <>
@@ -1037,20 +1116,32 @@ ToolRegistry.register({
               >
                 {renderChildToolPart()}
               </Show>
-              <div data-component="permission-prompt">
-                <div data-slot="permission-actions">
-                  <Button variant="ghost" size="small" onClick={() => respond("reject")}>
-                    {i18n.t("ui.permission.deny")}
-                  </Button>
-                  <Button variant="secondary" size="small" onClick={() => respond("always")}>
-                    {i18n.t("ui.permission.allowAlways")}
-                  </Button>
-                  <Button variant="primary" size="small" onClick={() => respond("once")}>
-                    {i18n.t("ui.permission.allowOnce")}
-                  </Button>
-                </div>
-              </div>
+              <PermissionActions respond={respond} metadata={childPermission()?.metadata} />
             </>
+          </Match>
+          <Match when={childQuestion()}>
+            {(request) => (
+              <>
+                <Show
+                  when={childToolPart()}
+                  fallback={
+                    <BasicTool
+                      icon="task"
+                      defaultOpen={true}
+                      trigger={{
+                        title: i18n.t("ui.tool.agent", { type: props.input.subagent_type || props.tool }),
+                        titleClass: "capitalize",
+                        subtitle: props.input.description,
+                      }}
+                      onSubtitleClick={handleSubtitleClick}
+                    />
+                  }
+                >
+                  {renderChildToolPart()}
+                </Show>
+                <QuestionPrompt request={request()} />
+              </>
+            )}
           </Match>
           <Match when={true}>
             <BasicTool
@@ -1098,12 +1189,6 @@ ToolRegistry.register({
   name: "bash",
   render(props) {
     const i18n = useI18n()
-    const openInShellTab = (e: MouseEvent) => {
-      e.stopPropagation()
-      document.dispatchEvent(
-        new CustomEvent("open-shell-tab", { detail: { partId: props.partID, command: props.input.command } }),
-      )
-    }
     return (
       <BasicTool
         {...props}
@@ -1111,11 +1196,6 @@ ToolRegistry.register({
         trigger={{
           title: i18n.t("ui.tool.shell"),
           subtitle: props.input.description,
-          action: (
-            <Tooltip value="Open in Shell tab">
-              <IconButton icon="square-arrow-top-right" variant="ghost" class="h-5 w-5" onClick={openInShellTab} />
-            </Tooltip>
-          ),
         }}
       >
         <Show when={props.input.command || props.metadata.command || props.output || props.metadata.output}>

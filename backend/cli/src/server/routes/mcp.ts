@@ -29,6 +29,31 @@ export const McpRoutes = lazy(() =>
         return c.json(await MCP.status())
       },
     )
+    .get(
+      "/:name",
+      describeRoute({
+        summary: "Inspect MCP server",
+        description:
+          "Get live status, authentication state, and discovered capabilities for one configured MCP server.",
+        operationId: "mcp.inspect",
+        responses: {
+          200: {
+            description: "MCP server inspection",
+            content: {
+              "application/json": {
+                schema: resolver(MCP.Inspection),
+              },
+            },
+          },
+          ...errors(404),
+        },
+      }),
+      validator("param", z.object({ name: z.string() })),
+      async (c) => {
+        const { name } = c.req.valid("param")
+        return c.json(await MCP.inspect(name))
+      },
+    )
     .post(
       "/",
       describeRoute({
@@ -89,8 +114,11 @@ export const McpRoutes = lazy(() =>
       async (c) => {
         const { name } = c.req.valid("param")
         const { config, scope = "global" } = c.req.valid("json")
-        await Config.setMcp(name, config, scope)
-        const result = await MCP.add(name, config)
+        const current = scope === "global" ? await Config.getGlobal() : await Config.get()
+        const parsed = Config.Mcp.safeParse(current.mcp?.[name])
+        const next = Config.restoreMcp(config, parsed.success ? parsed.data : undefined)
+        await Config.setMcp(name, next, scope)
+        const result = await MCP.add(name, next)
         return c.json(result.status)
       },
     )

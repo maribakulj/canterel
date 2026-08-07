@@ -19,7 +19,7 @@ export async function createOpenScienceServer(options?: ServerOptions) {
     options ?? {},
   )
 
-  const args = [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`]
+  const args = [`serve`, `--port=${options.port}`]
   if (options.config?.logLevel) args.push(`--log-level=${options.config.logLevel}`)
 
   const proc = spawn(`openscience`, args, {
@@ -42,7 +42,9 @@ export async function createOpenScienceServer(options?: ServerOptions) {
         if (line.startsWith("openscience server listening")) {
           const match = line.match(/on\s+(https?:\/\/[^\s]+)/)
           if (!match) {
-            throw new Error(`Failed to parse server url from output: ${line}`)
+            clearTimeout(id)
+            reject(new Error(`Failed to parse server url from output: ${line}`))
+            return
           }
           clearTimeout(id)
           resolve(match[1]!)

@@ -2,15 +2,19 @@ import path from "path"
 import os from "os"
 import fs from "fs/promises"
 import { existsSync, readFileSync, writeFileSync, chmodSync } from "fs"
-import { createRequire } from "module"
-import { fileURLToPath } from "url"
 import { randomUUID, createHash } from "crypto"
 import { Global } from "../global"
 import { Log } from "../util/log"
 import { Lock } from "../util/lock"
 import { Env } from "../env"
 import { Auth } from "../auth"
-import { isSyncedEnvAllowed, BYOK_LLM_ENV_KEYS } from "./synced-env-policy"
+import {
+  isSyncedEnvAllowed,
+  BYOK_LLM_ENV_KEYS,
+  SYNCED_SERVICE_ENV_KEYS,
+  managedOpenRouterBaseURL,
+} from "./synced-env-policy"
+import { resolveAtlasPackageDir } from "./atlas-package"
 import { DEFAULT_MANAGED_API_BASE, MANAGED_API_BASE } from "../endpoints"
 
 const log = Log.create({ service: "openscience" })
@@ -50,17 +54,32 @@ const syncedSecretValues = new Map<string, string>()
 // vars the user set in their own shell. Cached synchronously so redactSecrets()
 // (a hot path in bash output streaming) can mask them without an async read.
 const byokSecretValues = new Set<string>()
+const TOKEN_SECRET_PATTERNS = [
+  /\b(?:thk_|sk-|sk_|gsk_|hf_|nvapi-|ghp_|gho_|ghu_|ghs_|github_pat_|xox[baprs]-)[A-Za-z0-9._-]{8,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+]
+const QUOTED_SECRET =
+  /(\b(?:[A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)|api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\b\s*[:=]\s*)(["'])(.*?)\2/gi
+const BARE_SECRET =
+  /(\b(?:[A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)|api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\b\s*[:=]\s*)((?!Bearer\b)[^\s"'[,;}\]]{4,})/gi
+const BEARER_SECRET = /(\bBearer\s+)[A-Za-z0-9._~+/-]{4,}=*/gi
+const SECRET_FIELD =
+  /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|credential|authorization)($|[_-])|^(apiKey|accessToken|refreshToken|authToken|clientSecret|secretKey)$/i
 
 function isManagedAtlasKey(value: string): boolean {
   return value.startsWith("thk_")
 }
 
 function getSyncedConfigDir(): string {
+  const config = process.env.OPENSCIENCE_CONFIG_DIR?.trim()
+  if (config) return path.resolve(config)
   // Use XDG config dir (user-writable) for synced config from dashboard
   // This avoids needing root/admin permissions unlike /Library/Application Support
   const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
   return path.join(xdg, "openscience")
 }
+
+const syncedGcpFilename = "atlas-gcp-service-account.json"
 
 // Seed the synced-secret set from the on-disk snapshot at import. preload-env.ts
 // replays synced-env.json into process.env at boot but never seeded this set, so
@@ -83,43 +102,36 @@ function getSyncedConfigDir(): string {
   }
 })()
 
-/** Shared provider API keys that must not leak to subprocesses */
-const SHARED_PROVIDER_KEYS = new Set([
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "GOOGLE_GENERATIVE_AI_API_KEY",
-  "GEMINI_API_KEY",
-])
-
 /** Env vars that are safe to pass to subprocesses */
 const SAFE_ENV_PREFIXES = ["PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "LC_", "TMPDIR", "XDG_", "EDITOR", "VISUAL"]
+const KERNEL_RUNTIME_KEYS = new Set([
+  "TMP",
+  "TEMP",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "VIRTUAL_ENV",
+  "CONDA_PREFIX",
+  "CONDA_DEFAULT_ENV",
+  "R_HOME",
+  "R_LIBS",
+  "R_LIBS_USER",
+  "LD_LIBRARY_PATH",
+  "DYLD_LIBRARY_PATH",
+  "SYSTEMROOT",
+  "WINDIR",
+  "PATHEXT",
+  "COMSPEC",
+])
 const SAFE_SYNCED_KEYS = new Set([
-  // ML services
-  "TINKER_API_KEY",
-  "TINKER_BASE_URL",
-  "HF_TOKEN",
-  "HUGGING_FACE_HUB_TOKEN",
-  "WANDB_API_KEY",
-  "MODAL_TOKEN_ID",
-  "MODAL_TOKEN_SECRET",
-  "LAMBDA_API_KEY",
-  "LAMBDA_LABS_API_KEY",
-  "RUNPOD_API_KEY",
-  "PRIME_INTELLECT_API_KEY",
-  "TENSORPOOL_API_KEY",
-  "VAST_API_KEY",
-  "LANGSMITH_API_KEY",
-  "LANGCHAIN_API_KEY",
-  "LANGSMITH_TRACING",
-  "PINECONE_API_KEY",
-  // LLM providers (BYOK; safe to pass through to user-owned routes)
-  "TOGETHER_API_KEY",
-  "GROQ_API_KEY",
-  "FIREWORKS_API_KEY",
-  "OPENROUTER_API_KEY",
+  ...BYOK_LLM_ENV_KEYS,
+  ...SYNCED_SERVICE_ENV_KEYS,
   // Misc CLI runtime markers
   "OPENSCIENCE_RUNTIME",
 ])
+
+// Modal credentials belong to its trusted adapter and never enter
+// agent-controlled shells, including when supplied by an explicit export.
+const CONTROL_PLANE_ENV_KEYS = new Set(["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"])
 
 /**
  * Persistent CLI auth session.
@@ -130,7 +142,7 @@ const SAFE_SYNCED_KEYS = new Set([
  * — a 401 on any request signals "key revoked or expired, re-auth".
  */
 interface OpenScienceSession {
-  /** Thesis-issued ``thk_<uuid>.<secret>`` Bearer token. */
+  /** Atlas-issued ``thk_<uuid>.<secret>`` Bearer token. */
   api_key: string
   /** Atlas user_id (UUID). Stored for diagnostics; not used for auth. */
   user_id: string
@@ -187,9 +199,9 @@ function describeReason(provider: string, reason: SyncedServiceReason | undefine
     case "missing_key":
       return `${provider}: no key set — add one in the dashboard or top up credits.`
     case "no_credits":
-      return `${provider}: Atlas wallet is out of credits — top up at https://app.syntheticsciences.ai/cli.`
+      return `${provider}: Credits are empty - top up at https://app.syntheticsciences.ai/billing.`
     case "ineligible_plan":
-      return `${provider}: BYOK requires an active paid plan (starter $20, pro $50, or max $200).`
+      return `${provider}: refresh Atlas and reconnect the key — BYOK is available on every plan.`
     case "proxy_disabled":
       return `${provider}: Atlas managed mode is disabled on this deployment — BYOK only.`
     case "managed_key_unconfigured":
@@ -206,11 +218,11 @@ function describeReason(provider: string, reason: SyncedServiceReason | undefine
  * out of credits (managed mode) or has no active subscription. Halts
  * the session so the agent loop doesn't keep racking up calls the
  * user can't pay for. Caught at the session boundary; surfaced to the
- * user as "Insufficient credits — top up at app.syntheticsciences.ai/cli".
+ * user as "Insufficient credits - top up at app.syntheticsciences.ai/billing".
  */
 export class InsufficientCreditsError extends Error {
   constructor(
-    message: string = "Insufficient Atlas credits. Top up at app.syntheticsciences.ai/cli (Plan tab) or switch back to your own keys.",
+    message: string = "Credits are empty. Top up at app.syntheticsciences.ai/billing or switch back to your own keys.",
   ) {
     super(message)
     this.name = "InsufficientCreditsError"
@@ -228,34 +240,6 @@ export class InsufficientCreditsError extends Error {
 // best-effort and never throws — if atlas can't be found the agent's
 // `atlas doctor` gate degrades gracefully.
 let atlasBinDirCache: string | null | undefined
-
-function resolveAtlasPackageDir(): string | null {
-  try {
-    const req = createRequire(import.meta.url)
-    return path.dirname(req.resolve("@synsci/atlas/package.json"))
-  } catch {}
-  const starts = [
-    (() => {
-      try {
-        return path.dirname(fileURLToPath(import.meta.url))
-      } catch {
-        return ""
-      }
-    })(),
-    process.cwd(),
-  ].filter(Boolean)
-  for (const start of starts) {
-    let dir = start
-    while (true) {
-      const candidate = path.join(dir, "node_modules", "@synsci", "atlas", "package.json")
-      if (existsSync(candidate)) return path.dirname(candidate)
-      const parent = path.dirname(dir)
-      if (parent === dir) break
-      dir = parent
-    }
-  }
-  return null
-}
 
 /** Resolve (and cache) the directory that should be prepended to a subprocess
  *  PATH so `atlas` resolves to the bundled CLI. Returns null when the package
@@ -577,7 +561,7 @@ export namespace OpenScience {
     // a fresh `logout` process has only the latter.
     const synced = await readSyncedSnapshot()
     for (const [key, value] of syncedSecretValues.entries()) synced.set(key, value)
-    for (const name of ["synced-env.json", "openscience-synced.json"]) {
+    for (const name of ["synced-env.json", "openscience-synced.json", syncedGcpFilename]) {
       try {
         await fs.unlink(path.join(getSyncedConfigDir(), name))
       } catch {}
@@ -788,6 +772,7 @@ export namespace OpenScience {
     // torn file or fail the rename.
     const tmp = `${filepath}.${process.pid}.${randomUUID()}.tmp`
     await Bun.write(tmp, content, options)
+    if (options?.mode !== undefined && process.platform !== "win32") await fs.chmod(tmp, options.mode)
     await fs.rename(tmp, filepath)
   }
 
@@ -823,10 +808,9 @@ export namespace OpenScience {
           return null
         }
         if (res.status === 402) {
-          // No active Atlas subscription. Don't clear the session
-          // (the auth itself is fine) — surface the message so the
-          // user knows to subscribe.
-          log.warn("no active CLI subscription — visit app.syntheticsciences.ai/cli (Plan tab)")
+          // Legacy Atlas deployments can report wallet eligibility here. Keep
+          // the valid session: local and dashboard-saved BYOK remain free.
+          log.warn("Atlas wallet unavailable - BYOK remains available on every plan")
           return null
         }
         log.warn("sync failed", { status: res.status })
@@ -851,14 +835,44 @@ export namespace OpenScience {
         }
       }
 
-      // OpenScience honours only OpenRouter (the sole managed LLM route) plus
-      // compute / ML-service credentials from Atlas sync; every other model
-      // provider is BYOK-local-only. Drop the rest before they are applied or
-      // persisted — and the unset pass below removes any a previous sync wrote,
-      // so this doubles as the migration for existing installs. See
-      // synced-env-policy.ts.
-      for (const key of [...fresh.keys()]) {
-        if (!isSyncedEnvAllowed(key)) fresh.delete(key)
+      // Atlas transfers a GCP service-account document as an in-memory secret.
+      // Materialize it to an owner-only file before persistence so Google SDKs
+      // receive their standard GOOGLE_APPLICATION_CREDENTIALS path and the JSON
+      // never enters an agent shell.
+      const gcp = fresh.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+      const gcpFile = path.join(getSyncedConfigDir(), syncedGcpFilename)
+      if (gcp) {
+        fresh.delete("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        const dir = getSyncedConfigDir()
+        const saved = await fs
+          .mkdir(dir, { recursive: true })
+          .then(() => atomicWrite(gcpFile, gcp, { mode: 0o600 }))
+          .then(() => true)
+          .catch((error) => {
+            log.warn("failed to materialize synced GCP credentials", {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return false
+          })
+        if (saved) fresh.set("GOOGLE_APPLICATION_CREDENTIALS", gcpFile)
+        if (!saved) await fs.unlink(gcpFile).catch(() => {})
+      }
+      if (!gcp) await fs.unlink(gcpFile).catch(() => {})
+
+      // Keep user-owned provider keys and the narrow OpenRouter managed route.
+      // The policy rejects direct-provider proxy tokens and untrusted provider
+      // base URLs before anything is applied or persisted.
+      for (const [key, value] of [...fresh.entries()]) {
+        if (!isSyncedEnvAllowed(key, value)) fresh.delete(key)
+      }
+
+      // Older Atlas sync responses can carry only OPENROUTER_API_KEY=thk_*.
+      // Managed OpenRouter must also carry the Atlas proxy baseURL; otherwise
+      // provider init correctly refuses to send a wallet token to public
+      // openrouter.ai and the UI shows ProviderInitError.
+      const openrouterKey = fresh.get("OPENROUTER_API_KEY")
+      if (isManagedAtlasKey(openrouterKey ?? "") && !fresh.has("OPENROUTER_BASE_URL")) {
+        fresh.set("OPENROUTER_BASE_URL", managedOpenRouterBaseURL())
       }
 
       // Count distinct APPLIED credential values (post-filter, ignoring routing
@@ -953,6 +967,13 @@ export namespace OpenScience {
         }
       }
 
+      // Compatibility only: older releases stored learned skills and the
+      // third-party install ledger in Atlas. Import those records once after a
+      // successful login, then keep all skill state local forever.
+      void import("../skill/migrate")
+        .then((module) => module.SkillMigration.run())
+        .catch((error) => log.warn("legacy skill migration failed", { error: String(error) }))
+
       return { user: data.user, credentials }
     } catch (e) {
       log.warn("sync error", { error: e instanceof Error ? e.message : String(e) })
@@ -1012,11 +1033,36 @@ export namespace OpenScience {
       if (value.length < 4) continue
       result = result.replaceAll(value, "[REDACTED]")
     }
+    for (const pattern of TOKEN_SECRET_PATTERNS) result = result.replace(pattern, "[REDACTED]")
+    result = result.replace(BEARER_SECRET, "$1[REDACTED]")
+    result = result.replace(QUOTED_SECRET, "$1$2[REDACTED]$2")
+    result = result.replace(BARE_SECRET, "$1[REDACTED]")
     return result
   }
 
+  /** Redact a JSON-shaped value, including plain values stored under credential-
+   *  shaped keys, using the currently seeded secret cache. */
+  export function redactSensitive<T>(value: T): T {
+    const visit = (item: unknown, key?: string): unknown => {
+      if (typeof item === "string") return key && SECRET_FIELD.test(key) ? "[REDACTED]" : redactSecrets(item)
+      if (Array.isArray(item)) return item.map((entry) => visit(entry))
+      if (!item || typeof item !== "object") return item
+      return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>).map(([name, entry]) => [name, visit(entry, name)]),
+      )
+    }
+    return visit(value) as T
+  }
+
+  /** Refresh known BYOK values, then redact a JSON-shaped value. Persistence
+   *  boundaries should use this entry point before serializing. */
+  export async function scrubSecrets<T>(value: T): Promise<T> {
+    await refreshByokSecrets()
+    return redactSensitive(value)
+  }
+
   /** Whether a value is a managed Atlas proxy token (thk_*). Managed calls are
-   *  the only ones that debit the CLI wallet. */
+   *  the only ones that debit Credits. */
   export function isManagedKeyValue(value: string | undefined): boolean {
     return typeof value === "string" && isManagedAtlasKey(value)
   }
@@ -1033,13 +1079,13 @@ export namespace OpenScience {
     return false
   }
 
-  /** Filter env vars for subprocesses — exclude shared provider keys */
+  /** Filter env vars for subprocesses — exclude managed Atlas proxy tokens. */
   export function filterEnvForSubprocess(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {}
     for (const [key, value] of Object.entries(env)) {
       if (!value) continue
+      if (CONTROL_PLANE_ENV_KEYS.has(key)) continue
       if (isManagedAtlasKey(value)) continue
-      if (SHARED_PROVIDER_KEYS.has(key)) continue
       // Entries ending in `_` (LC_, XDG_) are true prefixes; the rest are exact
       // names. Treating all as prefixes let HOME match HOMEBREW_GITHUB_API_TOKEN,
       // USER match USERPROFILE, etc. — over-broad passthrough.
@@ -1052,19 +1098,115 @@ export namespace OpenScience {
     return result
   }
 
+  /** Minimal environment for arbitrary notebook/R code. Kernels need language
+   * runtime discovery and locale/temp configuration, not the user's shell
+   * credentials. Provider, Atlas, cloud, and ad-hoc secret vars stay on the
+   * OpenScience host and can only enter a kernel through an explicit start env. */
+  export function filterEnvForKernel(env: NodeJS.ProcessEnv): Record<string, string> {
+    const result: Record<string, string> = {}
+    for (const [key, value] of Object.entries(env)) {
+      if (!value) continue
+      const runtime =
+        SAFE_ENV_PREFIXES.some((prefix) => (prefix.endsWith("_") ? key.startsWith(prefix) : key === prefix)) ||
+        KERNEL_RUNTIME_KEYS.has(key)
+      if (runtime) result[key] = value
+    }
+    return result
+  }
+
+  export function kernelEnv(env: NodeJS.ProcessEnv = process.env) {
+    return filterEnvForKernel(env)
+  }
+
+  /** Host credential files that an OS-sandboxed kernel must not read. Atlas
+   * access is intentionally provided by the native host broker instead. */
+  export function kernelSensitivePaths() {
+    return [
+      filepath,
+      path.join(Global.Path.data, "auth.json"),
+      path.join(Global.Path.data, "credentials.json"),
+      path.join(Global.Path.data, "mcp-auth.json"),
+      path.join(getSyncedConfigDir(), "synced-env.json"),
+      process.env.ATLAS_CLI_CONFIG_PATH || path.join(os.homedir(), ".config", "atlas-cli", "config.json"),
+    ]
+  }
+
   /** Provider IDs (as stored in auth.json) whose user-owned BYOK keys are safe
    *  to expose to skill subprocesses, mapped to the env var(s) the scripts
    *  read. These are keys the user explicitly added with `openscience login` —
    *  unlike the shared managed keys, which stay stripped. */
-  const BYOK_SUBPROCESS_PROVIDERS: Record<string, { key: string; baseUrl?: string; publicBaseUrl?: string }> = {
+  const BYOK_SUBPROCESS_PROVIDERS: Record<string, { keys: string[]; baseUrl?: string; publicBaseUrl?: string }> = {
+    openai: {
+      keys: ["OPENAI_API_KEY"],
+      baseUrl: "OPENAI_BASE_URL",
+      publicBaseUrl: "https://api.openai.com/v1",
+    },
+    anthropic: {
+      keys: ["ANTHROPIC_API_KEY"],
+      baseUrl: "ANTHROPIC_BASE_URL",
+      publicBaseUrl: "https://api.anthropic.com/v1",
+    },
+    google: {
+      keys: ["GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"],
+      baseUrl: "GOOGLE_GENERATIVE_AI_BASE_URL",
+      publicBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    },
+    xai: {
+      keys: ["XAI_API_KEY"],
+      baseUrl: "XAI_BASE_URL",
+      publicBaseUrl: "https://api.x.ai/v1",
+    },
+    meta: { keys: ["META_MODEL_API_KEY"] },
     openrouter: {
-      key: "OPENROUTER_API_KEY",
+      keys: ["OPENROUTER_API_KEY"],
       baseUrl: "OPENROUTER_BASE_URL",
       publicBaseUrl: "https://openrouter.ai/api/v1",
     },
-    together: { key: "TOGETHER_API_KEY" },
-    groq: { key: "GROQ_API_KEY" },
-    fireworks: { key: "FIREWORKS_API_KEY" },
+    togetherai: {
+      keys: ["TOGETHER_API_KEY"],
+      baseUrl: "TOGETHER_BASE_URL",
+      publicBaseUrl: "https://api.together.xyz/v1",
+    },
+    together: {
+      keys: ["TOGETHER_API_KEY"],
+      baseUrl: "TOGETHER_BASE_URL",
+      publicBaseUrl: "https://api.together.xyz/v1",
+    },
+    groq: {
+      keys: ["GROQ_API_KEY"],
+      baseUrl: "GROQ_BASE_URL",
+      publicBaseUrl: "https://api.groq.com/openai/v1",
+    },
+    "fireworks-ai": {
+      keys: ["FIREWORKS_API_KEY"],
+      baseUrl: "FIREWORKS_BASE_URL",
+      publicBaseUrl: "https://api.fireworks.ai/inference/v1",
+    },
+    fireworks: {
+      keys: ["FIREWORKS_API_KEY"],
+      baseUrl: "FIREWORKS_BASE_URL",
+      publicBaseUrl: "https://api.fireworks.ai/inference/v1",
+    },
+    mistral: {
+      keys: ["MISTRAL_API_KEY"],
+      baseUrl: "MISTRAL_BASE_URL",
+      publicBaseUrl: "https://api.mistral.ai/v1",
+    },
+    deepseek: {
+      keys: ["DEEPSEEK_API_KEY"],
+      baseUrl: "DEEPSEEK_BASE_URL",
+      publicBaseUrl: "https://api.deepseek.com",
+    },
+    cerebras: {
+      keys: ["CEREBRAS_API_KEY"],
+      baseUrl: "CEREBRAS_BASE_URL",
+      publicBaseUrl: "https://api.cerebras.ai/v1",
+    },
+    perplexity: {
+      keys: ["PERPLEXITY_API_KEY"],
+      baseUrl: "PERPLEXITY_BASE_URL",
+      publicBaseUrl: "https://api.perplexity.ai",
+    },
   }
 
   /** Merge user-owned (BYOK) provider keys from auth.json into a subprocess env.
@@ -1080,8 +1222,8 @@ export namespace OpenScience {
       if (isManagedAtlasKey(info.key)) continue
       const spec = BYOK_SUBPROCESS_PROVIDERS[providerID]
       if (!spec) continue
-      if (result[spec.key]) continue
-      result[spec.key] = info.key
+      if (spec.keys.some((key) => result[key])) continue
+      for (const key of spec.keys) result[key] = info.key
       if (spec.baseUrl && spec.publicBaseUrl) result[spec.baseUrl] = spec.publicBaseUrl
     }
     return result
@@ -1099,115 +1241,25 @@ export namespace OpenScience {
     return withAtlasOnPath(mergeByokEnv(base, auth))
   }
 
-  // === Server-side Skills ===
-
-  const SKILLS_CACHE_TTL = 60 * 60 * 1000 // 1 hour
-  const skillsCacheDir = path.join(Global.Path.cache, "skills")
-  const skillsIndexPath = path.join(Global.Path.cache, "skills-index.json")
-
-  interface SkillIndexEntry {
-    name: string
-    description: string
-    category?: string
-    tags?: string[]
-  }
-
-  /** Fetch skill index (name + description only) from dashboard API.
-   *  Caches to disk with 1-hour TTL. Returns null on failure. */
-  export async function fetchSkillIndex(): Promise<SkillIndexEntry[] | null> {
-    // Check disk cache first
-    try {
-      const file = Bun.file(skillsIndexPath)
-      const stat = await fs.stat(skillsIndexPath).catch(() => null)
-      if (stat && Date.now() - stat.mtimeMs < SKILLS_CACHE_TTL) {
-        const cached = await file.json()
-        if (Array.isArray(cached)) return cached
-      }
-    } catch {}
-
-    const session = await getSession()
-    if (!session) return null
-
-    try {
-      const res = await atlasFetch(
-        `${API_BASE}/api/cli/skills`,
-        { headers: { Authorization: `Bearer ${session.api_key}` } },
-        SKILL_FETCH_TIMEOUT_MS,
-      )
-
-      if (!res.ok) {
-        log.warn("failed to fetch skill index", { status: res.status })
-        return null
-      }
-
-      const data = await res.json()
-      const skills: SkillIndexEntry[] = data.skills
-
-      // Cache to disk
-      await fs.mkdir(path.dirname(skillsIndexPath), { recursive: true })
-      await Bun.write(skillsIndexPath, JSON.stringify(skills))
-
-      return skills
-    } catch (e) {
-      log.warn("skill index fetch error", { error: e instanceof Error ? e.message : String(e) })
-      return null
-    }
-  }
-
-  /** Fetch full skill content from dashboard API.
-   *  Writes SKILL.md + supporting files (scripts, assets, etc.) to ~/.cache/openscience/skills/{name}/. Returns content or null. */
-  export async function fetchSkillContent(name: string): Promise<string | null> {
-    const session = await getSession()
-    if (!session) return null
-
-    try {
-      const res = await atlasFetch(
-        `${API_BASE}/api/cli/skills/${encodeURIComponent(name)}`,
-        { headers: { Authorization: `Bearer ${session.api_key}` } },
-        SKILL_FETCH_TIMEOUT_MS,
-      )
-
-      if (!res.ok) {
-        log.warn("failed to fetch skill content", { name, status: res.status })
-        return null
-      }
-
-      const data = await res.json()
-      const content: string = data.content
-
-      // Cache to disk
-      const dir = path.join(skillsCacheDir, name)
-      await fs.mkdir(dir, { recursive: true })
-      await Bun.write(path.join(dir, "SKILL.md"), content)
-
-      // Write supporting files (scripts, assets, references, templates, etc.)
-      const files: Record<string, string> | undefined = data.files
-      if (files) {
-        for (const [rel, body] of Object.entries(files)) {
-          const target = path.join(dir, rel)
-          // Prevent path traversal — ensure target stays within skill directory
-          if (!target.startsWith(dir + path.sep) && target !== dir) {
-            log.warn("skipping skill file with path traversal", { name, rel })
-            continue
-          }
-          await fs.mkdir(path.dirname(target), { recursive: true })
-          await Bun.write(target, body)
-          // Make scripts executable
-          if (rel.endsWith(".py") || rel.endsWith(".sh")) {
-            await fs.chmod(target, 0o755)
-          }
-        }
-        log.info("cached skill files", { name, count: Object.keys(files).length })
-      }
-
-      // Write cache version marker (for invalidating old caches missing files)
-      await Bun.write(path.join(dir, ".cache-v2"), "")
-
-      return content
-    } catch (e) {
-      log.warn("skill content fetch error", { name, error: e instanceof Error ? e.message : String(e) })
-      return null
-    }
+  // Default thread/worker caps for scientific Python kernels. Without these,
+  // BLAS (OpenBLAS/MKL/Accelerate), numba, and joblib/loky each fan out to one
+  // worker PER CORE by default. On a large dataset a single densifying op (e.g.
+  // scanpy regress_out with n_jobs=-1) then spawns N full-dataset copies at once,
+  // each tens of GB — the machine swaps to death (#102). Cap each to a small,
+  // safe default and only fill a var the user/agent hasn't already set, so an
+  // explicit override still wins.
+  export function pythonThreadCapEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+    const cap = String(Math.max(1, Math.min(4, os.cpus().length)))
+    const vars = [
+      "OMP_NUM_THREADS",
+      "OPENBLAS_NUM_THREADS",
+      "MKL_NUM_THREADS",
+      "VECLIB_MAXIMUM_THREADS",
+      "NUMEXPR_NUM_THREADS",
+      "NUMBA_NUM_THREADS",
+      "LOKY_MAX_CPU_COUNT",
+    ]
+    return Object.fromEntries(vars.filter((v) => !env[v]).map((v) => [v, cap]))
   }
 
   /** Credit balance cache */
@@ -1337,7 +1389,7 @@ export namespace OpenScience {
           log.warn(
             `Insufficient balance for this call — need $${need.toFixed(2)}, ` +
               `have $${have.toFixed(2)} available. Top up at ` +
-              `https://app.syntheticsciences.ai/cli or switch to BYOK.`,
+              `https://app.syntheticsciences.ai/billing or switch to BYOK.`,
           )
         } else {
           log.warn("usage report 402 — subscription required or balance empty")
@@ -1445,32 +1497,16 @@ export namespace OpenScience {
     }
   }
 
-  // === Learned Skills (RSI) ===
-
-  const LEARNED_SKILLS_CACHE_TTL = 60 * 60 * 1000 // 1 hour
-  const learnedSkillsCacheDir = path.join(Global.Path.cache, "learned-skills")
-  const learnedSkillsIndexPath = path.join(Global.Path.cache, "learned-skills-index.json")
-
-  interface LearnedSkillEntry {
+  // Legacy skill exports are read exactly once by SkillMigration after a
+  // successful Atlas login. Skills are otherwise entirely local.
+  export interface LegacyLearnedSkillEntry {
     name: string
     description: string
     agent?: string
     score?: number
   }
 
-  /** Fetch learned skills index from dashboard API.
-   *  Caches to disk with 1-hour TTL. Returns null on failure. */
-  export async function fetchLearnedSkills(): Promise<LearnedSkillEntry[] | null> {
-    // Check disk cache first
-    try {
-      const file = Bun.file(learnedSkillsIndexPath)
-      const stat = await fs.stat(learnedSkillsIndexPath).catch(() => null)
-      if (stat && Date.now() - stat.mtimeMs < LEARNED_SKILLS_CACHE_TTL) {
-        const cached = await file.json()
-        if (Array.isArray(cached)) return cached
-      }
-    } catch {}
-
+  export async function fetchLegacyLearnedSkills(): Promise<LegacyLearnedSkillEntry[] | null> {
     const session = await getSession()
     if (!session) return null
 
@@ -1482,28 +1518,21 @@ export namespace OpenScience {
       )
 
       if (!res.ok) {
-        log.warn("failed to fetch learned skills index", { status: res.status })
+        log.warn("failed to export legacy learned skills", { status: res.status })
         return null
       }
 
       const data = await res.json()
       // Atlas returns a bare array of LearnedSkillInfo; older shapes wrapped
       // in { skills: [...] } — accept both.
-      const skills: LearnedSkillEntry[] = Array.isArray(data) ? data : (data.skills ?? [])
-
-      // Cache to disk
-      await fs.mkdir(path.dirname(learnedSkillsIndexPath), { recursive: true })
-      await Bun.write(learnedSkillsIndexPath, JSON.stringify(skills))
-
-      return skills
+      return Array.isArray(data) ? data : (data.skills ?? [])
     } catch (e) {
-      log.warn("learned skills fetch error", { error: e instanceof Error ? e.message : String(e) })
+      log.warn("legacy learned skills export error", { error: e instanceof Error ? e.message : String(e) })
       return null
     }
   }
 
-  /** Fetch specific learned skill content from dashboard API. */
-  export async function fetchLearnedSkillContent(name: string): Promise<string | null> {
+  export async function fetchLegacyLearnedSkillContent(name: string): Promise<string | null> {
     const session = await getSession()
     if (!session) return null
 
@@ -1515,55 +1544,15 @@ export namespace OpenScience {
       )
 
       if (!res.ok) {
-        log.warn("failed to fetch learned skill content", { name, status: res.status })
+        log.warn("failed to export legacy learned skill", { name, status: res.status })
         return null
       }
 
       const data = await res.json()
-      const content: string = data.content
-
-      // Cache to disk
-      const dir = path.join(learnedSkillsCacheDir, name)
-      await fs.mkdir(dir, { recursive: true })
-      await Bun.write(path.join(dir, "SKILL.md"), content)
-
-      return content
+      return data.content
     } catch (e) {
-      log.warn("learned skill content fetch error", { name, error: e instanceof Error ? e.message : String(e) })
+      log.warn("legacy learned skill export error", { name, error: e instanceof Error ? e.message : String(e) })
       return null
-    }
-  }
-
-  /** Upload a learned skill to the dashboard API. */
-  export async function uploadLearnedSkill(
-    name: string,
-    description: string,
-    content: string,
-    metadata: { agent?: string; trajectory_id?: string; score?: number },
-  ): Promise<boolean> {
-    const session = await getSession()
-    if (!session) return false
-
-    try {
-      const res = await atlasFetch(`${API_BASE}/api/cli/learned-skills`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.api_key}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ name, description, content, ...metadata }),
-      })
-
-      if (!res.ok) {
-        log.warn("failed to upload learned skill", { name, status: res.status })
-        return false
-      }
-
-      log.info("learned skill uploaded", { name })
-      return true
-    } catch (e) {
-      log.warn("learned skill upload error", { name, error: e instanceof Error ? e.message : String(e) })
-      return false
     }
   }
 
@@ -1617,28 +1606,20 @@ export namespace OpenScience {
 
   export interface Credits {
     balanceUsd: number
+    balanceCents: number
+    /** @deprecated Use balanceCents. */
     cliBalanceCents: number
     cycleCreditsRemainingCents: number
     lifetimeSpentCents: number
   }
 
-  /**
-   * The wallet balance the CLI can actually spend, in cents.
-   *
-   * Atlas `/api/credits` also returns `unified_balance_cents` — the sum of every
-   * pool: the CLI wallet + the Atlas-web wallet + the subscription cycle pool +
-   * gifted credits. But OpenScience managed mode debits ONLY the CLI wallet
-   * (Atlas `cli.py`: `category="cli"`; an Atlas plan grants BYOK + library quota,
-   * not CLI spending credits). Showing the unified pool made the wallet read
-   * e.g. $160 when the CLI could actually spend far less. Prefer the CLI wallet;
-   * fall back to the older aggregate fields only if a backend omits it.
-   */
-  export function cliSpendableCents(d: {
+  /** Resolve the canonical wallet while accepting older Atlas responses. */
+  export function walletCents(d: {
     cli_balance_cents?: number
     unified_balance_cents?: number
     balance_cents?: number
   }): number {
-    return d.cli_balance_cents ?? d.unified_balance_cents ?? d.balance_cents ?? 0
+    return d.balance_cents ?? d.cli_balance_cents ?? d.unified_balance_cents ?? 0
   }
 
   export async function getCredits(): Promise<Credits | null> {
@@ -1656,10 +1637,11 @@ export namespace OpenScience {
         cycle_credits_remaining_cents?: number
         lifetime_spent_cents?: number
       }
-      const cents = cliSpendableCents(d)
+      const cents = walletCents(d)
       return {
         balanceUsd: cents / 100,
-        cliBalanceCents: d.cli_balance_cents ?? d.balance_cents ?? 0,
+        balanceCents: cents,
+        cliBalanceCents: cents,
         cycleCreditsRemainingCents: d.cycle_credits_remaining_cents ?? 0,
         lifetimeSpentCents: d.lifetime_spent_cents ?? 0,
       }
@@ -1761,9 +1743,7 @@ export namespace OpenScience {
     }
   }
 
-  // ── installed-skills (URL-installed third-party skills) ──────────────────
-
-  export interface InstalledSkillEntry {
+  export interface LegacyInstalledSkillEntry {
     id: string
     namespace: string
     name: string
@@ -1775,19 +1755,7 @@ export namespace OpenScience {
     installed_at: string
   }
 
-  export interface SkillReviewResult {
-    verdict: "pass" | "warn" | "reject"
-    per_skill: {
-      name: string
-      verdict: "pass" | "warn" | "reject"
-      risk_factors: string[]
-      reasoning: string
-      suspicious_excerpts: { file: string; line: number; snippet: string }[]
-    }[]
-  }
-
-  /** List installed skills for the current user (sync index). */
-  export async function fetchInstalledSkills(): Promise<InstalledSkillEntry[] | null> {
+  export async function fetchLegacyInstalledSkills(): Promise<LegacyInstalledSkillEntry[] | null> {
     const session = await getSession()
     if (!session) return null
     try {
@@ -1797,118 +1765,13 @@ export namespace OpenScience {
         SKILL_FETCH_TIMEOUT_MS,
       )
       if (!res.ok) {
-        log.warn("failed to fetch installed skills index", { status: res.status })
+        log.warn("failed to export legacy installed skills", { status: res.status })
         return null
       }
       return await res.json()
     } catch (e) {
-      log.warn("installed skills fetch error", { error: e instanceof Error ? e.message : String(e) })
+      log.warn("legacy installed skills export error", { error: e instanceof Error ? e.message : String(e) })
       return null
     }
-  }
-
-  /** Fetch one installed skill's content (full SKILL.md). */
-  export async function fetchInstalledSkillContent(namespace: string, name: string): Promise<string | null> {
-    const session = await getSession()
-    if (!session) return null
-    try {
-      const res = await atlasFetch(
-        `${API_BASE}/api/cli/installed-skills/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
-        { headers: { Authorization: `Bearer ${session.api_key}` } },
-        SKILL_FETCH_TIMEOUT_MS,
-      )
-      if (!res.ok) return null
-      const data = await res.json()
-      return data.content
-    } catch {
-      return null
-    }
-  }
-
-  /** Upload after a local install. Pointer-only: the backend stores the
-   *  install ledger (repo_url + pinned_sha + classifier verdict), not the
-   *  SKILL.md content. Other machines re-fetch from git on next sync. */
-  export async function postInstalledSkill(body: {
-    namespace: string
-    name: string
-    description: string
-    repo_url: string
-    pinned_sha: string
-    review_verdict: "pass" | "warn"
-    review_meta: Record<string, unknown> | null
-  }): Promise<InstalledSkillEntry | null> {
-    const session = await getSession()
-    if (!session) return null
-    try {
-      const res = await atlasFetch(`${API_BASE}/api/cli/installed-skills`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.api_key}`,
-        },
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) {
-        log.warn("installed-skill upload failed", { status: res.status })
-        return null
-      }
-      return await res.json()
-    } catch (e) {
-      log.warn("installed-skill upload error", { error: e instanceof Error ? e.message : String(e) })
-      return null
-    }
-  }
-
-  /** Layer-3 classifier round-trip. */
-  export async function requestSkillReview(
-    manifest: {
-      namespace: string
-      name: string
-      description: string
-      content: string
-      scripts?: { path: string; content: string }[]
-    }[],
-  ): Promise<SkillReviewResult | null> {
-    const session = await getSession()
-    if (!session) return null
-    try {
-      const res = await atlasFetch(`${API_BASE}/api/cli/skill-review`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.api_key}`,
-        },
-        body: JSON.stringify({ manifest }),
-      })
-      if (!res.ok) {
-        log.warn("skill-review request failed", { status: res.status })
-        return null
-      }
-      return await res.json()
-    } catch (e) {
-      log.warn("skill-review error", { error: e instanceof Error ? e.message : String(e) })
-      return null
-    }
-  }
-
-  export async function deleteInstalledSkill(namespace: string, name: string): Promise<boolean> {
-    const session = await getSession()
-    if (!session) return false
-    const res = await atlasFetch(
-      `${API_BASE}/api/cli/installed-skills/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
-      { method: "DELETE", headers: { Authorization: `Bearer ${session.api_key}` } },
-    )
-    return res.ok
-  }
-
-  export async function deleteInstalledNamespace(namespace: string): Promise<{ archived: number } | null> {
-    const session = await getSession()
-    if (!session) return null
-    const res = await atlasFetch(`${API_BASE}/api/cli/installed-skills/${encodeURIComponent(namespace)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${session.api_key}` },
-    })
-    if (!res.ok) return null
-    return await res.json()
   }
 }

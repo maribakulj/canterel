@@ -10,6 +10,8 @@ import { Flag } from "../flag/flag"
 declare global {
   const OPENSCIENCE_VERSION: string
   const OPENSCIENCE_CHANNEL: string
+  const OPENSCIENCE_LIBC: string
+  const OPENSCIENCE_PLATFORM_PACKAGE: string
 }
 
 export namespace Installation {
@@ -198,6 +200,14 @@ export namespace Installation {
   export const VERSION = typeof OPENSCIENCE_VERSION === "string" ? OPENSCIENCE_VERSION : "local"
   export const CHANNEL = typeof OPENSCIENCE_CHANNEL === "string" ? OPENSCIENCE_CHANNEL : "local"
   export const USER_AGENT = `openscience/${CHANNEL}/${VERSION}/${Flag.OPENSCIENCE_CLIENT}`
+  export const PLATFORM_PACKAGE =
+    typeof OPENSCIENCE_PLATFORM_PACKAGE === "string"
+      ? OPENSCIENCE_PLATFORM_PACKAGE
+      : `@synsci/openscience-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}${
+          process.platform === "linux" && typeof OPENSCIENCE_LIBC === "string" && OPENSCIENCE_LIBC === "musl"
+            ? "-musl"
+            : ""
+        }`
 
   /** OData query for the latest published version of a Chocolatey package.
    *  The id must match what the CLI actually publishes to Chocolatey
@@ -208,6 +218,11 @@ export namespace Installation {
   export function chocoLatestVersionUrl(pkg: string = "openscience"): string {
     const filter = encodeURIComponent(`Id eq '${pkg}' and IsLatestVersion`)
     return `https://community.chocolatey.org/api/v2/Packages?$filter=${filter}&$select=Version`
+  }
+
+  export function npmReleaseChannel(channel: string = CHANNEL) {
+    const knownTags = new Set(["latest", "ci", "dev", "beta", "test"])
+    return knownTags.has(channel) ? channel : "latest"
   }
 
   export async function latest(installMethod?: Method) {
@@ -236,8 +251,7 @@ export namespace Installation {
         const reg = r || "https://registry.npmjs.org"
         return reg.endsWith("/") ? reg.slice(0, -1) : reg
       })
-      const knownTags = new Set(["latest", "ci", "dev", "beta"])
-      const channel = knownTags.has(CHANNEL) ? CHANNEL : "latest"
+      const channel = npmReleaseChannel()
       return fetch(`${registry}/@synsci/openscience/${channel}`)
         .then((res) => {
           if (!res.ok) throw new Error(res.statusText)

@@ -1,11 +1,10 @@
-import { TextField } from "@synsci/ui/text-field"
 import { Button } from "@synsci/ui/button"
-import { Component, Show } from "solid-js"
+import { Component, Show, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { usePlatform } from "@/context/platform"
 import { useLanguage } from "@/context/language"
-import { Icon } from "@synsci/ui/icon"
-import { FONT_SANS } from "@/styles/tokens"
+import { FONT_MONO, FONT_SANS } from "@/styles/tokens"
+import { IconAlertCircle, IconCopy, IconRefresh } from "@/atlas/shared/Icon"
 
 export type InitError = {
   name: string
@@ -209,6 +208,7 @@ interface ErrorPageProps {
 export const ErrorPage: Component<ErrorPageProps> = (props) => {
   const platform = usePlatform()
   const language = useLanguage()
+  const [copied, setCopied] = createSignal(false)
   const [store, setStore] = createStore({
     checking: false,
     version: undefined as string | undefined,
@@ -228,66 +228,202 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
     await platform.restart()
   }
 
+  const detail = () => formatError(props.error, language.t)
+  const hint = () => {
+    const text = detail().toLowerCase()
+    if (text.includes("providerauth") || text.includes("unauthorized") || text.includes("401")) {
+      return "A model provider rejected its credentials. Reload first; if it returns, reconnect that provider in Settings."
+    }
+    if (text.includes("config") || text.includes("json")) {
+      return "OpenScience could not read part of its configuration. The technical details below identify the file to repair."
+    }
+    if (text.includes("fetch") || text.includes("network") || text.includes("connection")) {
+      return "The app lost contact with its server. Make sure the local server is running, then reload."
+    }
+    return "Reloading usually restores the workspace without losing project files or saved conversations."
+  }
+  const diagnostics = () =>
+    [
+      "OpenScience diagnostic",
+      `time: ${new Date().toISOString()}`,
+      `version: ${platform.version ?? "unknown"}`,
+      `platform: ${platform.platform}${platform.os ? `/${platform.os}` : ""}`,
+      `url: ${typeof location === "undefined" ? "unknown" : location.href}`,
+      "",
+      detail(),
+    ].join("\n")
+  const copy = async () => {
+    await navigator.clipboard?.writeText(diagnostics())
+    setCopied(true)
+  }
+
   return (
     <div
-      class="relative flex-1 h-screen w-screen min-h-0 flex flex-col items-center justify-center bg-background-base font-sans"
-      style={{ "font-family": FONT_SANS }}
+      class="relative flex-1 h-screen w-screen min-h-0 flex flex-col items-center justify-center bg-background-base"
+      style={{
+        "font-family": FONT_SANS,
+        padding: "32px",
+        background:
+          "radial-gradient(circle at 50% 25%, color-mix(in srgb, var(--color-danger) 6%, transparent), transparent 34%), var(--color-bg)",
+      }}
     >
-      <div class="w-2/3 max-w-3xl flex flex-col items-center justify-center gap-8">
-        <div class="text-24-medium text-text-strong tracking-tight opacity-50 shrink-0">OpenScience</div>
-        <div class="flex flex-col items-center gap-2 text-center">
-          <h1 class="text-lg font-medium text-text-strong">{language.t("error.page.title")}</h1>
-          <p class="text-sm text-text-weak">{language.t("error.page.description")}</p>
+      <main
+        style={{
+          width: "min(100%, 720px)",
+          display: "flex",
+          "flex-direction": "column",
+          gap: "24px",
+          padding: "30px",
+          border: "1px solid var(--color-border)",
+          "border-radius": "10px",
+          background: "var(--color-surface-solid)",
+          "box-shadow": "var(--shadow-lg)",
+        }}
+      >
+        <div style={{ display: "flex", "align-items": "flex-start", gap: "16px" }}>
+          <span
+            style={{
+              width: "40px",
+              height: "40px",
+              display: "inline-flex",
+              "align-items": "center",
+              "justify-content": "center",
+              "border-radius": "10px",
+              background: "color-mix(in srgb, var(--color-danger) 10%, transparent)",
+              color: "var(--color-danger)",
+              "flex-shrink": 0,
+            }}
+          >
+            <IconAlertCircle size={20} strokeWidth={1.6} />
+          </span>
+          <div style={{ display: "flex", "flex-direction": "column", gap: "8px", "min-width": 0 }}>
+            <span
+              style={{
+                "font-family": FONT_MONO,
+                "font-size": "10px",
+                color: "var(--color-text-faint)",
+                "letter-spacing": "0.12em",
+                "text-transform": "uppercase",
+              }}
+            >
+              workspace recovery
+            </span>
+            <h1
+              style={{
+                margin: 0,
+                color: "var(--color-text)",
+                "font-size": "24px",
+                "font-weight": 680,
+                "letter-spacing": "-0.025em",
+              }}
+            >
+              OpenScience hit a problem
+            </h1>
+            <p style={{ margin: 0, color: "var(--color-text-muted)", "font-size": "13px", "line-height": 1.6 }}>
+              {hint()}
+            </p>
+          </div>
         </div>
-        <TextField
-          value={formatError(props.error, language.t)}
-          readOnly
-          copyable
-          multiline
-          class="max-h-96 w-full font-mono text-xs no-scrollbar"
-          label={language.t("error.page.details.label")}
-          hideLabel
-        />
-        <div class="flex items-center gap-3">
-          <Button size="large" onClick={platform.restart}>
-            {language.t("error.page.action.restart")}
+
+        <div style={{ display: "flex", "align-items": "center", "flex-wrap": "wrap", gap: "8px" }}>
+          <Button size="large" onClick={() => void platform.restart()}>
+            <span style={{ display: "inline-flex", "align-items": "center", gap: "7px" }}>
+              <IconRefresh size={13} />
+              {platform.platform === "desktop" ? "restart app" : "reload app"}
+            </span>
+          </Button>
+          <Button size="large" variant="secondary" onClick={() => void copy()}>
+            <span style={{ display: "inline-flex", "align-items": "center", gap: "7px" }}>
+              <IconCopy size={13} />
+              {copied() ? "diagnostic copied" : "copy diagnostic"}
+            </span>
           </Button>
           <Show when={platform.checkUpdate}>
             <Show
               when={store.version}
               fallback={
                 <Button size="large" variant="ghost" onClick={checkForUpdates} disabled={store.checking}>
-                  {store.checking
-                    ? language.t("error.page.action.checking")
-                    : language.t("error.page.action.checkUpdates")}
+                  {store.checking ? "checking…" : "check for updates"}
                 </Button>
               }
             >
               <Button size="large" onClick={installUpdate}>
-                {language.t("error.page.action.updateTo", { version: store.version ?? "" })}
+                update to {store.version}
               </Button>
             </Show>
           </Show>
         </div>
-        <div class="flex flex-col items-center gap-2">
-          <div class="flex items-center justify-center gap-1">
-            {language.t("error.page.report.prefix")}
+
+        <details
+          style={{
+            border: "1px solid var(--color-border)",
+            "border-radius": "6px",
+            background: "var(--color-bg-subtle)",
+            overflow: "hidden",
+          }}
+        >
+          <summary
+            style={{
+              cursor: "pointer",
+              padding: "11px 13px",
+              color: "var(--color-text-muted)",
+              "font-family": FONT_MONO,
+              "font-size": "10px",
+              "user-select": "none",
+            }}
+          >
+            technical details
+          </summary>
+          <pre
+            style={{
+              margin: 0,
+              padding: "13px",
+              "max-height": "260px",
+              overflow: "auto",
+              "border-top": "1px solid var(--color-border)",
+              background: "var(--color-bg)",
+              color: "var(--color-text-muted)",
+              "font-family": FONT_MONO,
+              "font-size": "10px",
+              "line-height": 1.55,
+              "white-space": "pre-wrap",
+              "overflow-wrap": "anywhere",
+            }}
+          >
+            {detail()}
+          </pre>
+        </details>
+
+        <footer
+          style={{
+            display: "flex",
+            "align-items": "center",
+            "justify-content": "space-between",
+            gap: "16px",
+            color: "var(--color-text-faint)",
+            "font-family": FONT_MONO,
+            "font-size": "10px",
+          }}
+        >
+          <span>OpenScience {platform.version ?? "development build"}</span>
+          <span style={{ display: "inline-flex", "align-items": "center", gap: "5px" }}>
+            Still stuck?
             <button
               type="button"
-              class="flex items-center text-text-interactive-base gap-1"
-              onClick={() => platform.openLink("https://github.com/synthetic-sciences/OpenScience/issues")}
+              onClick={() => platform.openLink("https://github.com/synthetic-sciences/openscience/issues/new")}
+              style={{
+                all: "unset",
+                cursor: "pointer",
+                color: "var(--color-accent)",
+                "text-decoration": "underline",
+                "text-underline-offset": "3px",
+              }}
             >
-              <div>{language.t("error.page.report.discord")}</div>
-              <Icon name="discord" class="text-text-interactive-base" />
+              report this issue
             </button>
-          </div>
-          <Show when={platform.version}>
-            {(version) => (
-              <p class="text-xs text-text-weak">{language.t("error.page.version", { version: version() })}</p>
-            )}
-          </Show>
-        </div>
-      </div>
+          </span>
+        </footer>
+      </main>
     </div>
   )
 }

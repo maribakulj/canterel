@@ -55,7 +55,7 @@ export namespace Plugin {
       baseUrl: "http://openscience.internal",
       fetch: Server.internalFetch(),
     })
-    const config = await Config.get()
+    const config = await Config.getExecution()
     const hooks: Hooks[] = []
     const input: PluginInput = {
       client,
@@ -151,7 +151,7 @@ export namespace Plugin {
 
   export async function init() {
     const hooks = await state().then((x) => x.hooks)
-    const config = await Config.get()
+    const config = await Config.getExecution()
     for (const hook of hooks) {
       // @ts-expect-error this is because we haven't moved plugin to sdk v2
       await hook.config?.(config)

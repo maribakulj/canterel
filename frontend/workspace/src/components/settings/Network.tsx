@@ -1,5 +1,4 @@
 import { For, Show, createMemo, createSignal, onMount } from "solid-js"
-import { currentDirectory } from "@/utils/base64"
 import { Icon } from "@synsci/ui/icon"
 import { Switch } from "@synsci/ui/switch"
 import { useGlobalSDK } from "@/context/global-sdk"
@@ -14,6 +13,10 @@ import { usePlatform } from "@/context/platform"
 type Group = { id: string; label: string; description: string; domains: string[] }
 type State = { allowlistEnabled: boolean; enabled: string[]; custom: string[] }
 
+export function networkEndpoint(baseUrl: string) {
+  return `${baseUrl.replace(/\/+$/, "")}/settings/network`
+}
+
 export default function Network() {
   const sdk = useGlobalSDK()
   const platform = usePlatform()
@@ -27,7 +30,7 @@ export default function Network() {
   const [expanded, setExpanded] = createSignal<Record<string, boolean>>({})
   const [customDomain, setCustomDomain] = createSignal("")
 
-  const endpoint = () => `${sdk.url}/settings/network?directory=${encodeURIComponent(currentDirectory())}`
+  const endpoint = () => networkEndpoint(sdk.url)
 
   async function load() {
     setLoading(true)
@@ -112,8 +115,8 @@ export default function Network() {
 
   return (
     <div class="flex flex-col h-full overflow-y-auto no-scrollbar">
-      <div class="sticky top-0 z-10 bg-[linear-gradient(to_bottom,var(--surface-raised-stronger-non-alpha)_calc(100%_-_24px),transparent)]">
-        <div class="flex flex-col gap-1 px-4 py-8 sm:p-8 max-w-[760px]">
+      <div class="settings-page-header">
+        <div class="settings-page-header__inner">
           <h2 class="text-16-medium text-text-strong">Network</h2>
           <p class="text-13-regular text-text-weak">
             Control which domains the agent may reach. Enable curated science-connector groups or add your own domains.
@@ -121,7 +124,7 @@ export default function Network() {
         </div>
       </div>
 
-      <div class="flex flex-col gap-5 px-4 pb-10 sm:px-8 max-w-[760px]">
+      <div class="settings-page-body">
         <Show when={error()}>
           <div class="rounded-xs border border-border-weak-base bg-surface-base/40 px-3 py-2 text-12-regular text-text-danger">
             {error()}
@@ -134,17 +137,19 @@ export default function Network() {
             <span class="text-13-medium text-text-strong">Enforce allow-list</span>
             <span class="text-12-regular text-text-weak">
               {state().allowlistEnabled
-                ? `Only the ${effectiveCount()} allowed domains below are reachable.`
+                ? `Web fetches and science connectors may only reach the ${effectiveCount()} allowed domains below. Shell and kernel network access is governed by the sandbox, not this list.`
                 : "Advisory only — the agent may reach any domain."}
             </span>
           </div>
-          <Switch checked={state().allowlistEnabled} onChange={toggleAllowlist} />
+          <Switch hideLabel checked={state().allowlistEnabled} onChange={toggleAllowlist}>
+            Enforce allow-list
+          </Switch>
         </div>
 
         <Show when={!loading()} fallback={<div class="text-13-regular text-text-weak py-6 text-center">Loading…</div>}>
           {/* Domain groups */}
           <div class="flex flex-col gap-2">
-            <span class="thesis-section-label px-1">Domain sets</span>
+            <span class="atlas-section-label px-1">Domain sets</span>
             <For each={catalog()}>
               {(group) => {
                 const on = () => state().enabled.includes(group.id)
@@ -156,7 +161,7 @@ export default function Network() {
                         type="button"
                         class="flex items-center justify-center size-6 rounded-xs text-icon-weak-base hover:bg-surface-raised-base/60 transition-colors flex-shrink-0"
                         onClick={() => toggleExpanded(group.id)}
-                        aria-label={open() ? "Collapse" : "Expand"}
+                        aria-label={`${open() ? "Collapse" : "Expand"} ${group.label}`}
                       >
                         <Icon name={open() ? "chevron-down" : "chevron-right"} size="small" />
                       </button>
@@ -166,7 +171,9 @@ export default function Network() {
                           {group.description} · {group.domains.length} domains
                         </span>
                       </div>
-                      <Switch checked={on()} onChange={(v) => toggleGroup(group.id, v)} />
+                      <Switch hideLabel checked={on()} onChange={(v) => toggleGroup(group.id, v)}>
+                        {`Allow ${group.label}`}
+                      </Switch>
                     </div>
                     <Show when={open()}>
                       <div class="flex flex-wrap gap-1.5 px-4 pb-3 pt-0">
@@ -188,15 +195,16 @@ export default function Network() {
           {/* Custom allowed domains */}
           <div class="flex flex-col gap-2">
             <div class="flex items-center justify-between px-1">
-              <span class="thesis-section-label">Allowed domains</span>
+              <span class="atlas-section-label">Allowed domains</span>
               <Show when={state().custom.length > 0}>
                 <button
                   type="button"
                   class="text-11-medium text-text-danger hover:opacity-80 transition-opacity"
                   disabled={saving()}
                   onClick={clearCustom}
+                  aria-label="Clear allowed domains"
                 >
-                  clear
+                  Clear
                 </button>
               </Show>
             </div>
@@ -223,7 +231,8 @@ export default function Network() {
               <div class="flex items-center gap-2 px-3 py-2.5 border-t border-border-weak-base">
                 <input
                   type="text"
-                  placeholder="add a domain, e.g. example.org"
+                  aria-label="Add allowed domain"
+                  placeholder="Add a domain, e.g. example.org"
                   value={customDomain()}
                   disabled={saving()}
                   class="flex-1 h-9 px-3 rounded-xs border border-border-weak-base bg-surface-raised-base/40 text-13-regular text-text-strong placeholder:text-text-weak/60 outline-none focus:border-border-base font-mono"
@@ -237,7 +246,7 @@ export default function Network() {
                   onClick={addCustom}
                 >
                   <Icon name="plus" size="small" />
-                  add
+                  Add
                 </button>
               </div>
             </div>

@@ -8,6 +8,8 @@ import * as Formatter from "./formatter"
 import { Config } from "../config/config"
 import { mergeDeep } from "remeda"
 import { Instance } from "../project/instance"
+import { OpenScience } from "@/openscience"
+import { ProjectTrust } from "@/project/trust"
 
 export namespace Format {
   const log = Log.create({ service: "format" })
@@ -25,7 +27,8 @@ export namespace Format {
 
   const state = Instance.state(async () => {
     const enabled: Record<string, boolean> = {}
-    const cfg = await Config.get()
+    const cfg = await Config.getExecution()
+    const project = new Set<string>()
 
     const formatters: Record<string, Formatter.Info> = {}
     if (cfg.formatter === false) {
@@ -33,6 +36,7 @@ export namespace Format {
       return {
         enabled,
         formatters,
+        project,
       }
     }
 
@@ -40,6 +44,7 @@ export namespace Format {
       formatters[item.name] = item
     }
     for (const [name, item] of Object.entries(cfg.formatter ?? {})) {
+      if (await Config.projectControls("formatter", name)) project.add(name)
       if (item.disabled) {
         delete formatters[name]
         continue
@@ -60,16 +65,20 @@ export namespace Format {
     return {
       enabled,
       formatters,
+      project,
     }
   })
 
   async function isEnabled(item: Formatter.Info) {
     const s = await state()
-    let status = s.enabled[item.name]
-    if (status === undefined) {
-      status = await item.enabled()
-      s.enabled[item.name] = status
-    }
+    const cached = s.enabled[item.name]
+    if (cached !== undefined) return cached
+    const status = await item.enabled().catch((error) => {
+      if (ProjectTrust.DeniedError.isInstance(error)) return undefined
+      throw error
+    })
+    if (status === undefined) return false
+    s.enabled[item.name] = status
     return status
   }
 
@@ -106,14 +115,27 @@ export namespace Format {
       const file = payload.properties.file
       log.info("formatting", { file })
       const ext = path.extname(file)
+      const s = await state()
 
       for (const item of await getFormatter(ext)) {
         log.info("running", { command: item.command })
         try {
+          const env = { ...(await OpenScience.subprocessEnv(process.env)), ...item.environment }
+          const command = item.command[0]
+          const target = path.isAbsolute(command)
+            ? command
+            : command.includes("/") || command.includes("\\")
+              ? path.resolve(Instance.directory, command)
+              : Bun.which(command, { PATH: env.PATH })
+          const local =
+            target !== null && (Instance.containsPath(target) || (await Instance.containsCanonicalPath(target)))
+          if (item.project || s.project.has(item.name) || local) {
+            await ProjectTrust.require(Instance.project, "project_formatter")
+          }
           const proc = Bun.spawn({
             cmd: item.command.map((x) => x.replace("$FILE", file)),
             cwd: Instance.directory,
-            env: { ...process.env, ...item.environment },
+            env,
             stdout: "ignore",
             stderr: "ignore",
           })

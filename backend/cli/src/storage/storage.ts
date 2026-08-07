@@ -1,6 +1,7 @@
 import { Log } from "../util/log"
 import path from "path"
 import fs from "fs/promises"
+import { randomUUID } from "crypto"
 import { Global } from "../global"
 import { Filesystem } from "../util/filesystem"
 import { lazy } from "../util/lazy"
@@ -162,7 +163,11 @@ export namespace Storage {
     const dir = await state().then((x) => x.dir)
     const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
-      await fs.unlink(target).catch(() => {})
+      using _ = await Lock.write(target)
+      await fs.unlink(target).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+        throw error
+      })
     })
   }
 
@@ -176,6 +181,24 @@ export namespace Storage {
     })
   }
 
+  /**
+   * Publish a record by rename. Lock is an in-process map, so it orders writers
+   * inside one process and nothing at all between processes — and several
+   * openscience processes share this directory routinely (a CLI run alongside a
+   * running server; `Project.fromDirectory` rewrites a record on every instance
+   * creation). A plain write truncates in place, so a reader in another process
+   * can observe a half-written file and fail to parse it. Rename is atomic, so
+   * every reader sees either the old record or the new one.
+   */
+  async function publish(target: string, content: string) {
+    const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`
+    await Bun.write(tmp, content)
+    await fs.rename(tmp, target).catch(async (error) => {
+      await fs.unlink(tmp).catch(() => {})
+      throw error
+    })
+  }
+
   export async function update<T>(key: string[], fn: (draft: T) => void) {
     const dir = await state().then((x) => x.dir)
     const target = path.join(dir, ...key) + ".json"
@@ -183,7 +206,7 @@ export namespace Storage {
       using _ = await Lock.write(target)
       const content = await Bun.file(target).json()
       fn(content)
-      await Bun.write(target, JSON.stringify(content, null, 2))
+      await publish(target, JSON.stringify(content, null, 2))
       return content as T
     })
   }
@@ -193,7 +216,7 @@ export namespace Storage {
     const target = path.join(dir, ...key) + ".json"
     return withErrorHandling(async () => {
       using _ = await Lock.write(target)
-      await Bun.write(target, JSON.stringify(content, null, 2))
+      await publish(target, JSON.stringify(content, null, 2))
     })
   }
 
@@ -208,7 +231,16 @@ export namespace Storage {
     })
   }
 
-  const glob = new Bun.Glob("**/*")
+  // Records are `.json` files and nothing else. `publish` stages every write as
+  // a sibling `<target>.<pid>.<uuid>.tmp` in the same directory — it has to,
+  // since rename is only atomic within one filesystem — so a bare `**/*` also
+  // matched the staging file during the write→rename window, and permanently
+  // when a writer died in between (nothing sweeps them). Every caller here
+  // strips a fixed 5 characters assuming ".json", so those entries became
+  // phantom keys whose `read` throws NotFoundError. Matching on the suffix
+  // makes that assumption true by construction, and unlike relocating temp
+  // files it also hides debris already left on disk by earlier runs.
+  const glob = new Bun.Glob("**/*.json")
   export async function list(prefix: string[]) {
     const dir = await state().then((x) => x.dir)
     try {

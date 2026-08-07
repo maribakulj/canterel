@@ -77,10 +77,16 @@ interface PdfPage {
 interface PdfDoc {
   numPages: number
   getPage(n: number): Promise<PdfPage>
+}
+// pdfjs v6: the LOADING TASK owns disposal — destroy() returns a Promise and tears
+// down the worker + document. PDFDocumentProxy.destroy() returns void, so calling
+// `.catch()` on it throws (the bug that hung the pane on tab close).
+interface PdfLoadingTask {
+  promise: Promise<PdfDoc>
   destroy(): Promise<void>
 }
 interface PdfLib {
-  getDocument(src: Record<string, unknown>): { promise: Promise<PdfDoc> }
+  getDocument(src: Record<string, unknown>): PdfLoadingTask
   GlobalWorkerOptions: { workerSrc: string }
 }
 
@@ -93,25 +99,52 @@ export function PdfViewer(props: ArtifactRenderProps) {
   const [pages, setPages] = createSignal<{ total: number; shown: number }>()
 
   onMount(() => {
+    let loadingTask: PdfLoadingTask | undefined
     let doc: PdfDoc | undefined
     let disposed = false
     const tasks: Array<{ cancel(): void }> = []
 
+    // Cancel in-flight renders and tear down the pdfjs worker + document via the
+    // loading task. Guard EVERYTHING: this runs inside Solid's cleanNode, so a
+    // throw here (e.g. pdfjs's void-returning proxy.destroy()) corrupts disposal
+    // and hangs the whole center pane.
+    const dispose = () => {
+      for (const t of tasks) {
+        try {
+          t.cancel()
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        void loadingTask?.destroy?.().catch?.(() => {
+          /* ignore teardown races */
+        })
+      } catch {
+        /* ignore — never throw from cleanup */
+      }
+    }
+
     if (!hasSource) return
     ;(async () => {
       try {
-        const pdfjs = (await import("pdfjs-dist")) as unknown as PdfLib
+        // pdfjs v6's modern build assumes the emerging Map.getOrInsertComputed
+        // API, which is not present in the Chromium/WebKit versions we ship.
+        // Its legacy build includes the required compatibility layer while
+        // remaining lazy-loaded with the viewer.
+        const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfLib
         if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-          const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default
+          const workerUrl = (await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url")).default
           pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
         }
 
         const src: Record<string, unknown> = cfg.url
           ? { url: cfg.url }
           : { data: cfg.bytes ?? decodeBase64(cfg.base64 ?? "") }
-        const loaded = await pdfjs.getDocument(src).promise
+        loadingTask = pdfjs.getDocument(src)
+        const loaded = await loadingTask.promise
         if (disposed) {
-          await loaded.destroy()
+          dispose()
           return
         }
         doc = loaded
@@ -159,16 +192,7 @@ export function PdfViewer(props: ArtifactRenderProps) {
 
     onCleanup(() => {
       disposed = true
-      for (const t of tasks) {
-        try {
-          t.cancel()
-        } catch {
-          /* ignore */
-        }
-      }
-      doc?.destroy().catch(() => {
-        /* ignore teardown races */
-      })
+      dispose()
     })
   })
 

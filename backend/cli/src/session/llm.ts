@@ -44,6 +44,10 @@ export namespace LLM {
   export type StreamOutput = StreamTextResult<ToolSet, unknown>
 
   export async function stream(input: StreamInput) {
+    const tier = input.small
+      ? { model: undefined, options: {}, headers: {} }
+      : ProviderTransform.tier(input.model, input.user.tier)
+    const routed = tier.model ? await Provider.getModel(input.model.providerID, tier.model) : input.model
     const l = log
       .clone()
       .tag("providerID", input.model.providerID)
@@ -57,12 +61,12 @@ export namespace LLM {
       providerID: input.model.providerID,
     })
     const [language, cfg, provider, auth] = await Promise.all([
-      Provider.getLanguage(input.model),
+      Provider.getLanguage(routed),
       Config.get(),
       Provider.getProvider(input.model.providerID),
       Auth.get(input.model.providerID),
     ])
-    const isCodex = provider.id === "openai" && auth?.type === "oauth"
+    const isCodex = isCodexSubscriptionModel(input.model, auth)
 
     const system = []
     system.push(
@@ -112,6 +116,7 @@ export namespace LLM {
     const options: Record<string, any> = pipe(
       base,
       mergeDeep(input.model.options),
+      mergeDeep(tier.options),
       mergeDeep(input.agent.options),
       mergeDeep(variant),
     )
@@ -161,7 +166,7 @@ export namespace LLM {
           OUTPUT_TOKEN_MAX,
         )
 
-    const tools = await resolveTools(input)
+    const tools = await modelTools(input)
 
     // LiteLLM and some Anthropic proxies require the tools parameter to be present
     // when message history contains tool calls, even if no tools are being used.
@@ -232,6 +237,7 @@ export namespace LLM {
               }
             : undefined),
         ...input.model.headers,
+        ...tier.headers,
         ...headers,
       },
       maxRetries: input.retries ?? 0,
@@ -281,6 +287,11 @@ export namespace LLM {
     })
   }
 
+  export async function modelTools(input: Pick<StreamInput, "tools" | "agent" | "model" | "user">) {
+    if (!input.model.capabilities.toolcall) return {}
+    return resolveTools(input)
+  }
+
   async function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "user">) {
     const wildcardDisable = input.user.tools?.["*"] === false
     const disabled = PermissionNext.disabled(Object.keys(input.tools), input.agent.permission)
@@ -302,5 +313,12 @@ export namespace LLM {
       }
     }
     return false
+  }
+
+  export function isCodexSubscriptionModel(
+    model: Pick<Provider.Model, "providerID">,
+    auth?: Pick<Auth.Info, "type">,
+  ): boolean {
+    return model.providerID === "openai-codex" && auth?.type === "oauth"
   }
 }

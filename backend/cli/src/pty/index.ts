@@ -8,6 +8,10 @@ import type { WSContext } from "hono/ws"
 import { Instance } from "../project/instance"
 import { lazy } from "@synsci/util/lazy"
 import { Shell } from "@/shell/shell"
+import { ExecutionAuthority } from "@/project/execution"
+import { Sandbox } from "@/sandbox/sandbox"
+import { OpenScience } from "@/openscience"
+import { terminalArgs, terminalEnv } from "./environment"
 
 export namespace Pty {
   const log = Log.create({ service: "pty" })
@@ -27,6 +31,9 @@ export namespace Pty {
       command: z.string(),
       args: z.array(z.string()),
       cwd: z.string(),
+      projectID: z.string(),
+      sessionID: z.string(),
+      authority: ExecutionAuthority.Decision,
       status: z.enum(["running", "exited"]),
       pid: z.number(),
     })
@@ -35,11 +42,8 @@ export namespace Pty {
   export type Info = z.infer<typeof Info>
 
   export const CreateInput = z.object({
-    command: z.string().optional(),
-    args: z.array(z.string()).optional(),
-    cwd: z.string().optional(),
+    sessionID: z.string().startsWith("ses_"),
     title: z.string().optional(),
-    env: z.record(z.string(), z.string()).optional(),
   })
 
   export type CreateInput = z.infer<typeof CreateInput>
@@ -94,24 +98,28 @@ export namespace Pty {
   }
 
   export async function create(input: CreateInput) {
+    const authority = await ExecutionAuthority.require({
+      projectID: Instance.project.id,
+      sessionID: input.sessionID,
+      capability: "terminal",
+    })
     const id = Identifier.create("pty", false)
-    const command = input.command || Shell.preferred()
-    const args = input.args || []
-    if (command.endsWith("sh")) {
-      args.push("-l")
-    }
-
-    const cwd = input.cwd || Instance.directory
-    const env = {
-      ...process.env,
-      ...input.env,
-      TERM: "xterm-256color",
-      OPENSCIENCE_TERMINAL: "1",
-    } as Record<string, string>
+    const command = Shell.preferred()
+    const args = terminalArgs(command)
+    const cwd = authority.workspace
+    const source = await OpenScience.subprocessEnv(process.env)
+    const env = terminalEnv(source, Instance.project.id, input.sessionID)
+    const sandbox = Sandbox.wrapArgv({
+      file: command,
+      args,
+      workspace: authority.writable,
+      unreadable: OpenScience.kernelSensitivePaths(),
+      options: authority.sandbox,
+    })
     log.info("creating session", { id, cmd: command, args, cwd })
 
     const spawn = await pty()
-    const ptyProcess = spawn(command, args, {
+    const ptyProcess = spawn(sandbox.file, sandbox.args, {
       name: "xterm-256color",
       cwd,
       env,
@@ -123,6 +131,9 @@ export namespace Pty {
       command,
       args,
       cwd,
+      projectID: Instance.project.id,
+      sessionID: input.sessionID,
+      authority,
       status: "running",
       pid: ptyProcess.pid,
     } as const
@@ -190,6 +201,17 @@ export namespace Pty {
     }
     state().delete(id)
     Bus.publish(Event.Deleted, { id })
+  }
+
+  export async function releaseSession(sessionID: string) {
+    const ids = [...state().values()]
+      .filter((session) => session.info.sessionID === sessionID)
+      .map((session) => session.info.id)
+    await Promise.all(ids.map((id) => remove(id)))
+  }
+
+  export async function releaseAll() {
+    await Promise.all([...state().keys()].map((id) => remove(id)))
   }
 
   export function resize(id: string, cols: number, rows: number) {

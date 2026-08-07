@@ -28,6 +28,40 @@ export namespace RLMState {
     type: string
     summary: string
     path: string
+    versionID?: string
+    version?: number
+    createdAt?: number
+  }
+
+  export interface ArtifactSource {
+    projectID?: string
+    agent?: string
+    messageID?: string
+    callID?: string
+    runID?: string
+    provenanceID?: string
+  }
+
+  export interface ArtifactRetention {
+    status: "ephemeral" | "durable"
+    policy: "session_ttl" | "durable"
+    expiresAt?: number
+  }
+
+  export interface ArtifactVersion {
+    id: string
+    artifactID: string
+    sessionID: string
+    version: number
+    createdAt: number
+    type: string
+    summary: string
+    size: number
+    sha256: string
+    path: string
+    retention: ArtifactRetention
+    provenance: import("@/science/provenance/envelope").ProvenanceEnvelope.Schema
+    source?: ArtifactSource
   }
 
   export interface Finding {

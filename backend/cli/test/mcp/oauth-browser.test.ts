@@ -1,6 +1,8 @@
 import { test, expect, mock, beforeEach } from "bun:test"
 import { EventEmitter } from "events"
 
+const auth = await import("@modelcontextprotocol/sdk/client/auth.js")
+
 // Track open() calls and control failure behavior
 let openShouldFail = false
 let openCalledWith: string | undefined
@@ -88,6 +90,7 @@ mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
 
 // Mock UnauthorizedError in the auth module
 mock.module("@modelcontextprotocol/sdk/client/auth.js", () => ({
+  ...auth,
   UnauthorizedError: MockUnauthorizedError,
 }))
 
@@ -102,7 +105,16 @@ const { MCP } = await import("../../src/mcp/index")
 const { Bus } = await import("../../src/bus")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
 const { Instance } = await import("../../src/project/instance")
+const { ProjectTrust } = await import("../../src/project/trust")
 const { tmpdir } = await import("../fixture/fixture")
+
+async function trust() {
+  const status = await ProjectTrust.status(Instance.project)
+  await ProjectTrust.update(Instance.project, {
+    trusted: true,
+    root: status.root,
+  })
+}
 
 test("BrowserOpenFailed event is published when open() throws", async () => {
   await using tmp = await tmpdir({
@@ -125,18 +137,22 @@ test("BrowserOpenFailed event is published when open() throws", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
+      await trust()
       openShouldFail = true
 
       const events: Array<{ mcpName: string; url: string }> = []
+      const opened = Promise.withResolvers<void>()
       const unsubscribe = Bus.subscribe(MCP.BrowserOpenFailed, (evt) => {
         events.push(evt.properties)
+        opened.resolve()
       })
 
-      // Run authenticate with a timeout to avoid waiting forever for the callback
       const authPromise = MCP.authenticate("test-oauth-server")
 
-      // Wait for the browser open attempt (error fires at 10ms, but we wait for event to be published)
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      // The callback waiter is registered before this event is published. Waiting
+      // for the event avoids stopping the server while a cold auth flow is still
+      // loading its config and has not installed that waiter yet.
+      await opened.promise
 
       // Stop the callback server and cancel any pending auth
       await McpOAuthCallback.stop()
@@ -179,6 +195,7 @@ test("BrowserOpenFailed event is NOT published when open() succeeds", async () =
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
+      await trust()
       openShouldFail = false
 
       const events: Array<{ mcpName: string; url: string }> = []
@@ -233,6 +250,7 @@ test("open() is called with the authorization URL", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
+      await trust()
       openShouldFail = false
       openCalledWith = undefined
 

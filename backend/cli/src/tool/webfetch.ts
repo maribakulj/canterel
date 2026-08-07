@@ -2,6 +2,7 @@ import z from "zod"
 import { Tool } from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
+import { Network } from "@/settings/network"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
@@ -22,11 +23,35 @@ export const WebFetchTool = Tool.define("webfetch", {
     if (!params.url.startsWith("http://") && !params.url.startsWith("https://")) {
       throw new Error("URL must start with http:// or https://")
     }
+    // A domain outside the enforced allow-list asks instead of failing.
+    // Answering "always" adds the domain to the persisted allow-list (visible
+    // in Network settings); conversation/project scopes approve quietly on
+    // later requests without widening the stored list.
+    const host = await Network.blocked(params.url)
+    if (host) {
+      await ctx.ask({
+        permission: "network",
+        patterns: [host],
+        always: [host],
+        metadata: {
+          url: params.url,
+          network: { host },
+        },
+      })
+    }
 
+    // Scope an "always" style grant to this site, never the whole tool.
+    const site = (() => {
+      try {
+        return new URL(params.url).origin + "/*"
+      } catch {
+        return params.url
+      }
+    })()
     await ctx.ask({
       permission: "webfetch",
       patterns: [params.url],
-      always: ["*"],
+      always: [site],
       metadata: {
         url: params.url,
         format: params.format,

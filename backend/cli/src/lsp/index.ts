@@ -10,6 +10,8 @@ import { Config } from "../config/config"
 import { spawn } from "child_process"
 import { Instance } from "../project/instance"
 import { Flag } from "@/flag/flag"
+import { OpenScience } from "@/openscience"
+import { ProjectTrust } from "@/project/trust"
 
 export namespace LSP {
   const log = Log.create({ service: "lsp" })
@@ -80,7 +82,7 @@ export namespace LSP {
     async () => {
       const clients: LSPClient.Info[] = []
       const servers: Record<string, LSPServer.Info> = {}
-      const cfg = await Config.get()
+      const cfg = await Config.getExecution()
 
       if (cfg.lsp === false) {
         log.info("all LSPs are disabled")
@@ -105,20 +107,29 @@ export namespace LSP {
           delete servers[name]
           continue
         }
+        const project = await Config.projectControls("lsp", name)
         servers[name] = {
           ...existing,
           id: name,
           root: existing?.root ?? (async () => Instance.directory),
           extensions: item.extensions ?? existing?.extensions ?? [],
           spawn: async (root) => {
+            const env = { ...(await OpenScience.subprocessEnv(process.env)), ...item.env }
+            const command = item.command[0]
+            const target = path.isAbsolute(command)
+              ? command
+              : command.includes("/") || command.includes("\\")
+                ? path.resolve(root, command)
+                : Bun.which(command, { PATH: env.PATH })
+            const local =
+              target !== null && (Instance.containsPath(target) || (await Instance.containsCanonicalPath(target)))
+            if (project || local) await ProjectTrust.require(Instance.project, "project_lsp")
             return {
               process: spawn(item.command[0], item.command.slice(1), {
                 cwd: root,
-                env: {
-                  ...process.env,
-                  ...item.env,
-                },
+                env,
               }),
+              project: project || local,
               initialization: item.initialization,
             }
           },
@@ -179,6 +190,20 @@ export namespace LSP {
     const extension = path.parse(file).ext || file
     const result: LSPClient.Info[] = []
 
+    async function active(client: LSPClient.Info) {
+      if (!client.project) return true
+      try {
+        await ProjectTrust.require(Instance.project, "project_lsp")
+        return true
+      } catch (error) {
+        if (!ProjectTrust.DeniedError.isInstance(error)) throw error
+        const index = s.clients.indexOf(client)
+        if (index !== -1) s.clients.splice(index, 1)
+        await client.shutdown()
+        return false
+      }
+    }
+
     async function schedule(server: LSPServer.Info, root: string, key: string) {
       const handle = await server
         .spawn(root)
@@ -187,6 +212,10 @@ export namespace LSP {
           return value
         })
         .catch((err) => {
+          if (ProjectTrust.DeniedError.isInstance(err)) {
+            log.warn(`Project trust denied LSP server ${server.id}`, { error: err })
+            return undefined
+          }
           s.broken.add(key)
           log.error(`Failed to spawn LSP server ${server.id}`, { error: err })
           return undefined
@@ -211,6 +240,8 @@ export namespace LSP {
         return undefined
       }
 
+      if (!(await active(client))) return undefined
+
       const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
       if (existing) {
         handle.process.kill()
@@ -230,6 +261,7 @@ export namespace LSP {
 
       const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
       if (match) {
+        if (!(await active(match))) continue
         result.push(match)
         continue
       }
@@ -238,6 +270,7 @@ export namespace LSP {
       if (inflight) {
         const client = await inflight
         if (!client) continue
+        if (!(await active(client))) continue
         result.push(client)
         continue
       }

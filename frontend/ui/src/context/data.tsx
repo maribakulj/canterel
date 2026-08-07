@@ -39,7 +39,7 @@ type Data = {
 export type PermissionRespondFn = (input: {
   sessionID: string
   permissionID: string
-  response: "once" | "always" | "reject"
+  response: "once" | "session" | "project" | "always" | "reject"
 }) => void
 
 export type QuestionReplyFn = (input: { requestID: string; answers: QuestionAnswer[] }) => void
@@ -47,6 +47,9 @@ export type QuestionReplyFn = (input: { requestID: string; answers: QuestionAnsw
 export type QuestionRejectFn = (input: { requestID: string }) => void
 
 export type NavigateToSessionFn = (sessionID: string) => void
+
+/** Explicit save: register a written file as a durable, versioned artifact. */
+export type SaveArtifactFn = (path: string) => Promise<{ version: number }>
 
 export const { use: useData, provider: DataProvider } = createSimpleContext({
   name: "Data",
@@ -58,6 +61,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     onQuestionReject?: QuestionRejectFn
     onNavigateToSession?: NavigateToSessionFn
     onOpenFile?: (path: string) => void
+    onSaveArtifact?: SaveArtifactFn
   }) => {
     return {
       get store() {
@@ -71,6 +75,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       rejectQuestion: props.onQuestionReject,
       navigateToSession: props.onNavigateToSession,
       openFile: props.onOpenFile,
+      saveArtifact: props.onSaveArtifact,
     }
   },
 })

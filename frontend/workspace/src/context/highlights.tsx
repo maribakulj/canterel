@@ -67,7 +67,17 @@ function parseRelease(value: unknown): ParsedRelease | undefined {
   const tag = getText(value.tag) ?? getText(value.tag_name) ?? getText(value.name)
 
   if (!Array.isArray(value.highlights)) {
-    return { tag, highlights: [] }
+    const body = getText(value.body)
+    if (!body) return { tag, highlights: [] }
+    return {
+      tag,
+      highlights: [
+        {
+          title: getText(value.name) ?? tag ?? "OpenScience update",
+          description: body,
+        },
+      ],
+    }
   }
 
   const highlights = value.highlights.flatMap((group) => {
@@ -168,12 +178,6 @@ export const { use: useHighlights, provider: HighlightsProvider } = createSimple
       setTo(platform.version)
 
       if (!settings.general.releaseNotes()) {
-        markSeen()
-        return
-      }
-
-      // Skip changelog fetch on localhost to avoid CORS errors
-      if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
         markSeen()
         return
       }

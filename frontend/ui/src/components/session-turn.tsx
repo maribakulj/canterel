@@ -4,6 +4,7 @@ import {
   Message as MessageType,
   Part as PartType,
   type PermissionRequest,
+  type QuestionRequest,
   TextPart,
   ToolPart,
 } from "@synsci/sdk/v2/client"
@@ -18,7 +19,7 @@ import { Binary } from "@synsci/util/binary"
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, ParentProps, Show, Switch } from "solid-js"
 import { DiffChanges } from "./diff-changes"
 import { Message, Part } from "./message-part"
-import { stripRedactedReasoning } from "./tool-display"
+import { artifactActions, stripRedactedReasoning, writtenFiles } from "./tool-display"
 import { Markdown } from "./markdown"
 import { Accordion } from "./accordion"
 import { StickyAccordionHeader } from "./sticky-accordion-header"
@@ -84,8 +85,15 @@ function same<T>(a: readonly T[], b: readonly T[]) {
 
 function isAttachment(part: PartType | undefined) {
   if (part?.type !== "file") return false
-  const mime = (part as FilePart).mime ?? ""
-  return mime.startsWith("image/") || mime === "application/pdf"
+  const file = part as FilePart
+  const mime = file.mime ?? ""
+  // Images/PDFs, plus raw uploaded blobs (data: URL, no source.text — e.g. .md/.txt).
+  // @file references carry source.text and render inline, not as chips.
+  return (
+    mime.startsWith("image/") ||
+    mime === "application/pdf" ||
+    (file.url?.startsWith("data:") === true && file.source?.text === undefined)
+  )
 }
 
 function AssistantMessageItem(props: {
@@ -150,7 +158,8 @@ export function SessionTurn(
   const emptyFiles: FilePart[] = []
   const emptyAssistant: AssistantMessage[] = []
   const emptyPermissions: PermissionRequest[] = []
-  const emptyPermissionParts: { part: ToolPart; message: AssistantMessage }[] = []
+  const emptyQuestions: QuestionRequest[] = []
+  const emptyRequestParts: { part: ToolPart; message: AssistantMessage }[] = []
   const emptyDiffs: FileDiff[] = []
   const idle = { type: "idle" as const }
 
@@ -263,26 +272,28 @@ export function SessionTurn(
   })
 
   const permissions = createMemo(() => data.store.permission?.[props.sessionID] ?? emptyPermissions)
-  const permissionCount = createMemo(() => permissions().length)
   const nextPermission = createMemo(() => permissions()[0])
+  const questions = createMemo(() => data.store.question?.[props.sessionID] ?? emptyQuestions)
+  const nextQuestion = createMemo(() => questions()[0])
+  const requestCount = createMemo(() => permissions().length + questions().length)
 
-  const permissionParts = createMemo(() => {
-    if (props.stepsExpanded) return emptyPermissionParts
+  const requestParts = createMemo(() => {
+    if (props.stepsExpanded) return emptyRequestParts
 
-    const next = nextPermission()
-    if (!next || !next.tool) return emptyPermissionParts
+    const tool = nextPermission()?.tool ?? nextQuestion()?.tool
+    if (!tool) return emptyRequestParts
 
-    const message = findLast(assistantMessages(), (m) => m.id === next.tool!.messageID)
-    if (!message) return emptyPermissionParts
+    const message = findLast(assistantMessages(), (m) => m.id === tool.messageID)
+    if (!message) return emptyRequestParts
 
     const parts = data.store.part[message.id] ?? emptyParts
     for (const part of parts) {
       if (part?.type !== "tool") continue
-      const tool = part as ToolPart
-      if (tool.callID === next.tool?.callID) return [{ part: tool, message }]
+      const toolPart = part as ToolPart
+      if (toolPart.callID === tool.callID) return [{ part: toolPart, message }]
     }
 
-    return emptyPermissionParts
+    return emptyRequestParts
   })
 
   const shellModePart = createMemo(() => {
@@ -358,6 +369,23 @@ export function SessionTurn(
     if (s.type !== "retry") return
     return s
   })
+
+  // Files this turn wrote (completed write/edit/multiedit/apply_patch parts).
+  // Feeds the end-of-response "Save as artifact…" affordance on the last
+  // completed turn, which promotes a scratch file into a durable versioned
+  // artifact through the data context's saveArtifact callback.
+  const emptyWritten: string[] = []
+  const written = createMemo(
+    () => {
+      const collected: PartType[] = []
+      for (const m of assistantMessages()) {
+        for (const part of data.store.part[m.id] ?? emptyParts) collected.push(part)
+      }
+      return writtenFiles(collected)
+    },
+    emptyWritten,
+    { equals: same },
+  )
 
   const response = createMemo(() => lastTextPart()?.text)
   const responsePartId = createMemo(() => lastTextPart()?.id)
@@ -435,6 +463,7 @@ export function SessionTurn(
     retrySeconds: 0,
     diffsOpen: [] as string[],
     diffLimit: diffInit,
+    artifacts: {} as Record<string, { state: "saving" | "saved" | "error"; version?: number; error?: string }>,
     status: rawStatus(),
     duration: duration(),
   })
@@ -445,10 +474,25 @@ export function SessionTurn(
       () => {
         setStore("diffsOpen", [])
         setStore("diffLimit", diffInit)
+        setStore("artifacts", {})
       },
       { defer: true },
     ),
   )
+
+  const saveArtifact = (path: string) => {
+    const save = data.saveArtifact
+    if (!save || store.artifacts[path]?.state === "saving") return
+    setStore("artifacts", path, { state: "saving" })
+    void save(path).then(
+      (result) => setStore("artifacts", path, { state: "saved", version: result.version }),
+      (error: unknown) =>
+        setStore("artifacts", path, {
+          state: "error",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    )
+  }
 
   createEffect(() => {
     const r = retry()
@@ -480,7 +524,7 @@ export function SessionTurn(
   })
 
   createEffect(
-    on(permissionCount, (count, prev) => {
+    on(requestCount, (count, prev) => {
       if (!count) return
       if (prev !== undefined && count <= prev) return
       autoScroll.forceScrollToBottom()
@@ -641,11 +685,9 @@ export function SessionTurn(
                         </Show>
                       </div>
                     </Show>
-                    <Show when={!props.stepsExpanded && permissionParts().length > 0}>
+                    <Show when={!props.stepsExpanded && requestParts().length > 0}>
                       <div data-slot="session-turn-permission-parts">
-                        <For each={permissionParts()}>
-                          {({ part, message }) => <Part part={part} message={message} />}
-                        </For>
+                        <For each={requestParts()}>{({ part, message }) => <Part part={part} message={message} />}</For>
                       </div>
                     </Show>
                     {/* Response */}
@@ -759,6 +801,36 @@ export function SessionTurn(
                             })}
                           </Button>
                         </Show>
+                      </div>
+                    </Show>
+                    {/* Explicit save: offer the written files as durable versioned artifacts */}
+                    <Show when={isLastUserMessage() && !working() && !!data.saveArtifact && written().length > 0}>
+                      <div data-slot="session-turn-artifact-save">
+                        <For each={artifactActions(written())}>
+                          {(action) => {
+                            const state = () => store.artifacts[action.path]
+                            const label = () => {
+                              if (state()?.state === "saving")
+                                return `Saving ${action.path.split("/").pop() ?? action.path}…`
+                              if (state()?.state === "saved") return `Saved as artifact · v${state()?.version ?? 1}`
+                              if (state()?.state === "error") return "Save failed · retry"
+                              return action.label
+                            }
+                            return (
+                              <Button
+                                data-slot="session-turn-artifact-action"
+                                data-state={state()?.state}
+                                variant="ghost"
+                                size="small"
+                                title={state()?.error ?? action.path}
+                                disabled={state()?.state === "saving"}
+                                onClick={() => saveArtifact(action.path)}
+                              >
+                                {label()}
+                              </Button>
+                            )
+                          }}
+                        </For>
                       </div>
                     </Show>
                     <Show when={error() && !props.stepsExpanded}>

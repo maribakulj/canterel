@@ -117,6 +117,24 @@ export namespace Network {
     return { allowlistEnabled: false, enabled: ["package-management"], custom: [] }
   }
 
+  function normalize(domain: string): string {
+    return domain.trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "")
+  }
+
+  function domains(state: State): string[] {
+    const result = new Set<string>(state.custom.map(normalize).filter(Boolean))
+    for (const group of CATALOG) {
+      if (!state.enabled.includes(group.id)) continue
+      for (const domain of group.domains) result.add(normalize(domain))
+    }
+    return [...result].sort()
+  }
+
+  export function domainAllowed(hostname: string, allowlist: string[]): boolean {
+    const host = normalize(hostname)
+    return allowlist.map(normalize).some((domain) => host === domain || host.endsWith(`.${domain}`))
+  }
+
   export async function get(): Promise<State> {
     const text = await Bun.file(file)
       .text()
@@ -140,12 +158,53 @@ export namespace Network {
   // Effective flat list of allowed domains (enabled groups ∪ custom). Readable
   // by any backend caller that wants to gate outbound access.
   export async function allowlist(): Promise<string[]> {
+    return domains(await get())
+  }
+
+  export async function assertAllowed(raw: string): Promise<void> {
     const state = await get()
-    const domains = new Set<string>(state.custom.map((d) => d.trim()).filter(Boolean))
-    for (const group of CATALOG) {
-      if (!state.enabled.includes(group.id)) continue
-      for (const domain of group.domains) domains.add(domain)
+    if (!state.allowlistEnabled) return
+    let url: URL
+    try {
+      url = new URL(raw)
+    } catch {
+      throw new Error(`Invalid network URL: ${raw}`)
     }
-    return [...domains].sort()
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`Network URL must use http or https: ${raw}`)
+    }
+    const allowed = domains(state)
+    if (domainAllowed(url.hostname, allowed)) return
+    throw new Error(`Network access to ${url.hostname} is not in the configured allow-list`)
+  }
+
+  /** The hostname the allow-list would block for this URL, or undefined when
+   *  the URL is allowed (or enforcement is off). Still throws on invalid URLs
+   *  so callers cannot smuggle malformed input past the gate. */
+  export async function blocked(raw: string): Promise<string | undefined> {
+    const state = await get()
+    let url: URL
+    try {
+      url = new URL(raw)
+    } catch {
+      throw new Error(`Invalid network URL: ${raw}`)
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`Network URL must use http or https: ${raw}`)
+    }
+    if (!state.allowlistEnabled) return undefined
+    if (domainAllowed(url.hostname, domains(state))) return undefined
+    return normalize(url.hostname)
+  }
+
+  /** Add one domain to the persisted custom allow-list — the durable half of
+   *  an "always allow" answer to a blocked-domain prompt, so the Network
+   *  settings panel reflects exactly what was granted. */
+  export async function allow(domain: string): Promise<State> {
+    const state = await get()
+    const host = normalize(domain)
+    if (!host) return state
+    if (domains(state).includes(host)) return state
+    return set({ ...state, custom: [...state.custom, host] })
   }
 }

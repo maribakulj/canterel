@@ -1,4 +1,5 @@
 import {
+  createComputed,
   createEffect,
   createMemo,
   createSignal,
@@ -12,109 +13,210 @@ import {
   type JSX,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
+import { createMediaQuery } from "@solid-primitives/media"
 import { SessionTurn } from "@synsci/ui/session-turn"
 import { createAutoScroll } from "@synsci/ui/hooks"
 import { useSync } from "@/context/sync"
 import { useSDK } from "@/context/sdk"
 import { useLayout } from "@/context/layout"
-import { useTheme } from "@synsci/ui/theme"
+import { usePrompt } from "@/context/prompt"
+import { useServer } from "@/context/server"
+import { usePlatform } from "@/context/platform"
+import { useTerminal } from "@/context/terminal"
 import { PromptInput } from "@/components/prompt-input"
 import { NewSessionView } from "@/components/session/session-new-view"
-import { AsciiSpinner } from "@/thesis/shared/AsciiSpinner"
-import { Wordmark } from "@/thesis/Wordmark"
-import { AppHeader, HeaderIconButton, HeaderDivider } from "@/thesis/AppHeader"
-import { RightPane } from "@/thesis/RightPane"
-import { FileExplorer } from "@/thesis/FileExplorer"
-import { FileView } from "@/thesis/FilePreview"
-import SkillsPage from "@/thesis/SkillsPage"
-import { centerTabs } from "@/thesis/store/centerTabs"
-import { FONT_MONO, FONT_SANS, FONT_SERIF } from "@/styles/tokens"
-import { uiStore } from "@/thesis/store/ui"
-import { useGlobalKeys } from "@/thesis/useGlobalKeys"
+import { AsciiSpinner } from "@/atlas/shared/AsciiSpinner"
+import { AppHeader, HeaderIconButton } from "@/atlas/AppHeader"
+import { RightPane } from "@/atlas/RightPane"
+import { FONT_MONO, FONT_SANS } from "@/styles/tokens"
+import { uiStore } from "@/atlas/store/ui"
+import { useGlobalKeys } from "@/atlas/useGlobalKeys"
 import { useDialog } from "@synsci/ui/context/dialog"
-import { useModels } from "@/context/models"
 import { useCommand, type CommandOption } from "@/context/command"
 import { useLanguage } from "@/context/language"
-import { openSetupDialog } from "@/thesis/SetupDialog"
-import { confirmDialog } from "@/thesis/dialogs"
+import { confirmDialog } from "@/atlas/dialogs"
 import { DialogSettings } from "@/components/dialog-settings"
-import { DisconnectedPanel } from "@/thesis/DisconnectedPanel"
-import { CommandPalette } from "@/thesis/CommandPalette"
-import { HelpOverlay } from "@/thesis/HelpOverlay"
-import { ToastContainer } from "@/thesis/Toast"
+import { SessionSidebarActions, SidebarAction, type SessionContext } from "@/pages/session-sidebar-action"
+import { DisconnectedPanel } from "@/atlas/DisconnectedPanel"
+import { CommandPalette } from "@/atlas/CommandPalette"
+import { HelpOverlay } from "@/atlas/HelpOverlay"
+import { ToastContainer } from "@/atlas/Toast"
 import {
   IconChevronDown,
   IconChevronLeft,
   IconPlus,
   IconSearch,
-  IconBookOpen,
+  IconCheckCircle,
   IconSettings,
-  IconSun,
-  IconMoon,
   IconMessageSquare,
-  IconFolderTree,
-  IconFile,
-  IconBrain,
+  IconMoreH,
+  IconPin,
+  IconPinFilled,
   IconX,
-} from "@/thesis/shared/Icon"
-import { StatusDot } from "@/thesis/shared/StatusDot"
-import { DateTime } from "luxon"
-import { IconTrash } from "@/thesis/shared/Icon"
-import { toast } from "@/thesis/Toast"
+} from "@/atlas/shared/Icon"
+import { StatusDot } from "@/atlas/shared/StatusDot"
+import { IconTrash } from "@/atlas/shared/Icon"
+import { toast } from "@/atlas/Toast"
+import { artifactContext } from "@/artifacts/context"
+import { createSessionTabs } from "@/atlas/store/sessionTabs"
+import { ProjectTrustControl } from "@/atlas/ProjectTrust"
+import { projectTrustApi, type ProjectTrustApi } from "@/atlas/project-trust"
+import { terminalEndpointAvailable } from "@/atlas/terminal-endpoint"
+import { productPreferences, type ProductPreferences } from "@/context/product-preferences"
+import { SIDEBAR_WIDTH, clampSidebarWidth } from "@/pages/session-sidebar-size"
 
 type SyncSession = ReturnType<typeof useSync>["data"]["session"][number]
 
 /**
  * Session page — new visual identity (Synthetic Sciences wordmark + sessions
- * sidebar + chat + canvas/agents/skills/files right pane) wrapping the
- * unchanged openscience backend chat (SessionTurn rendering, PromptInput, real
- * SSE streaming, sub-task delegation, tool calls, TODOs, diff cards).
+ * sidebar + conversation workspace + contextual files and research pane) wrapping
+ * the unchanged openscience backend chat (SessionTurn rendering, PromptInput,
+ * real SSE streaming, sub-task delegation, tool calls, TODOs, diff cards).
  */
+const sessionSidebarKey = "openscience-session-sidebar-v1"
+const sessionSidebarWidthKey = "openscience-session-sidebar-width-v1"
+
+function readSessionSidebar() {
+  if (typeof localStorage === "undefined") return false
+  try {
+    return localStorage.getItem(sessionSidebarKey) === "collapsed"
+  } catch {
+    return false
+  }
+}
+
+function writeSessionSidebar(collapsed: boolean) {
+  try {
+    localStorage.setItem(sessionSidebarKey, collapsed ? "collapsed" : "expanded")
+  } catch {}
+}
+
+function readSessionSidebarWidth() {
+  if (typeof localStorage === "undefined") return SIDEBAR_WIDTH.initial
+  try {
+    const value = Number.parseFloat(localStorage.getItem(sessionSidebarWidthKey) ?? "")
+    return Number.isFinite(value) ? clampSidebarWidth(value) : SIDEBAR_WIDTH.initial
+  } catch {
+    return SIDEBAR_WIDTH.initial
+  }
+}
+
+function writeSessionSidebarWidth(width: number) {
+  try {
+    localStorage.setItem(sessionSidebarWidthKey, clampSidebarWidth(width).toString())
+  } catch {}
+}
+
 export default function Page(): JSX.Element {
   const params = useParams()
   const navigate = useNavigate()
   const sync = useSync()
   const sdk = useSDK()
   const layout = useLayout()
-  const theme = useTheme()
+  const prompt = usePrompt()
+  const terminal = useTerminal()
+  const server = useServer()
+  const platform = usePlatform()
   const dialog = useDialog()
+  const trust = projectTrustApi(sdk.client)
   const [creating, setCreating] = createSignal(false)
+  const pending: { value?: Promise<string | undefined>; context?: SessionContext } = {}
+  const [mobileSessionsOpen, setMobileSessionsOpen] = createSignal(false)
+  const [sessionsCollapsed, setSessionsCollapsed] = createSignal(readSessionSidebar())
+  const [sessionsWidth, setSessionsWidth] = createSignal(readSessionSidebarWidth())
+  const sessionTabs = createSessionTabs()
 
-  async function newSession() {
-    if (creating()) return
-    setCreating(true)
-    try {
-      const res: any = await sdk.client.session.create({
-        directory: sync.project?.worktree ?? sync.data.path.directory,
-      } as any)
-      const data = res?.data ?? res
-      const id = data?.id ?? data?.sessionID
-      if (id) {
-        navigate(`/${params.dir}/session/${id}`)
-      } else {
-        navigate(`/${params.dir}/session/new`)
-      }
-    } catch {
-      navigate(`/${params.dir}/session/new`)
-    } finally {
-      setCreating(false)
+  createEffect(
+    on(
+      () => server.url,
+      (url) => {
+        productPreferences.sync({ show_trace: false, atlas_enabled: false })
+        if (!url) return
+        const endpoint = `${url.replace(/\/$/, "")}/settings/preferences`
+        void (platform.fetch ?? fetch)(endpoint)
+          .then((response) => (response.ok ? response.json() : Promise.reject(new Error("Preferences unavailable"))))
+          .then((preferences) => productPreferences.sync(preferences as ProductPreferences))
+          .catch(() => productPreferences.sync({ show_trace: false, atlas_enabled: false }))
+      },
+    ),
+  )
+
+  function newSession() {
+    if (!params.id || params.id === "new") {
+      prompt.reset()
+      return
     }
+    navigate(`/${params.dir}/session/new`)
+  }
+
+  async function ensureSession() {
+    if (params.id && params.id !== "new") return params.id
+    const context = uiStore.context()
+    if ((["terminal", "files", "kernels"] as SessionContext[]).includes(context as SessionContext)) {
+      pending.context = context as SessionContext
+    }
+    if (pending.value) return pending.value
+    setCreating(true)
+    const task = sdk.client.session
+      .create()
+      .then((res) => {
+        const data = res.data
+        const id = data?.id
+        if (!id) return
+        const context = pending.context
+        if (context) {
+          uiStore.activateScope(sdk.scope, id)
+          uiStore.openContext(context)
+        }
+        navigate(`/${params.dir}/session/${id}`)
+        return id
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        pending.value = undefined
+        pending.context = undefined
+        setCreating(false)
+      })
+    pending.value = task
+    return task
+  }
+
+  const atlasAvailable = () => productPreferences.atlas()
+
+  createEffect(() => {
+    if (productPreferences.atlas()) return
+    if (uiStore.context() !== "canvas" || !uiStore.open()) return
+    uiStore.closeContext()
+  })
+
+  const openContext = (context: SessionContext) => {
+    if (context === "canvas" && !atlasAvailable()) return
+    uiStore.openContext(context)
+    if (!(["terminal", "files", "kernels"] as SessionContext[]).includes(context)) return
+    void ensureSession()
   }
 
   async function deleteSession(sessionID: string) {
+    const ok = await confirmDialog(dialog, {
+      title: "Delete this session?",
+      message: "This removes the conversation and its session-owned workspace. Saved artifacts stay available.",
+      confirmLabel: "Delete session",
+      danger: true,
+    })
+    if (!ok) return
     // Capture the next-active id BEFORE the optimistic splice so we
     // know where to navigate.
     const active = params.id === sessionID
     const next = sessions().find((s) => s.id !== sessionID)?.id
     try {
       await sync.session.delete(sessionID)
-      toast.info("session deleted")
+      toast.info("Session deleted")
       if (active) {
         navigate(next ? `/${params.dir}/session/${next}` : `/${params.dir}/session/new`)
       }
-    } catch (e: any) {
-      console.error("session.delete failed", e)
-      toast.error("could not delete", e?.message ?? String(e))
+    } catch (error: unknown) {
+      console.error("session.delete failed", error)
+      toast.error("Could not delete session", error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -123,10 +225,22 @@ export default function Page(): JSX.Element {
     if (!trimmed) return
     try {
       await sync.session.rename(sessionID, trimmed)
-    } catch (e: any) {
-      console.error("session.rename failed", e)
-      toast.error("could not rename", e?.message ?? String(e))
+    } catch (error: unknown) {
+      console.error("session.rename failed", error)
+      toast.error("Could not rename session", error instanceof Error ? error.message : String(error))
     }
+  }
+
+  async function pinSession(sessionID: string, pinned: boolean) {
+    await sync.session.pin(sessionID, pinned).catch((error: unknown) => {
+      toast.error("Could not update pin", error instanceof Error ? error.message : String(error))
+    })
+  }
+
+  function toggleSessions() {
+    const next = !sessionsCollapsed()
+    setSessionsCollapsed(next)
+    writeSessionSidebar(next)
   }
 
   // Force-load the session list into the sync store every time we land
@@ -180,15 +294,69 @@ export default function Page(): JSX.Element {
 
   const project = createMemo(() => sync.project)
   const projectName = () => {
+    const configured = project()?.name?.trim()
+    if (configured) return configured
     const p = projectPath()
     const segs = p.split("/").filter(Boolean)
     return segs[segs.length - 1] ?? p
   }
-  const projectPath = () => project()?.worktree ?? sdk.directory
-
+  const projectPath = () => sdk.directory
   const sessions = createMemo<SyncSession[]>(() =>
-    [...sync.data.session].filter((s) => !s.parentID).sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0)),
+    [...sync.data.session]
+      .filter((s) => !s.parentID)
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.time?.pinned)) - Number(Boolean(a.time?.pinned)) ||
+          (b.time?.pinned ?? 0) - (a.time?.pinned ?? 0) ||
+          (b.time?.updated ?? 0) - (a.time?.updated ?? 0),
+      ),
   )
+
+  createComputed(
+    on(
+      () => [sdk.scope, params.id] as const,
+      ([project, id]) => {
+        sessionTabs.activateProject(project)
+        if (!id || id === "new") return
+        sessionTabs.open(id)
+      },
+    ),
+  )
+
+  createEffect(() => {
+    const id = params.id
+    if (!id || id === "new") return
+    sessionTabs.setDraft(id, prompt.dirty())
+  })
+
+  createEffect(() => {
+    const id = params.id
+    if (!id || id === "new") return
+    const updated = sessions().find((session) => session.id === id)?.time?.updated ?? 0
+    if (!updated) return
+    sessionTabs.markRead(id, updated)
+  })
+
+  const openSessions = createMemo(() =>
+    sessionTabs.tabs().map((id) => {
+      const session = sessions().find((item) => item.id === id)
+      const updated = session?.time?.updated ?? 0
+      return {
+        id,
+        title: session?.title || "session",
+        working: Boolean(sync.data.session_status?.[id] && sync.data.session_status[id].type !== "idle"),
+        dirty: sessionTabs.dirty(id),
+        unread: sessionTabs.unread(id, updated),
+      }
+    }),
+  )
+
+  const closeSessionTab = (id: string) => {
+    const next = sessionTabs.close(id)
+    if (params.id !== id) return
+    navigate(next ? `/${params.dir}/session/${next}` : `/${params.dir}/session/new`)
+  }
+
   const messages = createMemo(() => (params.id ? (sync.data.message[params.id] ?? []) : []))
   const lastUserMessage = createMemo(() => {
     const ms = messages()
@@ -205,37 +373,28 @@ export default function Page(): JSX.Element {
   // makes the revert permanent server-side).
   const activeSession = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
   const revertInfo = createMemo(() => activeSession()?.revert)
-  // New-session worktree selection, shared between the empty-state view and the
-  // composer (matches the v1.1.116 new-session flow).
-  const [newSessionWorktree, setNewSessionWorktree] = createSignal("main")
-
-  // A `path.md` mentioned in an assistant message dispatches this; open it as a
-  // document tab (same surface as the Files tab / a tool-card filename click).
+  // A `path.md` mentioned in an assistant message dispatches this. Keep the
+  // transcript mounted and open the file in the contextual Files pane.
   onMount(() => {
     const onOpenFile = (e: Event) => {
       const path = (e as CustomEvent).detail?.path
       if (typeof path !== "string" || !path) return
-      const dir = projectPath()
-      const rel = dir && path.startsWith(dir + "/") ? path.slice(dir.length + 1) : path
-      centerTabs.openFile(dir, rel)
+      uiStore.openFile(projectPath(), path)
     }
     document.addEventListener("openscience:open-file", onOpenFile)
-    onCleanup(() => document.removeEventListener("openscience:open-file", onOpenFile))
-
-    // "Open in Shell tab" on a bash tool card → reveal the right pane's terminal
-    // and re-run the command there (the RightPane picks up terminalCommand).
-    const onShell = (e: Event) => {
-      const command = (e as CustomEvent).detail?.command
-      if (typeof command !== "string" || !command) return
-      uiStore.setRightPaneOpen(true)
-      uiStore.setTerminalCommand({
-        command: "bash",
-        args: ["-lc", command],
-        title: command.length > 24 ? command.slice(0, 24) + "…" : command,
-      })
+    const onOpenContext = (event: Event) => {
+      const context = (event as CustomEvent).detail?.context
+      if (!(["files", "terminal", "canvas", "kernels", "trace"] as SessionContext[]).includes(context)) return
+      openContext(context)
     }
-    document.addEventListener("open-shell-tab", onShell)
-    onCleanup(() => document.removeEventListener("open-shell-tab", onShell))
+    const onReview = () => void runReview()
+    document.addEventListener("openscience:open-context", onOpenContext)
+    document.addEventListener("openscience:run-review", onReview)
+    onCleanup(() => {
+      document.removeEventListener("openscience:open-file", onOpenFile)
+      document.removeEventListener("openscience:open-context", onOpenContext)
+      document.removeEventListener("openscience:run-review", onReview)
+    })
   })
   const turnMessages = createMemo(() => {
     const revertID = revertInfo()?.messageID
@@ -271,7 +430,7 @@ export default function Page(): JSX.Element {
       title: "Undo from here?",
       message:
         "Hides this message and everything after it, and rolls back the file changes they made. You can restore until you send the next message.",
-      confirmLabel: "undo",
+      confirmLabel: "Undo",
       danger: true,
     })
     if (!ok) return
@@ -300,10 +459,38 @@ export default function Page(): JSX.Element {
   // a pending revert until the next message makes it permanent.
   const commands = useCommand()
   const language = useLanguage()
+  const showTerminal = () => {
+    if (uiStore.context() === "terminal" && uiStore.open()) return
+    openContext("terminal")
+  }
   commands.register(() => {
     const id = params.id
-    if (!id || id === "new") return []
     const list: CommandOption[] = []
+    list.push(
+      {
+        id: "terminal.toggle",
+        title: language.t("command.terminal.toggle"),
+        description: "Open or close the project terminal",
+        category: language.t("command.category.terminal"),
+        keybind: "ctrl+`",
+        onSelect: () => openContext("terminal"),
+      },
+      {
+        id: "terminal.new",
+        title: language.t("command.terminal.new"),
+        description: language.t("command.terminal.new.description"),
+        category: language.t("command.category.terminal"),
+        keybind: "ctrl+shift+`",
+        disabled: !terminalEndpointAvailable(sdk.url) || !id || id === "new",
+        onSelect: () => {
+          showTerminal()
+          void terminal.new().catch((cause: unknown) => {
+            toast.error("could not start terminal", cause instanceof Error ? cause.message : String(cause))
+          })
+        },
+      },
+    )
+    if (!id || id === "new") return list
     const last = lastUserMessage()
     if (last && !revertInfo()) {
       list.push({
@@ -367,25 +554,14 @@ export default function Page(): JSX.Element {
   const [stepsExpanded, setStepsExpanded] = createSignal<Record<string, boolean>>({})
   const toggleSteps = (id: string) => setStepsExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
 
-  const isDark = () => theme.mode() === "dark"
-  useGlobalKeys({ onNew: () => void newSession() })
+  useGlobalKeys({ onNew: newSession })
 
-  // Center-pane tabs. The chat tab is always mounted (so streaming + scroll
-  // survive tab switches); Files mounts on first visit; document tabs mount
-  // when opened from the explorer and unmount on close.
+  // The center belongs to the conversation for the lifetime of the route.
+  // Files and other research surfaces mount only in the right context pane.
   const chatTitle = createMemo(() => {
     const s = sessions().find((x) => x.id === params.id)
-    return s?.title || "Chat"
+    return s?.title || "New session"
   })
-  const [visitedFiles, setVisitedFiles] = createSignal(false)
-  createEffect(() => {
-    if (centerTabs.active() === "files") setVisitedFiles(true)
-  })
-  const [visitedSkills, setVisitedSkills] = createSignal(false)
-  createEffect(() => {
-    if (centerTabs.active() === "skills") setVisitedSkills(true)
-  })
-
   // Chat scroll: stick to the bottom while the agent streams; detach the
   // moment the user scrolls up (a "jump to latest" button re-attaches).
   // Follow is driven by content growth (ResizeObserver on the content
@@ -398,33 +574,78 @@ export default function Page(): JSX.Element {
     return !!status && status.type !== "idle"
   })
 
+  // The reviewer is a direct action, never a chat prompt: POST /session/:id/review
+  // launches the reviewer pass on the open session (project-scoped like every
+  // other request) and its findings stream into the session as a turn.
+  const reviewDisabled = createMemo(() => !params.id || params.id === "new" || working())
+  const runReview = async () => {
+    const id = params.id
+    if (!id || id === "new" || working()) return
+    const response = await sdk.request(`/session/${id}/review`, { method: "POST" }).catch(() => undefined)
+    if (!response?.ok) {
+      toast.error("review failed", response ? `${response.status}` : "request failed")
+      return
+    }
+    toast.success("review started", "the reviewer streams into this session")
+  }
+
   const chatScroll = createAutoScroll({
     working,
     overflowAnchor: "dynamic",
     bottomThreshold: 120,
   })
+  const sessionKey = createMemo(() => `${sdk.scope}/${params.id ?? "new"}`)
+  const chatView = layout.view(sessionKey)
+  const restoration: {
+    target?: {
+      scope: string
+      x: number
+      y: number
+    }
+  } = {}
+  let chatElement: HTMLDivElement | undefined
+  let contentElement: HTMLDivElement | undefined
+  let observer: ResizeObserver | undefined
 
-  // Re-pin when the user switches sessions, and on initial mount once
-  // messages populate (covers direct URL / bookmark / refresh into a long,
-  // idle session, where createAutoScroll's settling window would otherwise
-  // expire before async-loaded messages render).
+  const cancelRestoration = () => {
+    restoration.target = undefined
+  }
+
+  const applyRestoration = () => {
+    const target = restoration.target
+    const element = chatElement
+    if (!target || !element || target.scope !== sessionKey()) return
+    element.scrollLeft = target.x
+    const max = Math.max(0, element.scrollHeight - element.clientHeight)
+    if (max + 1 < target.y) {
+      element.scrollTop = max
+      return
+    }
+    restoration.target = undefined
+    element.scrollTop = target.y
+    chatScroll.handleScroll()
+  }
+
+  // Restore one exact position per scoped conversation. Resize observation
+  // handles progressively rendered markdown without repeated timers; the first
+  // wheel/pointer interaction cancels restoration immediately.
   createEffect(
     on(
-      () => [params.id, messages().length > 0] as const,
-      ([, hasMessages]) => {
+      () => [sessionKey(), messages().length > 0] as const,
+      ([scope, hasMessages]) => {
+        restoration.target = undefined
         if (!hasMessages) return
-        // A turn's markdown/code-highlight/katex renders progressively AFTER the
-        // message array populates, growing scrollHeight over ~1s. An idle session
-        // isn't in follow-mode, so createAutoScroll won't track that growth — a
-        // single scroll lands at the early bottom. Re-pin across the load window
-        // (bail the moment the user scrolls up, so we never fight them).
-        chatScroll.forceScrollToBottom()
-        const timers = [80, 200, 450, 800, 1200].map((ms) =>
-          setTimeout(() => {
-            if (!chatScroll.userScrolled()) chatScroll.forceScrollToBottom()
-          }, ms),
-        )
-        onCleanup(() => timers.forEach(clearTimeout))
+        const frame = requestAnimationFrame(() => {
+          if (scope !== sessionKey()) return
+          const saved = chatView.scroll("conversation")
+          if (!saved) {
+            chatScroll.forceScrollToBottom()
+            return
+          }
+          restoration.target = { scope, x: saved.x, y: saved.y }
+          applyRestoration()
+        })
+        onCleanup(() => cancelAnimationFrame(frame))
       },
     ),
   )
@@ -433,19 +654,15 @@ export default function Page(): JSX.Element {
     if (project()) layout.projects.open(project()!.worktree)
   })
 
-  // Re-anchor a bottom-following view on viewport-height changes with no new
-  // content (window resize, right-pane toggle, mobile virtual keyboard).
   onMount(() => {
-    const onResize = () => {
-      if (!chatScroll.userScrolled()) chatScroll.forceScrollToBottom()
-    }
-    window.addEventListener("resize", onResize)
-    onCleanup(() => window.removeEventListener("resize", onResize))
+    observer = new ResizeObserver(applyRestoration)
+    if (contentElement) observer.observe(contentElement)
+    onCleanup(() => observer?.disconnect())
   })
 
   return (
     <div
-      class="thesis-root"
+      class="atlas-root"
       style={{
         flex: 1,
         display: "flex",
@@ -460,38 +677,76 @@ export default function Page(): JSX.Element {
       <CommandPalette open={uiStore.paletteOpen()} onClose={() => uiStore.setPaletteOpen(false)} />
 
       <DisconnectedPanel />
-      <Header
-        projectName={projectName()}
-        projectPath={projectPath()}
-        isDark={isDark()}
-        onBack={() => navigate("/")}
-        onOpenPalette={() => uiStore.setPaletteOpen(true)}
-        onOpenHelp={() => uiStore.setHelpOpen(true)}
-        onOpenSettings={() => dialog.show(() => <DialogSettings />)}
-        onToggleTheme={() => theme.setColorScheme(isDark() ? "light" : "dark")}
-      />
 
       <div
+        class="session-workspace"
+        data-context-open={uiStore.rightPaneOpen() ? "true" : "false"}
         style={{
           flex: 1,
           "min-height": 0,
           "min-width": 0,
           display: "flex",
           overflow: "hidden",
+          position: "relative",
         }}
       >
+        <Show when={mobileSessionsOpen()}>
+          <button
+            type="button"
+            class="session-sidebar-backdrop"
+            aria-label="close sessions"
+            onClick={() => setMobileSessionsOpen(false)}
+          />
+        </Show>
         <SessionsSidebar
+          projectName={projectName()}
           sessions={sessions()}
           activeId={params.id}
           dirParam={params.dir ?? ""}
           creating={creating()}
-          onNew={() => void newSession()}
-          onSelect={(id) => navigate(`/${params.dir}/session/${id}`)}
+          collapsed={sessionsCollapsed()}
+          width={sessionsWidth()}
+          mobileOpen={mobileSessionsOpen()}
+          onNew={() => {
+            setMobileSessionsOpen(false)
+            newSession()
+          }}
+          onBack={() => navigate("/")}
+          onCollapse={toggleSessions}
+          onResize={(width, done) => {
+            const next = clampSidebarWidth(width)
+            setSessionsWidth(next)
+            if (done) writeSessionSidebarWidth(next)
+          }}
+          onSearch={() => {
+            setMobileSessionsOpen(false)
+            uiStore.setPaletteOpen(true)
+          }}
+          onCustomize={() => {
+            setMobileSessionsOpen(false)
+            dialog.show(() => <DialogSettings />)
+          }}
+          onContext={(context) => {
+            setMobileSessionsOpen(false)
+            openContext(context)
+          }}
+          context={uiStore.context()}
+          contextOpen={uiStore.open()}
+          artifact={Boolean(artifactContext.active())}
+          atlas={atlasAvailable()}
+          trace={productPreferences.trace()}
+          onSelect={(id) => {
+            setMobileSessionsOpen(false)
+            sessionTabs.open(id)
+            navigate(`/${params.dir}/session/${id}`)
+          }}
           onDelete={(id) => void deleteSession(id)}
           onRename={(id, title) => void renameSession(id, title)}
+          onPin={(id, pinned) => void pinSession(id, pinned)}
         />
 
         <div
+          class="session-main"
           style={{
             flex: 1,
             "min-width": 0,
@@ -502,7 +757,27 @@ export default function Page(): JSX.Element {
             overflow: "hidden",
           }}
         >
-          <CenterTabStrip chatTitle={chatTitle()} />
+          <Header
+            title={chatTitle()}
+            projectID={project()?.id ?? sdk.projectID}
+            projectName={projectName()}
+            directory={projectPath()}
+            trust={trust}
+            onBack={() => navigate("/")}
+            onRunReview={() => void runReview()}
+            reviewDisabled={reviewDisabled()}
+            onToggleSessions={() => setMobileSessionsOpen((open) => !open)}
+          />
+          <SessionTabStrip
+            tabs={openSessions()}
+            active={params.id}
+            onSelect={(id) => {
+              sessionTabs.open(id)
+              navigate(`/${params.dir}/session/${id}`)
+            }}
+            onClose={closeSessionTab}
+            onReorder={(id, to) => sessionTabs.move(id, to)}
+          />
 
           <div
             style={{
@@ -514,10 +789,12 @@ export default function Page(): JSX.Element {
               "flex-direction": "column",
             }}
           >
-            {/* chat — always mounted so streaming + scroll survive tab switches */}
-            <div
+            {/* conversation center — never replaced by file navigation */}
+            <section
+              data-component="conversation-center"
+              aria-label="Conversation"
               style={{
-                display: centerTabs.active() === "chat" ? "flex" : "none",
+                display: "flex",
                 flex: 1,
                 "min-height": 0,
                 "flex-direction": "column",
@@ -539,10 +816,22 @@ export default function Page(): JSX.Element {
                     }}
                   >
                     <div
-                      ref={chatScroll.scrollRef}
-                      onScroll={chatScroll.handleScroll}
+                      ref={(element) => {
+                        chatElement = element
+                        chatScroll.scrollRef(element)
+                      }}
+                      onScroll={(event) => {
+                        chatScroll.handleScroll()
+                        if (restoration.target) return
+                        chatView.setScroll("conversation", {
+                          x: event.currentTarget.scrollLeft,
+                          y: event.currentTarget.scrollTop,
+                        })
+                      }}
+                      onWheel={cancelRestoration}
+                      onPointerDown={cancelRestoration}
                       onClick={chatScroll.handleInteraction}
-                      class="thesis-scroll thesis-chat-scroll session-scroller"
+                      class="atlas-scroll atlas-chat-scroll session-scroller"
                       style={{
                         flex: 1,
                         "min-height": 0,
@@ -550,10 +839,12 @@ export default function Page(): JSX.Element {
                         "overflow-x": "hidden",
                       }}
                     >
-                      {/* Sticky title + back-to-parent (sub-agent) header — kept
-                          outside contentRef so the ResizeObserver measures only
-                          the growing message list, not the sticky header. */}
-                      <Show when={activeSession()?.title || activeSession()?.parentID}>
+                      {/* Sub-agent back-to-parent header only. Normal chats render
+                          NO fixed header — the sticky session title used to sit on top
+                          of the conversation and block content. The title is still
+                          shown/renamable in the session list. Kept outside contentRef
+                          so the ResizeObserver measures only the growing message list. */}
+                      <Show when={activeSession()?.parentID}>
                         <div class="sticky top-0 z-30 bg-background-stronger w-full">
                           <div class="w-full px-4 md:px-6 md:max-w-200 md:mx-auto">
                             <div class="h-10 flex items-center gap-1.5">
@@ -580,8 +871,14 @@ export default function Page(): JSX.Element {
 
                       {/* Centered conversation column with 2px between-turn divider */}
                       <div
-                        ref={chatScroll.contentRef}
-                        class="w-full md:max-w-200 md:mx-auto flex flex-col items-start justify-start pt-3 pb-[calc(10rem+64px)]"
+                        ref={(element) => {
+                          contentElement = element
+                          chatScroll.contentRef(element)
+                          observer?.disconnect()
+                          observer?.observe(element)
+                        }}
+                        class="session-transcript w-full flex flex-col items-start justify-start"
+                        style={{ "padding-bottom": "var(--workspace-composer-reserve)" }}
                       >
                         <For each={turnMessages()}>
                           {(message, index) => (
@@ -639,7 +936,7 @@ export default function Page(): JSX.Element {
                                   classes={{
                                     root: "min-w-0 w-full relative",
                                     content: "flex flex-col justify-between !overflow-visible",
-                                    container: "w-full px-4 md:px-6",
+                                    container: "w-full px-4 md:px-5",
                                   }}
                                 />
                               </Show>
@@ -647,9 +944,7 @@ export default function Page(): JSX.Element {
                                   compaction row, which already draws its own "context
                                   compacted" divider (avoids a doubled rule). */}
                               <Show when={index() < turnMessages().length - 1 && !hasCompactionPart(message.id)}>
-                                <div class="w-full px-4 md:px-6 pt-2 pb-1">
-                                  <div class="h-[2px] bg-border-weak-base rounded-full" />
-                                </div>
+                                <div class="session-turn-divider" />
                               </Show>
                             </div>
                           )}
@@ -664,11 +959,9 @@ export default function Page(): JSX.Element {
                         title="Jump to latest"
                         style={{
                           position: "absolute",
-                          // The content column reserves calc(10rem + 64px) of bottom
-                          // padding (above) so the last message clears the absolute
-                          // prompt dock; land the pill just above that same
-                          // reservation so the dock doesn't sit on top of it.
-                          bottom: "calc(10rem + 64px + 16px)",
+                          // Share the dock reserve with the transcript so composer
+                          // geometry can change without hiding the final turn.
+                          bottom: "calc(var(--workspace-composer-reserve) + 16px)",
                           left: "50%",
                           transform: "translateX(-50%)",
                           display: "inline-flex",
@@ -693,13 +986,12 @@ export default function Page(): JSX.Element {
                   </div>
                 </Match>
                 <Match when={true}>
-                  <NewSessionView worktree={newSessionWorktree()} onWorktreeChange={setNewSessionWorktree} />
+                  <NewSessionView />
                 </Match>
               </Switch>
 
-              {/* Prompt dock — gradient fade + centered PromptInput (v1.1.116) */}
-              <div class="absolute inset-x-0 bottom-0 pt-12 pb-4 flex flex-col justify-center items-center z-50 px-4 md:px-0 bg-gradient-to-t from-background-base via-background-base to-transparent pointer-events-none">
-                <div class="w-full px-4 pointer-events-auto md:max-w-200 md:mx-auto">
+              <div class="session-prompt-dock">
+                <div class="session-prompt-dock__inner">
                   <Show when={revertInfo()}>
                     <div
                       class="mb-3"
@@ -738,268 +1030,192 @@ export default function Page(): JSX.Element {
                       </button>
                     </div>
                   </Show>
-                  <PromptInput
-                    newSessionWorktree={newSessionWorktree()}
-                    onNewSessionWorktreeReset={() => setNewSessionWorktree("main")}
-                  />
+                  <PromptInput />
                 </div>
               </div>
-            </div>
-
-            {/* files — the host explorer, mounted on first visit */}
-            <Show when={visitedFiles()}>
-              <div
-                style={{
-                  display: centerTabs.active() === "files" ? "flex" : "none",
-                  flex: 1,
-                  "min-height": 0,
-                  "flex-direction": "column",
-                }}
-              >
-                <FileExplorer />
-              </div>
-            </Show>
-
-            {/* skills — the global capability catalog, mounted on first visit */}
-            <Show when={visitedSkills()}>
-              <div
-                style={{
-                  display: centerTabs.active() === "skills" ? "flex" : "none",
-                  flex: 1,
-                  "min-height": 0,
-                  "flex-direction": "column",
-                }}
-              >
-                <SkillsPage />
-              </div>
-            </Show>
-
-            {/* document tabs — one inline FileView per opened file */}
-            <For each={centerTabs.docs()}>
-              {(doc) => (
-                <div
-                  style={{
-                    display: centerTabs.active() === doc.id ? "flex" : "none",
-                    flex: 1,
-                    "min-height": 0,
-                    "flex-direction": "column",
-                  }}
-                >
-                  <FileView
-                    path={doc.path}
-                    directory={doc.directory}
-                    subtitle={`This computer · ${doc.directory.replace(/\/$/, "")}/${doc.path}`}
-                    onClose={() => centerTabs.closeDoc(doc.id)}
-                  />
-                </div>
-              )}
-            </For>
+            </section>
           </div>
         </div>
 
-        <RightPane />
+        <RightPane project={sdk.scope} session={params.id ?? "new"} onEnsureSession={ensureSession} />
       </div>
     </div>
   )
 }
 
-function CenterTabStrip(props: { chatTitle: string }): JSX.Element {
-  const active = centerTabs.active
-  return (
-    <div
-      class="thesis-scroll"
-      style={{
-        display: "flex",
-        "align-items": "stretch",
-        gap: "5px",
-        padding: "7px 10px",
-        "border-bottom": "1px solid var(--color-border)",
-        background: "var(--color-bg-subtle)",
-        "overflow-x": "auto",
-        "flex-shrink": 0,
-      }}
-    >
-      <CenterTab active={active() === "chat"} label={props.chatTitle} onClick={() => centerTabs.setActive("chat")}>
-        <IconMessageSquare size={12} strokeWidth={1.6} />
-      </CenterTab>
-      <CenterTab active={active() === "files"} label="Files" onClick={() => centerTabs.setActive("files")}>
-        <IconFolderTree size={12} strokeWidth={1.6} />
-      </CenterTab>
-      <CenterTab active={active() === "skills"} label="Skills" onClick={() => centerTabs.setActive("skills")}>
-        <IconBrain size={12} strokeWidth={1.6} />
-      </CenterTab>
-      <For each={centerTabs.docs()}>
-        {(doc) => (
-          <CenterTab
-            active={active() === doc.id}
-            label={doc.name}
-            onClick={() => centerTabs.setActive(doc.id)}
-            onClose={() => centerTabs.closeDoc(doc.id)}
-          >
-            <IconFile size={12} strokeWidth={1.6} />
-          </CenterTab>
-        )}
-      </For>
-    </div>
-  )
-}
+const TAB_DRAG_TYPE = "text/openscience-session-tab"
 
-function CenterTab(props: {
-  active: boolean
-  label: string
-  onClick: () => void
-  onClose?: () => void
-  children: JSX.Element
+function SessionTabStrip(props: {
+  tabs: Array<{ id: string; title: string; working: boolean; dirty: boolean; unread: boolean }>
+  active: string | undefined
+  onSelect: (id: string) => void
+  onClose: (id: string) => void
+  onReorder: (id: string, to: number) => void
 }): JSX.Element {
-  return (
+  const compact = createMediaQuery("(max-width: 719px)")
+  const limit = createMemo(() => (compact() ? 2 : 5))
+  const visible = createMemo(() => {
+    if (props.tabs.length <= limit()) return props.tabs
+    const first = props.tabs.slice(0, limit())
+    const active = props.tabs.find((tab) => tab.id === props.active)
+    if (!active || first.some((tab) => tab.id === active.id)) return first
+    return [...first.slice(0, -1), active]
+  })
+  const hidden = createMemo(() => {
+    const shown = new Set(visible().map((tab) => tab.id))
+    return props.tabs.filter((tab) => !shown.has(tab.id))
+  })
+  const tab = (item: (typeof props.tabs)[number], index: number) => (
     <div
+      class="workspace-tab"
       role="tab"
-      aria-selected={props.active}
-      onClick={props.onClick}
-      title={props.label}
-      style={{
-        cursor: "pointer",
-        display: "inline-flex",
-        "align-items": "center",
-        gap: "7px",
-        "max-width": "220px",
-        padding: "6px 10px",
-        "border-radius": "4px",
-        border: props.active ? "1px solid var(--color-border-strong)" : "1px solid transparent",
-        background: props.active ? "var(--color-surface-solid)" : "transparent",
-        "box-shadow": props.active ? "0 1px 2px rgba(0,0,0,0.10)" : "none",
-        "font-family": FONT_MONO,
-        "font-size": "11px",
-        "font-weight": props.active ? 700 : 400,
-        color: props.active ? "var(--color-text)" : "var(--color-text-muted)",
-        transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
-        "flex-shrink": 0,
+      tabindex={0}
+      aria-selected={props.active === item.id}
+      aria-label={`${item.title}${item.working ? ", working" : item.unread ? ", unread" : ""}${item.dirty ? ", draft saved" : ""}`}
+      data-active={props.active === item.id ? "true" : undefined}
+      draggable="true"
+      onDragStart={(event) => {
+        event.dataTransfer?.setData(TAB_DRAG_TYPE, item.id)
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
       }}
-      onMouseEnter={(e) => {
-        if (!props.active) e.currentTarget.style.background = "var(--color-accent-subtle)"
+      onDragOver={(event) => {
+        if (event.dataTransfer?.types.includes(TAB_DRAG_TYPE)) event.preventDefault()
       }}
-      onMouseLeave={(e) => {
-        if (!props.active) e.currentTarget.style.background = "transparent"
+      onDrop={(event) => {
+        const dragged = event.dataTransfer?.getData(TAB_DRAG_TYPE)
+        if (!dragged || dragged === item.id) return
+        event.preventDefault()
+        props.onReorder(dragged, index)
+      }}
+      onClick={() => props.onSelect(item.id)}
+      onKeyDown={(event) => {
+        if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+          event.preventDefault()
+          props.onReorder(item.id, index + (event.key === "ArrowRight" ? 1 : -1))
+          return
+        }
+        if (event.key !== "Enter" && event.key !== " ") return
+        event.preventDefault()
+        props.onSelect(item.id)
       }}
     >
-      <span
-        style={{
-          display: "inline-flex",
-          color: props.active ? "var(--color-text)" : "var(--color-text-faint)",
-          "flex-shrink": 0,
-        }}
-      >
-        {props.children}
+      <span class="workspace-tab__icon" aria-hidden="true">
+        <StatusDot status={item.working ? "active" : item.unread ? "pending" : "muted"} size={6} />
       </span>
-      <span style={{ overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap" }}>{props.label}</span>
-      <Show when={props.onClose}>
-        <span
-          role="button"
-          aria-label="close tab"
-          onClick={(e) => {
-            e.stopPropagation()
-            props.onClose!()
-          }}
-          style={{
-            display: "inline-flex",
-            "align-items": "center",
-            "justify-content": "center",
-            width: "16px",
-            height: "16px",
-            "border-radius": "4px",
-            color: "var(--color-text-faint)",
-            "flex-shrink": 0,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--color-accent-subtle)"
-            e.currentTarget.style.color = "var(--color-text)"
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "transparent"
-            e.currentTarget.style.color = "var(--color-text-faint)"
-          }}
-        >
-          <IconX size={11} strokeWidth={1.8} />
+      <span class="truncate">{item.title}</span>
+      <Show when={item.dirty}>
+        <span aria-label="Draft saved" title="Draft saved">
+          •
         </span>
       </Show>
+      <button
+        type="button"
+        class="workspace-tab__close"
+        aria-label={`Close ${item.title} tab`}
+        onClick={(event) => {
+          event.stopPropagation()
+          props.onClose(item.id)
+        }}
+      >
+        <IconX size={11} strokeWidth={1.5} />
+      </button>
     </div>
+  )
+
+  return (
+    <Show when={props.tabs.length > 0}>
+      <nav class="workspace-tabs" aria-label="Open session tabs">
+        <div class="workspace-tabs__list" role="tablist">
+          <For each={visible()}>
+            {(item) =>
+              tab(
+                item,
+                props.tabs.findIndex((entry) => entry.id === item.id),
+              )
+            }
+          </For>
+        </div>
+        <Show when={hidden().length > 0}>
+          <details class="workspace-tabs__overflow">
+            <summary aria-label={`${hidden().length} more session tabs`}>
+              <IconMoreH size={14} strokeWidth={1.5} />
+              <span>{hidden().length}</span>
+            </summary>
+            <div role="menu">
+              <For each={hidden()}>
+                {(item) => (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-current={props.active === item.id ? "page" : undefined}
+                    onClick={(event) => {
+                      props.onSelect(item.id)
+                      event.currentTarget.closest("details")?.removeAttribute("open")
+                    }}
+                    onKeyDown={(event) => {
+                      if (!event.altKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return
+                      event.preventDefault()
+                      const index = props.tabs.findIndex((entry) => entry.id === item.id)
+                      props.onReorder(item.id, index + (event.key === "ArrowRight" ? 1 : -1))
+                    }}
+                  >
+                    <StatusDot status={item.working ? "active" : item.unread ? "pending" : "muted"} size={6} />
+                    <span>{item.title}</span>
+                    <Show when={item.dirty}>•</Show>
+                  </button>
+                )}
+              </For>
+            </div>
+          </details>
+        </Show>
+      </nav>
+    </Show>
   )
 }
 
 function Header(props: {
+  title: string
+  projectID?: string
   projectName: string
-  projectPath: string
-  isDark: boolean
+  directory: string
+  trust: ProjectTrustApi
   onBack: () => void
-  onOpenPalette: () => void
-  onOpenHelp: () => void
-  onOpenSettings: () => void
-  onToggleTheme: () => void
+  onRunReview: () => void
+  reviewDisabled: boolean
+  onToggleSessions: () => void
 }): JSX.Element {
   return (
-    <AppHeader>
+    <AppHeader class="workspace-header">
+      <HeaderIconButton class="session-sidebar-toggle" onClick={props.onToggleSessions} title="Show sessions">
+        <IconMessageSquare size={13} strokeWidth={1.5} />
+      </HeaderIconButton>
       <button
+        class="workspace-header__back"
         onClick={props.onBack}
-        title="back to projects"
-        style={{
-          all: "unset",
-          cursor: "pointer",
-          display: "inline-flex",
-          "align-items": "center",
-          gap: "5px",
-          padding: "5px 10px",
-          "border-radius": "4px",
-          "font-family": FONT_MONO,
-          "font-size": "11px",
-          color: "var(--color-text-muted)",
-          transition: "background 120ms ease",
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-accent-subtle)")}
-        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+        title="Back to projects"
+        aria-label="Back to projects"
       >
-        <IconChevronLeft size={11} strokeWidth={1.5} />
-        projects
+        <IconChevronLeft size={14} strokeWidth={1.6} />
       </button>
-      <HeaderDivider />
-      <Wordmark size="sm" />
-      <HeaderDivider />
-      <span
-        style={{
-          "font-family": FONT_SANS,
-          "font-size": "13px",
-          "font-weight": 400,
-          color: "var(--color-text)",
-        }}
+      <div class="workspace-header__project" title={props.title}>
+        <span class="workspace-header__title">
+          <strong>{props.title}</strong>
+        </span>
+      </div>
+      <ProjectTrustControl
+        projectID={props.projectID}
+        name={props.projectName}
+        directory={props.directory}
+        api={props.trust}
+      />
+      <span class="workspace-header__spacer" />
+      <HeaderIconButton
+        class="workspace-header__review"
+        disabled={props.reviewDisabled}
+        onClick={props.onRunReview}
+        title={props.reviewDisabled ? "Open an idle session to run review" : "Run review"}
       >
-        {props.projectName}
-      </span>
-      <span
-        style={{
-          "font-family": FONT_MONO,
-          "font-size": "10px",
-          color: "var(--color-text-faint)",
-          overflow: "hidden",
-          "text-overflow": "ellipsis",
-          "white-space": "nowrap",
-          "max-width": "320px",
-        }}
-      >
-        {props.projectPath}
-      </span>
-      <span style={{ flex: 1 }} />
-      <HeaderIconButton onClick={props.onOpenPalette} title="command palette">
-        <IconSearch size={13} strokeWidth={1.5} />
-      </HeaderIconButton>
-      <HeaderIconButton onClick={props.onOpenHelp} title="help">
-        <IconBookOpen size={13} strokeWidth={1.5} />
-      </HeaderIconButton>
-      <HeaderIconButton onClick={props.onOpenSettings} title="settings">
-        <IconSettings size={13} strokeWidth={1.5} />
-      </HeaderIconButton>
-      <HeaderIconButton onClick={props.onToggleTheme} title="toggle theme">
-        <Show when={props.isDark} fallback={<IconMoon size={13} strokeWidth={1.5} />}>
-          <IconSun size={13} strokeWidth={1.5} />
-        </Show>
+        <IconCheckCircle size={14} strokeWidth={1.5} />
       </HeaderIconButton>
     </AppHeader>
   )
@@ -1076,163 +1292,139 @@ function EditableTitle(props: { title: string; onRename: (t: string) => void }):
 }
 
 function SessionsSidebar(props: {
+  projectName: string
   sessions: SyncSession[]
   activeId: string | undefined
   dirParam: string
   creating: boolean
+  collapsed: boolean
+  width: number
+  mobileOpen: boolean
   onNew: () => void
+  onBack: () => void
+  onCollapse: () => void
+  onResize: (width: number, done: boolean) => void
+  onSearch: () => void
+  onCustomize: () => void
+  onContext: (context: SessionContext) => void
+  context: SessionContext
+  contextOpen: boolean
+  artifact: boolean
+  atlas: boolean
+  trace: boolean
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
+  onPin: (id: string, pinned: boolean) => void
 }): JSX.Element {
-  const [query, setQuery] = createSignal("")
-  const searching = () => query().trim().length > 0
-  const filtered = createMemo(() => {
-    const q = query().trim().toLowerCase()
-    if (!q) return props.sessions
-    return props.sessions.filter((s) => (s.title || "session").toLowerCase().includes(q))
-  })
+  const resize = (event: PointerEvent) => {
+    if (props.collapsed) return
+    event.preventDefault()
+    const origin = event.clientX
+    const width = props.width
+    const controller = new AbortController()
+    const move = (next: PointerEvent) => props.onResize(width + next.clientX - origin, false)
+    const stop = (next: PointerEvent) => {
+      props.onResize(width + next.clientX - origin, true)
+      controller.abort()
+    }
+    window.addEventListener("pointermove", move, { signal: controller.signal })
+    window.addEventListener("pointerup", stop, { once: true, signal: controller.signal })
+    window.addEventListener("pointercancel", stop, { once: true, signal: controller.signal })
+  }
+
   return (
     <aside
-      class="thesis-scroll"
-      style={{
-        width: "240px",
-        "min-width": "240px",
-        "border-right": "1px solid var(--color-border)",
-        background: "var(--color-bg-subtle)",
-        display: "flex",
-        "flex-direction": "column",
-        "overflow-y": "auto",
-      }}
+      class="atlas-scroll session-sidebar"
+      data-mobile-open={props.mobileOpen ? "true" : "false"}
+      data-collapsed={props.collapsed ? "true" : "false"}
+      aria-label="Research sessions"
+      style={{ "--session-sidebar-width": `${props.width}px` }}
     >
-      <div
-        style={{
-          padding: "12px 12px 8px",
-          display: "flex",
-          "flex-direction": "column",
-          gap: "8px",
-        }}
-      >
-        <button
-          onClick={props.onNew}
-          disabled={props.creating}
-          style={{
-            all: "unset",
-            cursor: "pointer",
-            display: "flex",
-            "align-items": "center",
-            "justify-content": "center",
-            gap: "6px",
-            padding: "7px 12px",
-            "border-radius": "8px",
-            background: "var(--color-surface-solid)",
-            border: "1px solid var(--color-border-strong)",
-            "font-family": FONT_MONO,
-            "font-size": "12px",
-            "font-weight": 400,
-            color: "var(--color-text)",
-            transition: "all 120ms ease",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-bg-elevated)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-surface-solid)")}
-          onFocusIn={(e) => (e.currentTarget.style.background = "var(--color-bg-elevated)")}
-          onFocusOut={(e) => (e.currentTarget.style.background = "var(--color-surface-solid)")}
-        >
-          <IconPlus size={12} strokeWidth={2} />
-          {props.creating ? "creating…" : "New session"}
+      <div class="session-sidebar__top">
+        <button type="button" class="session-sidebar__project" aria-label="Back to projects" onClick={props.onBack}>
+          <IconChevronLeft size={13} strokeWidth={1.6} />
+          <strong>{props.projectName}</strong>
         </button>
+        <button
+          type="button"
+          class="session-sidebar__collapse"
+          aria-label={props.collapsed ? "Expand sessions sidebar" : "Collapse sessions sidebar"}
+          title={props.collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onClick={props.onCollapse}
+        >
+          <IconChevronLeft size={13} strokeWidth={1.6} />
+        </button>
+      </div>
 
-        {/* Search — filters the loaded list live; Esc clears. */}
-        <div style={{ position: "relative", display: "flex", "align-items": "center" }}>
-          <span
-            style={{
-              position: "absolute",
-              left: "10px",
-              display: "inline-flex",
-              "align-items": "center",
-              color: "var(--color-text-faint)",
-              "pointer-events": "none",
-            }}
+      <nav class="session-sidebar__actions" aria-label="Research navigation">
+        <div class="session-sidebar__action-list">
+          <SidebarAction
+            class="session-sidebar__new"
+            label={props.creating ? "Creating…" : "New"}
+            detail="Start a session"
+            ariaLabel="New research"
+            shortcut="⌘N"
+            disabled={props.creating}
+            onClick={props.onNew}
           >
-            <IconSearch size={13} strokeWidth={1.6} />
-          </span>
-          <input
-            value={query()}
-            onInput={(e) => setQuery(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.preventDefault()
-                setQuery("")
-                e.currentTarget.blur()
-              }
-            }}
-            placeholder="Search sessions"
-            spellcheck={false}
-            autocomplete="off"
-            style={{
-              all: "unset",
-              "box-sizing": "border-box",
-              width: "100%",
-              padding: "8px 28px 8px 30px",
-              "border-radius": "8px",
-              background: "var(--color-surface-solid)",
-              border: "1px solid var(--color-border)",
-              "font-family": FONT_MONO,
-              "font-size": "12.5px",
-              color: "var(--color-text)",
-              transition: "border-color 120ms ease",
-            }}
-            onFocusIn={(e) => (e.currentTarget.style.borderColor = "var(--color-border-strong)")}
-            onFocusOut={(e) => (e.currentTarget.style.borderColor = "var(--color-border)")}
-          />
-          <Show when={searching()}>
-            <button
-              type="button"
-              title="clear search"
-              aria-label="clear search"
-              onClick={() => setQuery("")}
-              style={{
-                all: "unset",
-                position: "absolute",
-                right: "8px",
-                cursor: "pointer",
-                display: "inline-flex",
-                "align-items": "center",
-                "justify-content": "center",
-                width: "18px",
-                height: "18px",
-                "border-radius": "5px",
-                color: "var(--color-text-faint)",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-text)")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-faint)")}
-            >
-              <IconX size={12} strokeWidth={1.8} />
-            </button>
-          </Show>
+            <IconPlus size={15} strokeWidth={1.7} />
+          </SidebarAction>
+          <SidebarAction
+            label="Search"
+            detail="Search and commands"
+            ariaLabel="Search project"
+            shortcut="⌘K"
+            onClick={props.onSearch}
+          >
+            <IconSearch size={15} strokeWidth={1.5} />
+          </SidebarAction>
+          <SidebarAction
+            label="Customize"
+            detail="Open settings"
+            ariaLabel="Customize OpenScience"
+            onClick={props.onCustomize}
+          >
+            <IconSettings size={15} strokeWidth={1.5} />
+          </SidebarAction>
         </div>
+
+        <SessionSidebarActions
+          context={props.context}
+          contextOpen={props.contextOpen}
+          artifact={props.artifact}
+          atlas={props.atlas}
+          trace={props.trace}
+          onContext={props.onContext}
+        />
+      </nav>
+
+      <Show when={!props.collapsed}>
+        <div
+          class="session-sidebar__resize"
+          role="separator"
+          aria-label="Resize sessions sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={SIDEBAR_WIDTH.min}
+          aria-valuemax={SIDEBAR_WIDTH.max}
+          aria-valuenow={props.width}
+          tabindex={0}
+          onPointerDown={resize}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
+            event.preventDefault()
+            props.onResize(props.width + (event.key === "ArrowRight" ? 16 : -16), true)
+          }}
+        />
+      </Show>
+
+      <div class="session-sidebar__label">
+        <span>Recent sessions</span>
+        <span>{props.sessions.length}</span>
       </div>
 
-      {/* Quiet section label — sentence case, no shouty uppercase. */}
-      <div
-        style={{
-          display: "flex",
-          "align-items": "baseline",
-          "justify-content": "space-between",
-          padding: "2px 14px 6px",
-          "font-family": FONT_MONO,
-          "font-size": "11px",
-          color: "var(--color-text-faint)",
-        }}
-      >
-        <span>{searching() ? "Results" : "Sessions"}</span>
-        <span style={{ "font-variant-numeric": "tabular-nums" }}>
-          {searching() ? `${filtered().length} of ${props.sessions.length}` : props.sessions.length}
-        </span>
-      </div>
-
-      <div style={{ display: "flex", "flex-direction": "column", gap: "1px", padding: "0 8px 10px" }}>
-        <For each={filtered()}>
+      <div class="session-sidebar__list">
+        <For each={props.sessions}>
           {(s) => (
             <SessionRow
               session={s}
@@ -1240,34 +1432,12 @@ function SessionsSidebar(props: {
               onSelect={() => props.onSelect(s.id)}
               onDelete={() => props.onDelete(s.id)}
               onRename={(title) => props.onRename(s.id, title)}
+              onPin={(pinned) => props.onPin(s.id, pinned)}
             />
           )}
         </For>
         <Show when={props.sessions.length === 0}>
-          <div
-            style={{
-              padding: "12px 10px",
-              "font-family": FONT_MONO,
-              "font-size": "11px",
-              color: "var(--color-text-faint)",
-              "line-height": 1.55,
-            }}
-          >
-            No sessions yet — click <span style={{ color: "var(--color-text-muted)" }}>New session</span> above.
-          </div>
-        </Show>
-        <Show when={props.sessions.length > 0 && filtered().length === 0}>
-          <div
-            style={{
-              padding: "12px 10px",
-              "font-family": FONT_MONO,
-              "font-size": "11px",
-              color: "var(--color-text-faint)",
-              "line-height": 1.55,
-            }}
-          >
-            No sessions match “{query().trim()}”.
-          </div>
+          <div class="session-sidebar__empty">No sessions yet.</div>
         </Show>
       </div>
     </aside>
@@ -1280,8 +1450,10 @@ function SessionRow(props: {
   onSelect: () => void
   onDelete: () => void
   onRename: (title: string) => void
+  onPin: (pinned: boolean) => void
 }): JSX.Element {
   const [hover, setHover] = createSignal(false)
+  const [menu, setMenu] = createSignal(false)
   const [editing, setEditing] = createSignal(false)
   const [draft, setDraft] = createSignal("")
   const startEdit = () => {
@@ -1300,8 +1472,13 @@ function SessionRow(props: {
   }
   return (
     <div
+      class="session-sidebar__session"
       role="button"
       tabindex="0"
+      aria-label={props.session.title || "session"}
+      data-active={props.active ? "true" : undefined}
+      data-pinned={props.session.time?.pinned ? "true" : undefined}
+      data-actions={hover() && !editing() ? "true" : undefined}
       onClick={() => {
         if (editing()) return
         props.onSelect()
@@ -1321,100 +1498,61 @@ function SessionRow(props: {
       onMouseLeave={() => setHover(false)}
       onFocusIn={() => setHover(true)}
       onFocusOut={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHover(false)
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+        setHover(false)
+        setMenu(false)
       }}
-      style={{
-        cursor: editing() ? "text" : "pointer",
-        display: "flex",
-        "flex-direction": "column",
-        gap: "3px",
-        padding: "8px 12px",
-        "padding-right": hover() && !editing() ? "34px" : "12px",
-        "border-radius": "8px",
-        background: props.active ? "var(--color-bg-elevated)" : hover() ? "var(--color-accent-subtle)" : "transparent",
-        transition: "background 120ms ease, padding 120ms ease",
-        position: "relative",
-      }}
+      style={{ cursor: editing() ? "text" : "pointer" }}
     >
-      <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
-        <StatusDot status={props.active ? "active" : "muted"} size={9} />
-        <Show
-          when={editing()}
-          fallback={
-            <span
-              title="Double-click to rename"
-              style={{
-                "font-family": FONT_MONO,
-                "font-size": "12.5px",
-                color: props.active ? "var(--color-text)" : "var(--color-text-muted)",
-                "font-weight": 400,
-                flex: 1,
-                overflow: "hidden",
-                "text-overflow": "ellipsis",
-                "white-space": "nowrap",
-              }}
-            >
-              {props.session.title || "session"}
-            </span>
-          }
-        >
-          <input
-            ref={(el) =>
-              queueMicrotask(() => {
-                el.focus()
-                el.select()
-              })
-            }
-            value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              e.stopPropagation()
-              if (e.key === "Enter") {
-                e.preventDefault()
-                commit()
-              } else if (e.key === "Escape") {
-                e.preventDefault()
-                cancel()
-              }
-            }}
-            onBlur={commit}
-            spellcheck={false}
-            autocomplete="off"
-            style={{
-              all: "unset",
-              "box-sizing": "border-box",
-              flex: 1,
-              "min-width": 0,
-              padding: "1px 5px",
-              "margin-left": "-5px",
-              "border-radius": "5px",
-              background: "var(--color-surface-solid)",
-              "box-shadow": "inset 0 0 0 1px var(--color-border-strong)",
-              "font-family": FONT_MONO,
-              "font-size": "12.5px",
-              color: "var(--color-text)",
-            }}
-          />
-        </Show>
-      </div>
-      <div
-        style={{
-          "font-family": FONT_MONO,
-          "font-size": "10.5px",
-          color: "var(--color-text-faint)",
-          "letter-spacing": "0.04em",
-          "padding-left": "17px",
-        }}
+      <Show
+        when={props.session.time?.pinned}
+        fallback={<StatusDot status={props.active ? "active" : "muted"} size={7} />}
       >
-        {props.session.time?.updated ? DateTime.fromMillis(props.session.time.updated).toRelative() : "—"}
-      </div>
-      <Show when={hover() && !editing()}>
+        <IconPinFilled size={10} strokeWidth={1.4} />
+      </Show>
+      <Show
+        when={editing()}
+        fallback={
+          <span class="session-sidebar__session-title" title="Double-click to rename">
+            {props.session.title || "session"}
+          </span>
+        }
+      >
+        <input
+          ref={(el) =>
+            queueMicrotask(() => {
+              el.focus()
+              el.select()
+            })
+          }
+          class="session-sidebar__session-input"
+          value={draft()}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === "Enter") {
+              e.preventDefault()
+              commit()
+            } else if (e.key === "Escape") {
+              e.preventDefault()
+              cancel()
+            }
+          }}
+          onBlur={commit}
+          spellcheck={false}
+          autocomplete="off"
+        />
+      </Show>
+      <Show when={(hover() || menu()) && !editing()}>
         <button
           type="button"
-          title="delete session"
-          aria-label="delete session"
+          class="session-sidebar__session-menu-button"
+          title="Session actions"
+          aria-label="Session actions"
+          aria-haspopup="menu"
+          aria-expanded={menu()}
           onPointerDown={(e) => {
             // Stop pointerdown on the parent row before its own click
             // can fire — Solid runs the row's onClick first otherwise.
@@ -1423,191 +1561,51 @@ function SessionRow(props: {
           onClick={(e) => {
             e.stopPropagation()
             e.preventDefault()
-            props.onDelete()
-          }}
-          style={{
-            position: "absolute",
-            right: "6px",
-            top: "50%",
-            transform: "translateY(-50%)",
-            display: "inline-flex",
-            "align-items": "center",
-            "justify-content": "center",
-            width: "22px",
-            height: "22px",
-            "border-radius": "4px",
-            background: "var(--color-surface-solid)",
-            border: "1px solid var(--color-border)",
-            color: "var(--color-text-faint)",
-            cursor: "pointer",
-            transition: "all 120ms ease",
-          }}
-          onMouseEnter={(el) => {
-            el.currentTarget.style.background = "var(--color-error-muted)"
-            el.currentTarget.style.borderColor = "var(--color-error)"
-            el.currentTarget.style.color = "var(--color-error)"
-          }}
-          onMouseLeave={(el) => {
-            el.currentTarget.style.background = "var(--color-surface-solid)"
-            el.currentTarget.style.borderColor = "var(--color-border)"
-            el.currentTarget.style.color = "var(--color-text-faint)"
+            setMenu((open) => !open)
           }}
         >
-          <IconTrash size={11} strokeWidth={1.5} />
+          <IconMoreH size={12} strokeWidth={1.5} />
         </button>
       </Show>
-    </div>
-  )
-}
-
-function ChatWelcome(): JSX.Element {
-  const models = useModels()
-  const dialog = useDialog()
-  // No connected provider yields any model → the composer's model() stays
-  // undefined. Surface a real setup CTA instead of leading into that dead-end.
-  const noModel = () => models.list().length === 0
-  return (
-    <div
-      class="thesis-fade-in"
-      style={{
-        flex: 1,
-        display: "flex",
-        "flex-direction": "column",
-        "justify-content": "center",
-        gap: "18px",
-        padding: "0 32px",
-        "max-width": "540px",
-        "margin-inline": "auto",
-        width: "100%",
-      }}
-    >
-      <h2
-        style={{
-          margin: 0,
-          "font-family": FONT_SERIF,
-          "font-size": "22px",
-          "line-height": 1.15,
-          "font-weight": 400,
-          "letter-spacing": "-0.02em",
-          color: "var(--color-text)",
-        }}
-      >
-        What are we working on?
-        <span class="thesis-blink" style={{ color: "var(--color-text-faint)" }}>
-          _
-        </span>
-      </h2>
-
-      <Show when={noModel()}>
-        <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
-          <p
-            style={{
-              margin: 0,
-              "font-family": FONT_SANS,
-              "font-size": "13px",
-              color: "var(--color-text-faint)",
-              "line-height": 1.5,
-            }}
-          >
-            No model is connected yet — set one up to start, with managed credits or your own key.
-          </p>
+      <Show when={menu()}>
+        <div class="session-sidebar__session-menu" role="menu" onClick={(event) => event.stopPropagation()}>
           <button
             type="button"
-            onClick={() => openSetupDialog(dialog)}
-            style={{
-              all: "unset",
-              cursor: "pointer",
-              "align-self": "flex-start",
-              display: "inline-flex",
-              "align-items": "center",
-              gap: "6px",
-              height: "34px",
-              padding: "0 16px",
-              "border-radius": "4px",
-              background: "var(--color-accent)",
-              color: "var(--color-on-accent)",
-              "font-family": FONT_MONO,
-              "font-size": "12px",
+            role="menuitem"
+            onClick={() => {
+              props.onPin(!props.session.time?.pinned)
+              setMenu(false)
             }}
           >
-            Set up models →
+            <Show when={props.session.time?.pinned} fallback={<IconPin size={12} strokeWidth={1.5} />}>
+              <IconPinFilled size={12} strokeWidth={1.5} />
+            </Show>
+            {props.session.time?.pinned ? "Unpin" : "Pin"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenu(false)
+              startEdit()
+            }}
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-danger="true"
+            onClick={() => {
+              setMenu(false)
+              props.onDelete()
+            }}
+          >
+            <IconTrash size={12} strokeWidth={1.5} />
+            Delete
           </button>
         </div>
       </Show>
-
-      <div style={{ display: "flex", "flex-wrap": "wrap", gap: "6px" }}>
-        <For each={WELCOME_MODES}>
-          {(m) => (
-            <button
-              type="button"
-              onClick={() => uiStore.setAgent(m.name)}
-              title={m.hint}
-              style={{
-                all: "unset",
-                cursor: "pointer",
-                padding: "5px 12px",
-                "border-radius": "4px",
-                border: uiStore.agent() === m.name ? "1px solid var(--color-border)" : "1px solid transparent",
-                background: uiStore.agent() === m.name ? "var(--color-accent-subtle)" : "transparent",
-                "font-family": FONT_MONO,
-                "font-size": "11px",
-                color: uiStore.agent() === m.name ? "var(--color-text)" : "var(--color-text-muted)",
-                transition: "border-color 120ms ease, background 120ms ease, color 120ms ease",
-              }}
-              onMouseEnter={(e) => {
-                if (uiStore.agent() !== m.name) e.currentTarget.style.background = "var(--color-bg-elevated)"
-              }}
-              onMouseLeave={(e) => {
-                if (uiStore.agent() !== m.name) e.currentTarget.style.background = "transparent"
-              }}
-            >
-              {m.name}
-            </button>
-          )}
-        </For>
-      </div>
-
-      <div style={{ display: "flex", "flex-direction": "column", gap: "1px" }}>
-        <For each={WELCOME_PROMPTS}>
-          {(p) => (
-            <button
-              type="button"
-              onClick={() => uiStore.setPrefill(p)}
-              style={{
-                all: "unset",
-                cursor: "pointer",
-                display: "flex",
-                "align-items": "baseline",
-                gap: "9px",
-                padding: "7px 2px",
-                "font-family": FONT_SANS,
-                "font-size": "13px",
-                "line-height": 1.5,
-                color: "var(--color-text-faint)",
-                transition: "color 120ms ease",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-text)")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text-faint)")}
-            >
-              <span style={{ color: "var(--color-text-faint)", "flex-shrink": 0 }}>→</span>
-              {p}
-            </button>
-          )}
-        </For>
-      </div>
     </div>
   )
 }
-
-const WELCOME_MODES: { name: string; hint: string }[] = [
-  { name: "research", hint: "literature + analysis" },
-  { name: "biology", hint: "computational biology" },
-  { name: "physics", hint: "simulation + theory" },
-  { name: "ml", hint: "train + evaluate models" },
-]
-
-const WELCOME_PROMPTS: string[] = [
-  "Survey recent work on this repo's research question and summarize open problems.",
-  "Reproduce the main result and report what's missing to run it end-to-end.",
-  "Draft an experiment plan with hypotheses, metrics, and ablations.",
-]

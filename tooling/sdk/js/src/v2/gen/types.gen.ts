@@ -4,20 +4,6 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {})
 }
 
-export type EventInstallationUpdated = {
-  type: "installation.updated"
-  properties: {
-    version: string
-  }
-}
-
-export type EventInstallationUpdateAvailable = {
-  type: "installation.update-available"
-  properties: {
-    version: string
-  }
-}
-
 export type Project = {
   id: string
   worktree: string
@@ -42,16 +28,12 @@ export type Project = {
   sandboxes: Array<string>
 }
 
-export type EventProjectUpdated = {
-  type: "project.updated"
-  properties: Project
-}
-
-export type EventServerInstanceDisposed = {
-  type: "server.instance.disposed"
-  properties: {
-    directory: string
-  }
+export type BadRequestError = {
+  data: unknown
+  errors: Array<{
+    [key: string]: unknown
+  }>
+  success: false
 }
 
 export type EventServerConnected = {
@@ -65,6 +47,61 @@ export type EventGlobalDisposed = {
   type: "global.disposed"
   properties: {
     [key: string]: unknown
+  }
+}
+
+export type EventInstallationUpdated = {
+  type: "installation.updated"
+  properties: {
+    version: string
+  }
+}
+
+export type EventInstallationUpdateAvailable = {
+  type: "installation.update-available"
+  properties: {
+    version: string
+  }
+}
+
+export type EventProjectUpdated = {
+  type: "project.updated"
+  properties: Project
+}
+
+export type EventServerInstanceDisposed = {
+  type: "server.instance.disposed"
+  properties: {
+    directory: string
+  }
+}
+
+export type EventProjectTrustChanged = {
+  type: "project.trust.changed"
+  properties: {
+    status: {
+      projectID: string
+      root: string
+      revision: number
+      state: "trusted" | "untrusted" | "revoked"
+      source: "default" | "persisted"
+      canExecuteProjectCode: boolean
+      time?: {
+        updated: number
+        trusted?: number
+        revoked?: number
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    }
   }
 }
 
@@ -91,6 +128,26 @@ export type EventFileWatcherUpdated = {
   }
 }
 
+export type EventSessionFilesystemChanged = {
+  type: "session.filesystem.changed"
+  properties: {
+    sessionID: string
+    projectID: string
+    grant: {
+      id: string
+      path: string
+      access: "read" | "write"
+      scope: "once" | "session" | "project" | "installation"
+      source: "workspace" | "permission" | "api"
+      time: {
+        created: number
+        consumed?: number
+        revoked?: number
+      }
+    }
+  }
+}
+
 export type EventFileEdited = {
   type: "file.edited"
   properties: {
@@ -102,35 +159,6 @@ export type EventVcsBranchUpdated = {
   type: "vcs.branch.updated"
   properties: {
     branch?: string
-  }
-}
-
-export type PermissionRequest = {
-  id: string
-  sessionID: string
-  permission: string
-  patterns: Array<string>
-  metadata: {
-    [key: string]: unknown
-  }
-  always: Array<string>
-  tool?: {
-    messageID: string
-    callID: string
-  }
-}
-
-export type EventPermissionAsked = {
-  type: "permission.asked"
-  properties: PermissionRequest
-}
-
-export type EventPermissionReplied = {
-  type: "permission.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    reply: "once" | "always" | "reject"
   }
 }
 
@@ -163,9 +191,13 @@ export type UserMessage = {
   tools?: {
     [key: string]: boolean
   }
+  delegation?: boolean
   variant?: string
-  tier?: "fast" | "pro" | "ultra"
-  fast?: boolean
+  tier?: string
+  inference?: {
+    source: "managed" | "byok" | "chatgpt" | "local" | "oauth" | "unknown"
+    effort: string
+  }
 }
 
 export type ProviderAuthError = {
@@ -243,6 +275,7 @@ export type AssistantMessage = {
     }
   }
   finish?: string
+  tailStartId?: string
 }
 
 export type Message = UserMessage | AssistantMessage
@@ -506,6 +539,9 @@ export type CompactionPart = {
   messageID: string
   type: "compaction"
   auto: boolean
+  focus?: string
+  handoffFile?: string
+  trigger?: "proactive" | "overflow" | "manual"
 }
 
 export type Part =
@@ -539,6 +575,35 @@ export type EventMessagePartRemoved = {
   }
 }
 
+export type PermissionRequest = {
+  id: string
+  sessionID: string
+  permission: string
+  patterns: Array<string>
+  metadata: {
+    [key: string]: unknown
+  }
+  always: Array<string>
+  tool?: {
+    messageID: string
+    callID: string
+  }
+}
+
+export type EventPermissionAsked = {
+  type: "permission.asked"
+  properties: PermissionRequest
+}
+
+export type EventPermissionReplied = {
+  type: "permission.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+    reply: "once" | "session" | "project" | "always" | "reject"
+  }
+}
+
 export type SessionStatus =
   | {
       type: "idle"
@@ -551,6 +616,9 @@ export type SessionStatus =
     }
   | {
       type: "busy"
+    }
+  | {
+      type: "compacting"
     }
 
 export type EventSessionStatus = {
@@ -636,6 +704,35 @@ export type EventQuestionRejected = {
   properties: {
     sessionID: string
     requestID: string
+  }
+}
+
+export type EventSessionContext = {
+  type: "session.context"
+  properties: {
+    sessionID: string
+    tokens: {
+      system: number
+      text: number
+      reasoning: number
+      tool: number
+      skills: number
+      image: number
+    }
+    images: number
+    total: number
+  }
+}
+
+export type EventSessionCompaction = {
+  type: "session.compaction"
+  properties: {
+    sessionID: string
+    trigger: "proactive" | "overflow" | "manual"
+    mechanism: "prune" | "summary"
+    before?: number
+    after?: number
+    reclaimed: number
   }
 }
 
@@ -730,6 +827,7 @@ export type Session = {
     updated: number
     compacting?: number
     archived?: number
+    pinned?: number
   }
   permission?: PermissionRuleset
   revert?: {
@@ -790,6 +888,51 @@ export type Pty = {
   command: string
   args: Array<string>
   cwd: string
+  projectID: string
+  sessionID: string
+  authority: {
+    allowed: boolean
+    reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+    capability:
+      | "terminal"
+      | "kernel"
+      | "shell"
+      | "local_job"
+      | "remote_job"
+      | "package_install"
+      | "project_plugin"
+      | "project_mcp"
+      | "project_formatter"
+      | "project_lsp"
+      | "provider_token_command"
+    mode: "read_only" | "sandboxed" | "host"
+    projectID: string
+    sessionID: string
+    trustRevision: number
+    grantRevision: number
+    generation: string
+    workspace: string
+    writable: Array<string>
+    sandbox: {
+      enabled: boolean
+      network: "allow" | "deny"
+      allowWrite: Array<string>
+      onUnavailable: "warn" | "error" | "allow"
+      backend: "seatbelt" | "bubblewrap" | "none"
+      available: boolean
+      enforced: boolean
+    }
+    remediation?: {
+      code: "trust_project_required"
+      message: string
+      method: "PUT"
+      path: string
+      body: {
+        trusted: true
+        root: string
+      }
+    }
+  }
   status: "running" | "exited"
   pid: number
 }
@@ -839,28 +982,32 @@ export type EventWorktreeFailed = {
 }
 
 export type Event =
+  | EventServerConnected
+  | EventGlobalDisposed
   | EventInstallationUpdated
   | EventInstallationUpdateAvailable
   | EventProjectUpdated
   | EventServerInstanceDisposed
-  | EventServerConnected
-  | EventGlobalDisposed
+  | EventProjectTrustChanged
   | EventLspClientDiagnostics
   | EventLspUpdated
   | EventFileWatcherUpdated
+  | EventSessionFilesystemChanged
   | EventFileEdited
   | EventVcsBranchUpdated
-  | EventPermissionAsked
-  | EventPermissionReplied
   | EventMessageUpdated
   | EventMessageRemoved
   | EventMessagePartUpdated
   | EventMessagePartRemoved
+  | EventPermissionAsked
+  | EventPermissionReplied
   | EventSessionStatus
   | EventSessionIdle
   | EventQuestionAsked
   | EventQuestionReplied
   | EventQuestionRejected
+  | EventSessionContext
+  | EventSessionCompaction
   | EventSessionCompacted
   | EventTodoUpdated
   | EventMcpToolsChanged
@@ -1392,6 +1539,20 @@ export type ProviderConfig = {
       release_date?: string
       attachment?: boolean
       reasoning?: boolean
+      reasoning_options?: Array<
+        | {
+            type: "toggle"
+          }
+        | {
+            type: "effort"
+            values: Array<string | null>
+          }
+        | {
+            type: "budget_tokens"
+            min?: number
+            max?: number
+          }
+      >
       temperature?: boolean
       tool_call?: boolean
       interleaved?:
@@ -1420,7 +1581,29 @@ export type ProviderConfig = {
         input: Array<"text" | "audio" | "image" | "video" | "pdf">
         output: Array<"text" | "audio" | "image" | "video" | "pdf">
       }
-      experimental?: boolean
+      experimental?:
+        | boolean
+        | {
+            modes?: {
+              [key: string]: {
+                model?: string
+                cost?: {
+                  input: number
+                  output: number
+                  cache_read?: number
+                  cache_write?: number
+                }
+                provider?: {
+                  body?: {
+                    [key: string]: unknown
+                  }
+                  headers?: {
+                    [key: string]: string
+                  }
+                }
+              }
+            }
+          }
       status?: "alpha" | "beta" | "deprecated"
       options?: {
         [key: string]: unknown
@@ -1450,6 +1633,10 @@ export type ProviderConfig = {
   options?: {
     apiKey?: string
     baseURL?: string
+    /**
+     * Shell command whose stdout is a short-lived bearer token. Sent as 'Authorization: Bearer <token>' on every request and re-minted automatically before the token's JWT exp (or every request for a non-JWT token). Use for providers behind rotating/SSO-minted credentials.
+     */
+    tokenCommand?: string
     /**
      * GitHub Enterprise URL for copilot authentication
      */
@@ -1540,6 +1727,28 @@ export type McpRemoteConfig = {
  */
 export type LayoutConfig = "auto" | "stretch"
 
+/**
+ * OS-level execution sandbox for the agent's shell commands.
+ */
+export type SandboxConfig = {
+  /**
+   * Run local terminals, kernels, and shell commands inside an OS sandbox (macOS Seatbelt / Linux bubblewrap) that confines writes to authorized project roots. Enabled by default.
+   */
+  enabled?: boolean
+  /**
+   * Whether sandboxed commands may reach the network. Default: deny.
+   */
+  network?: "allow" | "deny"
+  /**
+   * Extra absolute paths — beyond the workspace and temp dirs — the sandbox may write to.
+   */
+  allowWrite?: Array<string>
+  /**
+   * Behaviour when no sandbox backend exists on this platform: 'error' (default) refuses to run, 'warn' runs unsandboxed with a notice, and 'allow' runs unsandboxed silently.
+   */
+  onUnavailable?: "warn" | "error" | "allow"
+}
+
 export type Config = {
   /**
    * JSON schema reference for configuration validation
@@ -1603,11 +1812,11 @@ export type Config = {
    */
   default_agent?: string
   /**
-   * Managed (Atlas wallet) vs bring-your-own-key spend, toggled independently for LLM inference and compute.
+   * Managed Credits vs bring-your-own-key spend, toggled independently for LLM inference and compute.
    */
   billing?: {
     /**
-     * How LLM inference is paid for. 'managed' routes through the Atlas wallet (metered credits); 'byok' uses your own provider API keys or first-party OAuth (ChatGPT/Claude Pro/Copilot) and is never billed. Unset or null = auto-detect from the resolved credential.
+     * How LLM inference is paid for. 'managed' uses Credits; 'byok' uses your own provider API keys or first-party OAuth (ChatGPT/Claude Pro/Copilot) and is never billed. Unset or null = auto-detect from the resolved credential.
      */
     llm?: "managed" | "byok" | null
     /**
@@ -1693,6 +1902,7 @@ export type Config = {
   instructions?: Array<string>
   layout?: LayoutConfig
   permission?: PermissionConfig
+  sandbox?: SandboxConfig
   tools?: {
     [key: string]: boolean
   }
@@ -1711,6 +1921,22 @@ export type Config = {
      * Enable pruning of old tool outputs (default: true)
      */
     prune?: boolean
+    /**
+     * Compact when context exceeds this fraction of the model window (default: 0.75)
+     */
+    threshold?: number
+    /**
+     * Assumed context window (tokens) when a provider reports 0 (default: 128000)
+     */
+    fallbackContext?: number
+    /**
+     * Minimum recent turns kept verbatim during compaction (default: 2)
+     */
+    tailTurns?: number
+    /**
+     * Token budget for the verbatim recent tail during compaction (default: clamp(0.20*usable, 8000, 32000))
+     */
+    tailTokens?: number
   }
   experimental?: {
     hook?: {
@@ -1761,12 +1987,11 @@ export type Config = {
   }
 }
 
-export type BadRequestError = {
-  data: unknown
-  errors: Array<{
-    [key: string]: unknown
-  }>
-  success: false
+export type NotFoundError = {
+  name: "NotFoundError"
+  data: {
+    message: string
+  }
 }
 
 export type OAuth = {
@@ -1791,19 +2016,12 @@ export type WellKnownAuth = {
 
 export type Auth = OAuth | ApiAuth | WellKnownAuth
 
-export type NotFoundError = {
-  name: "NotFoundError"
-  data: {
-    message: string
-  }
-}
-
 export type Model = {
   id: string
   providerID: string
   api: {
     id: string
-    url: string
+    url?: string
     npm: string
   }
   name: string
@@ -1862,9 +2080,33 @@ export type Model = {
     [key: string]: string
   }
   release_date: string
+  reasoningOptions?: Array<{
+    [key: string]: unknown
+  }>
   variants?: {
     [key: string]: {
       [key: string]: unknown
+    }
+  }
+  modes?: {
+    [key: string]: {
+      model?: string
+      cost?: {
+        input: number
+        output: number
+        cache: {
+          read: number
+          write: number
+        }
+      }
+      provider?: {
+        body?: {
+          [key: string]: unknown
+        }
+        headers?: {
+          [key: string]: string
+        }
+      }
     }
   }
 }
@@ -1872,7 +2114,7 @@ export type Model = {
 export type Provider = {
   id: string
   name: string
-  source: "env" | "config" | "custom" | "api"
+  source: "env" | "config" | "custom" | "api" | "managed"
   env: Array<string>
   key?: string
   options: {
@@ -1971,6 +2213,16 @@ export type SubtaskPartInput = {
   command?: string
 }
 
+export type PermissionStandingScope = "project" | "global"
+
+export type PermissionStanding = {
+  id: string
+  permission: string
+  pattern: string
+  scope: PermissionStandingScope
+  created: number
+}
+
 export type ProviderAuthMethod = {
   type: "oauth" | "api"
   label: string
@@ -2022,6 +2274,8 @@ export type FileContent = {
   }
   encoding?: "base64"
   mimeType?: string
+  size?: number
+  truncated?: boolean
 }
 
 export type File = {
@@ -2060,6 +2314,30 @@ export type McpStatus =
   | McpStatusNeedsAuth
   | McpStatusNeedsClientRegistration
 
+export type McpInspection = {
+  status: McpStatus
+  auth?: "authenticated" | "expired" | "not_authenticated"
+  tools: Array<{
+    name: string
+    description?: string
+  }>
+  resources: Array<{
+    name: string
+    uri: string
+    description?: string
+    mimeType?: string
+  }>
+  prompts: Array<{
+    name: string
+    description?: string
+  }>
+  errors: {
+    tools?: string
+    resources?: string
+    prompts?: string
+  }
+}
+
 export type Path = {
   home: string
   state: string
@@ -2078,6 +2356,7 @@ export type Command = {
   agent?: string
   model?: string
   mcp?: boolean
+  menu?: boolean
   template: string
   subtask?: boolean
   hints: Array<string>
@@ -2135,6 +2414,37 @@ export type GlobalHealthResponses = {
 }
 
 export type GlobalHealthResponse = GlobalHealthResponses[keyof GlobalHealthResponses]
+
+export type GlobalProjectCreateData = {
+  body?: {
+    name: string
+    sources?: Array<{
+      path: string
+      access?: "read" | "write"
+    }>
+  }
+  path?: never
+  query?: never
+  url: "/global/project"
+}
+
+export type GlobalProjectCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalProjectCreateError = GlobalProjectCreateErrors[keyof GlobalProjectCreateErrors]
+
+export type GlobalProjectCreateResponses = {
+  /**
+   * Created project information
+   */
+  201: Project
+}
+
+export type GlobalProjectCreateResponse = GlobalProjectCreateResponses[keyof GlobalProjectCreateResponses]
 
 export type GlobalEventData = {
   body?: never
@@ -2302,6 +2612,24 @@ export type GlobalSyncResponses = {
 
 export type GlobalSyncResponse = GlobalSyncResponses[keyof GlobalSyncResponses]
 
+export type AccountSessionData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/account/session"
+}
+
+export type AccountSessionResponses = {
+  /**
+   * Local session status
+   */
+  200: {
+    session: boolean
+  }
+}
+
+export type AccountSessionResponse = AccountSessionResponses[keyof AccountSessionResponses]
+
 export type AccountGetData = {
   body?: never
   path?: never
@@ -2430,6 +2758,27 @@ export type AccountBillingModeSetResponses = {
 }
 
 export type AccountBillingModeSetResponse = AccountBillingModeSetResponses[keyof AccountBillingModeSetResponses]
+
+export type AccountLoginKeyData = {
+  body?: {
+    key: string
+  }
+  path?: never
+  query?: never
+  url: "/account/login-key"
+}
+
+export type AccountLoginKeyResponses = {
+  /**
+   * Login result
+   */
+  200: {
+    ok: boolean
+    error?: string
+  }
+}
+
+export type AccountLoginKeyResponse = AccountLoginKeyResponses[keyof AccountLoginKeyResponses]
 
 export type AccountLogoutData = {
   body?: never
@@ -2645,6 +2994,8 @@ export type SettingsComputeGetResponses = {
       placeholder: string
       hint: string
       connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
       connected_at: string | null
       last_used: string | null
     }>
@@ -2654,13 +3005,20 @@ export type SettingsComputeGetResponses = {
       host: string
       user?: string
       port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
     }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
   }
 }
 
@@ -2687,6 +3045,8 @@ export type SettingsComputeProviderDisconnectResponses = {
       placeholder: string
       hint: string
       connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
       connected_at: string | null
       last_used: string | null
     }>
@@ -2696,13 +3056,20 @@ export type SettingsComputeProviderDisconnectResponses = {
       host: string
       user?: string
       port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
     }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
   }
 }
 
@@ -2742,6 +3109,8 @@ export type SettingsComputeProviderConnectResponses = {
       placeholder: string
       hint: string
       connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
       connected_at: string | null
       last_used: string | null
     }>
@@ -2751,18 +3120,340 @@ export type SettingsComputeProviderConnectResponses = {
       host: string
       user?: string
       port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
     }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
   }
 }
 
 export type SettingsComputeProviderConnectResponse =
   SettingsComputeProviderConnectResponses[keyof SettingsComputeProviderConnectResponses]
+
+export type SettingsComputeProviderEnabledData = {
+  body?: {
+    enabled: boolean
+  }
+  path: {
+    id: string
+  }
+  query?: never
+  url: "/settings/compute/provider/{id}/enabled"
+}
+
+export type SettingsComputeProviderEnabledErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeProviderEnabledError =
+  SettingsComputeProviderEnabledErrors[keyof SettingsComputeProviderEnabledErrors]
+
+export type SettingsComputeProviderEnabledResponses = {
+  /**
+   * Updated
+   */
+  200: {
+    providers?: Array<{
+      id: string
+      name: string
+      verified: boolean
+      placeholder: string
+      hint: string
+      connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
+      connected_at: string | null
+      last_used: string | null
+    }>
+    ssh_hosts?: Array<{
+      id: string
+      label: string
+      host: string
+      user?: string
+      port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
+    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
+  }
+}
+
+export type SettingsComputeProviderEnabledResponse =
+  SettingsComputeProviderEnabledResponses[keyof SettingsComputeProviderEnabledResponses]
+
+export type SettingsComputeModalUpdateData = {
+  body?: {
+    app?: string
+    image?: string
+    network?: "unrestricted" | "none"
+    timeout_minutes?: number
+    concurrency?: number
+  }
+  path?: never
+  query?: never
+  url: "/settings/compute/modal"
+}
+
+export type SettingsComputeModalUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeModalUpdateError = SettingsComputeModalUpdateErrors[keyof SettingsComputeModalUpdateErrors]
+
+export type SettingsComputeModalUpdateResponses = {
+  /**
+   * Updated
+   */
+  200: {
+    providers?: Array<{
+      id: string
+      name: string
+      verified: boolean
+      placeholder: string
+      hint: string
+      connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
+      connected_at: string | null
+      last_used: string | null
+    }>
+    ssh_hosts?: Array<{
+      id: string
+      label: string
+      host: string
+      user?: string
+      port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
+    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
+  }
+}
+
+export type SettingsComputeModalUpdateResponse =
+  SettingsComputeModalUpdateResponses[keyof SettingsComputeModalUpdateResponses]
+
+export type SettingsComputeModalVolumesData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/settings/compute/modal/volumes"
+}
+
+export type SettingsComputeModalVolumesErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeModalVolumesError =
+  SettingsComputeModalVolumesErrors[keyof SettingsComputeModalVolumesErrors]
+
+export type SettingsComputeModalVolumesResponses = {
+  /**
+   * Modal Volumes
+   */
+  200: Array<{
+    name: string
+  }>
+}
+
+export type SettingsComputeModalVolumesResponse =
+  SettingsComputeModalVolumesResponses[keyof SettingsComputeModalVolumesResponses]
+
+export type SettingsComputeModalVolumeFilesData = {
+  body?: never
+  path: {
+    name: string
+  }
+  query?: {
+    path?: string
+  }
+  url: "/settings/compute/modal/volumes/{name}/files"
+}
+
+export type SettingsComputeModalVolumeFilesErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeModalVolumeFilesError =
+  SettingsComputeModalVolumeFilesErrors[keyof SettingsComputeModalVolumeFilesErrors]
+
+export type SettingsComputeModalVolumeFilesResponses = {
+  /**
+   * Modal Volume files
+   */
+  200: Array<{
+    path: string
+    type: string
+    size: number
+    mtime?: number
+  }>
+}
+
+export type SettingsComputeModalVolumeFilesResponse =
+  SettingsComputeModalVolumeFilesResponses[keyof SettingsComputeModalVolumeFilesResponses]
+
+export type SettingsComputeModalVolumeFileData = {
+  body?: never
+  path: {
+    name: string
+  }
+  query: {
+    path: string
+  }
+  url: "/settings/compute/modal/volumes/{name}/file"
+}
+
+export type SettingsComputeModalVolumeFileErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SettingsComputeModalVolumeFileError =
+  SettingsComputeModalVolumeFileErrors[keyof SettingsComputeModalVolumeFileErrors]
+
+export type SettingsComputeModalVolumeFileResponses = {
+  /**
+   * Modal Volume file
+   */
+  200: unknown
+}
+
+export type SettingsComputeModalConfigureData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/settings/compute/modal/configure"
+}
+
+export type SettingsComputeModalConfigureErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeModalConfigureError =
+  SettingsComputeModalConfigureErrors[keyof SettingsComputeModalConfigureErrors]
+
+export type SettingsComputeModalConfigureResponses = {
+  /**
+   * Configured
+   */
+  200: {
+    providers?: Array<{
+      id: string
+      name: string
+      verified: boolean
+      placeholder: string
+      hint: string
+      connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
+      connected_at: string | null
+      last_used: string | null
+    }>
+    ssh_hosts?: Array<{
+      id: string
+      label: string
+      host: string
+      user?: string
+      port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
+    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
+  }
+}
+
+export type SettingsComputeModalConfigureResponse =
+  SettingsComputeModalConfigureResponses[keyof SettingsComputeModalConfigureResponses]
+
+export type SettingsComputeModalCheckData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/settings/compute/modal/check"
+}
+
+export type SettingsComputeModalCheckErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeModalCheckError = SettingsComputeModalCheckErrors[keyof SettingsComputeModalCheckErrors]
+
+export type SettingsComputeModalCheckResponses = {
+  /**
+   * Connection result
+   */
+  200: {
+    ok: true
+    sdk: string
+  }
+}
+
+export type SettingsComputeModalCheckResponse =
+  SettingsComputeModalCheckResponses[keyof SettingsComputeModalCheckResponses]
 
 export type SettingsComputeSshAddData = {
   body?: {
@@ -2770,6 +3461,8 @@ export type SettingsComputeSshAddData = {
     host: string
     user?: string
     port?: number
+    scheduler?: "none" | "slurm" | "pbs"
+    workdir?: string
   }
   path?: never
   query?: never
@@ -2797,6 +3490,8 @@ export type SettingsComputeSshAddResponses = {
       placeholder: string
       hint: string
       connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
       connected_at: string | null
       last_used: string | null
     }>
@@ -2806,17 +3501,61 @@ export type SettingsComputeSshAddResponses = {
       host: string
       user?: string
       port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
     }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
   }
 }
 
 export type SettingsComputeSshAddResponse = SettingsComputeSshAddResponses[keyof SettingsComputeSshAddResponses]
+
+export type SettingsComputeSshTestData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: never
+  url: "/settings/compute/ssh/{id}/test"
+}
+
+export type SettingsComputeSshTestErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SettingsComputeSshTestError = SettingsComputeSshTestErrors[keyof SettingsComputeSshTestErrors]
+
+export type SettingsComputeSshTestResponses = {
+  /**
+   * Connection result
+   */
+  200: {
+    ok: boolean
+    host: string
+    latency_ms: number
+    hostname?: string
+    python: boolean
+    gpu: boolean
+    slurm: boolean
+    pbs: boolean
+    error?: string
+  }
+}
+
+export type SettingsComputeSshTestResponse = SettingsComputeSshTestResponses[keyof SettingsComputeSshTestResponses]
 
 export type SettingsComputeSshRemoveData = {
   body?: never
@@ -2839,6 +3578,8 @@ export type SettingsComputeSshRemoveResponses = {
       placeholder: string
       hint: string
       connected: boolean
+      enabled: boolean
+      source: "stored" | "modal_toml" | null
       connected_at: string | null
       last_used: string | null
     }>
@@ -2848,201 +3589,2761 @@ export type SettingsComputeSshRemoveResponses = {
       host: string
       user?: string
       port?: number
+      scheduler?: "none" | "slurm" | "pbs"
+      workdir?: string
     }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    modal?: {
+      app?: string
+      image?: string
+      network?: "unrestricted" | "none"
+      timeout_minutes?: number
+      concurrency?: number
+    }
+    modal_file: {
+      found: boolean
+      ready: boolean
+    }
   }
 }
 
 export type SettingsComputeSshRemoveResponse =
   SettingsComputeSshRemoveResponses[keyof SettingsComputeSshRemoveResponses]
 
-export type SettingsComputeEndpointAddData = {
-  body?: {
-    label: string
-    url: string
-    kind: "local" | "remote"
-  }
+export type SettingsComputeJobsListData = {
+  body?: never
   path?: never
-  query?: never
-  url: "/settings/compute/endpoint"
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs"
 }
 
-export type SettingsComputeEndpointAddErrors = {
+export type SettingsComputeJobsListResponses = {
+  /**
+   * Compute jobs
+   */
+  200: Array<{
+    id: string
+    name: string
+    command: string
+    cwd?: string
+    target:
+      | {
+          kind: "local"
+        }
+      | {
+          kind: "ssh"
+          host_id: string
+        }
+      | {
+          kind: "modal"
+        }
+    target_label: string
+    scheduler: "none" | "slurm" | "pbs"
+    status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+    created_at: string
+    started_at?: string
+    completed_at?: string
+    exit_code?: number | null
+    pid?: number
+    error?: string
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+      time_minutes?: number
+      partition?: string
+    }
+    modules?: Array<string>
+    container?: string
+    artifact_patterns?: Array<string>
+    artifacts?: Array<{
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }>
+    checkpoint_path?: string
+    checkpoint?: {
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }
+    reproducibility?: {
+      captured_at: string
+      command: string
+      cwd: string
+      platform: string
+      arch: string
+      bun: string
+      node: string
+      python?: string
+      git?: {
+        repository?: string
+        branch?: string
+        commit?: string
+        dirty: boolean
+      }
+      lockfiles: Array<{
+        path: string
+        size: number
+        sha256: string
+        modified_at: string
+      }>
+      resources?: {
+        cpus?: number
+        gpus?: number
+        memory_gb?: number
+        time_minutes?: number
+        partition?: string
+      }
+    }
+    provenance?: {
+      format: "openscience.provenance.v1"
+      kind: "kernel" | "local_compute" | "remote_compute" | "artifact_version"
+      identity: {
+        project_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        session_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      input: {
+        code:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        cwd:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        code_state:
+          | {
+              status: "available"
+              value: {
+                repository:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                branch:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                commit:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                dirty:
+                  | {
+                      status: "available"
+                      value: boolean
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      environment: {
+        host:
+          | {
+              status: "available"
+              value: {
+                platform: string
+                arch: string
+                runtimes: {
+                  [key: string]: string
+                }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        kernel:
+          | {
+              status: "available"
+              value: {
+                id: string
+                language: string
+                incarnation:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_id:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_started_at:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      outputs: {
+        status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted" | "inconclusive"
+        items: Array<{
+          kind: "stream" | "display" | "result" | "error" | "artifact" | "checkpoint"
+          label: string
+          artifact_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          path:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          sha256: string
+          size: number
+          version_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          version:
+            | {
+                status: "available"
+                value: number
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          created_at:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+        }>
+      }
+      timestamps: {
+        created_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        started_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        completed_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      handoff: {
+        atlas_compute_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        atlas_run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+    }
+    capture_error?: string
+    cleanup_error?: string
+    recovery_attempts?: number
+    recovery_retry_at?: string
+    session_id?: string
+    authority?: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    }
+    scope?: {
+      directory: string
+      key: string
+    }
+    sandbox?: {
+      requested: boolean
+      enforced: boolean
+      backend: "seatbelt" | "bubblewrap" | "none"
+      network: "allow" | "deny"
+      warning?: string
+    }
+    lifecycle?: {
+      execution:
+        | "planned"
+        | "awaiting_approval"
+        | "queued"
+        | "starting"
+        | "running"
+        | "succeeded"
+        | "failed"
+        | "timed_out"
+        | "cancelled"
+        | "interrupted"
+      delivery: "none" | "pending" | "complete" | "rejected" | "failed"
+      resource: "none" | "starting" | "active" | "closed" | "unknown"
+      recoverable: boolean
+      error_kind?:
+        | "provider_disabled"
+        | "image_build_failed"
+        | "unauthorized"
+        | "quota_exhausted"
+        | "rate_limited"
+        | "ownership_mismatch"
+        | "result_rejected"
+        | "harvest_failed"
+        | "input_changed"
+        | "session_concurrency_full"
+        | "invalid_request"
+        | "not_found"
+      system_hint?: string
+      deadline_fired?: boolean
+    }
+    remote_id?: string
+    modal?: {
+      app: string
+      environment?: string
+      image: string
+      packages?: Array<string>
+      gpu: string
+      network: "unrestricted" | "none"
+      timeout_minutes: number
+      uploads: Array<{
+        path: string
+        size: number
+        sha256: string
+      }>
+      upload_bytes: number
+      approval: string
+      sdk: string
+      volume?: string
+    }
+  }>
+}
+
+export type SettingsComputeJobsListResponse = SettingsComputeJobsListResponses[keyof SettingsComputeJobsListResponses]
+
+export type SettingsComputeJobsStartData = {
+  body?: {
+    name: string
+    command: string
+    cwd?: string
+    target:
+      | {
+          kind: "local"
+        }
+      | {
+          kind: "ssh"
+          host_id: string
+        }
+      | {
+          kind: "modal"
+        }
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+      time_minutes?: number
+      partition?: string
+    }
+    modules?: Array<string>
+    container?: string
+    artifacts?: Array<string>
+    checkpoint?: string
+    uploads?: Array<string>
+    packages?: Array<string>
+    image?: string
+    gpu?: string
+    approval?: string
+    sessionID: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs"
+}
+
+export type SettingsComputeJobsStartErrors = {
   /**
    * Bad request
    */
   400: BadRequestError
 }
 
-export type SettingsComputeEndpointAddError = SettingsComputeEndpointAddErrors[keyof SettingsComputeEndpointAddErrors]
+export type SettingsComputeJobsStartError = SettingsComputeJobsStartErrors[keyof SettingsComputeJobsStartErrors]
 
-export type SettingsComputeEndpointAddResponses = {
+export type SettingsComputeJobsStartResponses = {
   /**
-   * Updated
+   * Started job
    */
   200: {
-    providers?: Array<{
-      id: string
-      name: string
-      verified: boolean
-      placeholder: string
-      hint: string
-      connected: boolean
-      connected_at: string | null
-      last_used: string | null
+    id: string
+    name: string
+    command: string
+    cwd?: string
+    target:
+      | {
+          kind: "local"
+        }
+      | {
+          kind: "ssh"
+          host_id: string
+        }
+      | {
+          kind: "modal"
+        }
+    target_label: string
+    scheduler: "none" | "slurm" | "pbs"
+    status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+    created_at: string
+    started_at?: string
+    completed_at?: string
+    exit_code?: number | null
+    pid?: number
+    error?: string
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+      time_minutes?: number
+      partition?: string
+    }
+    modules?: Array<string>
+    container?: string
+    artifact_patterns?: Array<string>
+    artifacts?: Array<{
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
     }>
-    ssh_hosts?: Array<{
-      id: string
-      label: string
-      host: string
-      user?: string
-      port?: number
-    }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    checkpoint_path?: string
+    checkpoint?: {
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }
+    reproducibility?: {
+      captured_at: string
+      command: string
+      cwd: string
+      platform: string
+      arch: string
+      bun: string
+      node: string
+      python?: string
+      git?: {
+        repository?: string
+        branch?: string
+        commit?: string
+        dirty: boolean
+      }
+      lockfiles: Array<{
+        path: string
+        size: number
+        sha256: string
+        modified_at: string
+      }>
+      resources?: {
+        cpus?: number
+        gpus?: number
+        memory_gb?: number
+        time_minutes?: number
+        partition?: string
+      }
+    }
+    provenance?: {
+      format: "openscience.provenance.v1"
+      kind: "kernel" | "local_compute" | "remote_compute" | "artifact_version"
+      identity: {
+        project_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        session_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      input: {
+        code:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        cwd:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        code_state:
+          | {
+              status: "available"
+              value: {
+                repository:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                branch:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                commit:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                dirty:
+                  | {
+                      status: "available"
+                      value: boolean
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      environment: {
+        host:
+          | {
+              status: "available"
+              value: {
+                platform: string
+                arch: string
+                runtimes: {
+                  [key: string]: string
+                }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        kernel:
+          | {
+              status: "available"
+              value: {
+                id: string
+                language: string
+                incarnation:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_id:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_started_at:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      outputs: {
+        status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted" | "inconclusive"
+        items: Array<{
+          kind: "stream" | "display" | "result" | "error" | "artifact" | "checkpoint"
+          label: string
+          artifact_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          path:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          sha256: string
+          size: number
+          version_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          version:
+            | {
+                status: "available"
+                value: number
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          created_at:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+        }>
+      }
+      timestamps: {
+        created_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        started_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        completed_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      handoff: {
+        atlas_compute_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        atlas_run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+    }
+    capture_error?: string
+    cleanup_error?: string
+    recovery_attempts?: number
+    recovery_retry_at?: string
+    session_id?: string
+    authority?: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    }
+    scope?: {
+      directory: string
+      key: string
+    }
+    sandbox?: {
+      requested: boolean
+      enforced: boolean
+      backend: "seatbelt" | "bubblewrap" | "none"
+      network: "allow" | "deny"
+      warning?: string
+    }
+    lifecycle?: {
+      execution:
+        | "planned"
+        | "awaiting_approval"
+        | "queued"
+        | "starting"
+        | "running"
+        | "succeeded"
+        | "failed"
+        | "timed_out"
+        | "cancelled"
+        | "interrupted"
+      delivery: "none" | "pending" | "complete" | "rejected" | "failed"
+      resource: "none" | "starting" | "active" | "closed" | "unknown"
+      recoverable: boolean
+      error_kind?:
+        | "provider_disabled"
+        | "image_build_failed"
+        | "unauthorized"
+        | "quota_exhausted"
+        | "rate_limited"
+        | "ownership_mismatch"
+        | "result_rejected"
+        | "harvest_failed"
+        | "input_changed"
+        | "session_concurrency_full"
+        | "invalid_request"
+        | "not_found"
+      system_hint?: string
+      deadline_fired?: boolean
+    }
+    remote_id?: string
+    modal?: {
+      app: string
+      environment?: string
+      image: string
+      packages?: Array<string>
+      gpu: string
+      network: "unrestricted" | "none"
+      timeout_minutes: number
+      uploads: Array<{
+        path: string
+        size: number
+        sha256: string
+      }>
+      upload_bytes: number
+      approval: string
+      sdk: string
+      volume?: string
+    }
   }
 }
 
-export type SettingsComputeEndpointAddResponse =
-  SettingsComputeEndpointAddResponses[keyof SettingsComputeEndpointAddResponses]
+export type SettingsComputeJobsStartResponse =
+  SettingsComputeJobsStartResponses[keyof SettingsComputeJobsStartResponses]
 
-export type SettingsComputeEndpointRemoveData = {
+export type SettingsComputeJobsPlanData = {
+  body?: {
+    name: string
+    command: string
+    cwd?: string
+    target:
+      | {
+          kind: "local"
+        }
+      | {
+          kind: "ssh"
+          host_id: string
+        }
+      | {
+          kind: "modal"
+        }
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+      time_minutes?: number
+      partition?: string
+    }
+    modules?: Array<string>
+    container?: string
+    artifacts?: Array<string>
+    checkpoint?: string
+    uploads?: Array<string>
+    packages?: Array<string>
+    image?: string
+    gpu?: string
+    approval?: string
+    sessionID: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs/plan"
+}
+
+export type SettingsComputeJobsPlanErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SettingsComputeJobsPlanError = SettingsComputeJobsPlanErrors[keyof SettingsComputeJobsPlanErrors]
+
+export type SettingsComputeJobsPlanResponses = {
+  /**
+   * Modal run plan
+   */
+  200: {
+    digest: string
+    provider: "modal"
+    app: string
+    environment?: string
+    image: string
+    packages: Array<string>
+    gpu: string
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+    }
+    timeout_minutes: number
+    network: "unrestricted" | "none"
+    command: string
+    cwd: string
+    uploads: Array<{
+      path: string
+      size: number
+      sha256: string
+    }>
+    upload_bytes: number
+    outputs: Array<string>
+    warning: string
+  }
+}
+
+export type SettingsComputeJobsPlanResponse = SettingsComputeJobsPlanResponses[keyof SettingsComputeJobsPlanResponses]
+
+export type SettingsComputeJobsClearData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs/completed"
+}
+
+export type SettingsComputeJobsClearResponses = {
+  /**
+   * Number cleared
+   */
+  200: {
+    cleared: number
+  }
+}
+
+export type SettingsComputeJobsClearResponse =
+  SettingsComputeJobsClearResponses[keyof SettingsComputeJobsClearResponses]
+
+export type SettingsComputeJobsLogData = {
   body?: never
   path: {
     id: string
   }
-  query?: never
-  url: "/settings/compute/endpoint/{id}"
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs/{id}/log"
 }
 
-export type SettingsComputeEndpointRemoveResponses = {
+export type SettingsComputeJobsLogErrors = {
   /**
-   * Updated
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SettingsComputeJobsLogError = SettingsComputeJobsLogErrors[keyof SettingsComputeJobsLogErrors]
+
+export type SettingsComputeJobsLogResponses = {
+  /**
+   * Job output
    */
   200: {
-    providers?: Array<{
-      id: string
-      name: string
-      verified: boolean
-      placeholder: string
-      hint: string
-      connected: boolean
-      connected_at: string | null
-      last_used: string | null
-    }>
-    ssh_hosts?: Array<{
-      id: string
-      label: string
-      host: string
-      user?: string
-      port?: number
-    }>
-    endpoints?: Array<{
-      id: string
-      label: string
-      url: string
-      kind: "local" | "remote"
-    }>
+    log: string
   }
 }
 
-export type SettingsComputeEndpointRemoveResponse =
-  SettingsComputeEndpointRemoveResponses[keyof SettingsComputeEndpointRemoveResponses]
+export type SettingsComputeJobsLogResponse = SettingsComputeJobsLogResponses[keyof SettingsComputeJobsLogResponses]
 
-export type SettingsPermissionsGetData = {
+export type SettingsComputeJobsEventsData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs/{id}/events"
+}
+
+export type SettingsComputeJobsEventsErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SettingsComputeJobsEventsError = SettingsComputeJobsEventsErrors[keyof SettingsComputeJobsEventsErrors]
+
+export type SettingsComputeJobsEventsResponses = {
+  /**
+   * Provider lifecycle logs
+   */
+  200: {
+    events: string
+  }
+}
+
+export type SettingsComputeJobsEventsResponse =
+  SettingsComputeJobsEventsResponses[keyof SettingsComputeJobsEventsResponses]
+
+export type SettingsComputeJobsRetryData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs/{id}/retry"
+}
+
+export type SettingsComputeJobsRetryErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SettingsComputeJobsRetryError = SettingsComputeJobsRetryErrors[keyof SettingsComputeJobsRetryErrors]
+
+export type SettingsComputeJobsRetryResponses = {
+  /**
+   * Recovery started
+   */
+  200: {
+    id: string
+    name: string
+    command: string
+    cwd?: string
+    target:
+      | {
+          kind: "local"
+        }
+      | {
+          kind: "ssh"
+          host_id: string
+        }
+      | {
+          kind: "modal"
+        }
+    target_label: string
+    scheduler: "none" | "slurm" | "pbs"
+    status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+    created_at: string
+    started_at?: string
+    completed_at?: string
+    exit_code?: number | null
+    pid?: number
+    error?: string
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+      time_minutes?: number
+      partition?: string
+    }
+    modules?: Array<string>
+    container?: string
+    artifact_patterns?: Array<string>
+    artifacts?: Array<{
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }>
+    checkpoint_path?: string
+    checkpoint?: {
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }
+    reproducibility?: {
+      captured_at: string
+      command: string
+      cwd: string
+      platform: string
+      arch: string
+      bun: string
+      node: string
+      python?: string
+      git?: {
+        repository?: string
+        branch?: string
+        commit?: string
+        dirty: boolean
+      }
+      lockfiles: Array<{
+        path: string
+        size: number
+        sha256: string
+        modified_at: string
+      }>
+      resources?: {
+        cpus?: number
+        gpus?: number
+        memory_gb?: number
+        time_minutes?: number
+        partition?: string
+      }
+    }
+    provenance?: {
+      format: "openscience.provenance.v1"
+      kind: "kernel" | "local_compute" | "remote_compute" | "artifact_version"
+      identity: {
+        project_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        session_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      input: {
+        code:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        cwd:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        code_state:
+          | {
+              status: "available"
+              value: {
+                repository:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                branch:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                commit:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                dirty:
+                  | {
+                      status: "available"
+                      value: boolean
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      environment: {
+        host:
+          | {
+              status: "available"
+              value: {
+                platform: string
+                arch: string
+                runtimes: {
+                  [key: string]: string
+                }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        kernel:
+          | {
+              status: "available"
+              value: {
+                id: string
+                language: string
+                incarnation:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_id:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_started_at:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      outputs: {
+        status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted" | "inconclusive"
+        items: Array<{
+          kind: "stream" | "display" | "result" | "error" | "artifact" | "checkpoint"
+          label: string
+          artifact_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          path:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          sha256: string
+          size: number
+          version_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          version:
+            | {
+                status: "available"
+                value: number
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          created_at:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+        }>
+      }
+      timestamps: {
+        created_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        started_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        completed_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      handoff: {
+        atlas_compute_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        atlas_run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+    }
+    capture_error?: string
+    cleanup_error?: string
+    recovery_attempts?: number
+    recovery_retry_at?: string
+    session_id?: string
+    authority?: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    }
+    scope?: {
+      directory: string
+      key: string
+    }
+    sandbox?: {
+      requested: boolean
+      enforced: boolean
+      backend: "seatbelt" | "bubblewrap" | "none"
+      network: "allow" | "deny"
+      warning?: string
+    }
+    lifecycle?: {
+      execution:
+        | "planned"
+        | "awaiting_approval"
+        | "queued"
+        | "starting"
+        | "running"
+        | "succeeded"
+        | "failed"
+        | "timed_out"
+        | "cancelled"
+        | "interrupted"
+      delivery: "none" | "pending" | "complete" | "rejected" | "failed"
+      resource: "none" | "starting" | "active" | "closed" | "unknown"
+      recoverable: boolean
+      error_kind?:
+        | "provider_disabled"
+        | "image_build_failed"
+        | "unauthorized"
+        | "quota_exhausted"
+        | "rate_limited"
+        | "ownership_mismatch"
+        | "result_rejected"
+        | "harvest_failed"
+        | "input_changed"
+        | "session_concurrency_full"
+        | "invalid_request"
+        | "not_found"
+      system_hint?: string
+      deadline_fired?: boolean
+    }
+    remote_id?: string
+    modal?: {
+      app: string
+      environment?: string
+      image: string
+      packages?: Array<string>
+      gpu: string
+      network: "unrestricted" | "none"
+      timeout_minutes: number
+      uploads: Array<{
+        path: string
+        size: number
+        sha256: string
+      }>
+      upload_bytes: number
+      approval: string
+      sdk: string
+      volume?: string
+    }
+  }
+}
+
+export type SettingsComputeJobsRetryResponse =
+  SettingsComputeJobsRetryResponses[keyof SettingsComputeJobsRetryResponses]
+
+export type SettingsComputeJobsCancelData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/settings/compute/jobs/{id}/cancel"
+}
+
+export type SettingsComputeJobsCancelErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SettingsComputeJobsCancelError = SettingsComputeJobsCancelErrors[keyof SettingsComputeJobsCancelErrors]
+
+export type SettingsComputeJobsCancelResponses = {
+  /**
+   * Cancelled job
+   */
+  200: {
+    id: string
+    name: string
+    command: string
+    cwd?: string
+    target:
+      | {
+          kind: "local"
+        }
+      | {
+          kind: "ssh"
+          host_id: string
+        }
+      | {
+          kind: "modal"
+        }
+    target_label: string
+    scheduler: "none" | "slurm" | "pbs"
+    status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+    created_at: string
+    started_at?: string
+    completed_at?: string
+    exit_code?: number | null
+    pid?: number
+    error?: string
+    resources?: {
+      cpus?: number
+      gpus?: number
+      memory_gb?: number
+      time_minutes?: number
+      partition?: string
+    }
+    modules?: Array<string>
+    container?: string
+    artifact_patterns?: Array<string>
+    artifacts?: Array<{
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }>
+    checkpoint_path?: string
+    checkpoint?: {
+      path: string
+      size: number
+      sha256: string
+      modified_at: string
+    }
+    reproducibility?: {
+      captured_at: string
+      command: string
+      cwd: string
+      platform: string
+      arch: string
+      bun: string
+      node: string
+      python?: string
+      git?: {
+        repository?: string
+        branch?: string
+        commit?: string
+        dirty: boolean
+      }
+      lockfiles: Array<{
+        path: string
+        size: number
+        sha256: string
+        modified_at: string
+      }>
+      resources?: {
+        cpus?: number
+        gpus?: number
+        memory_gb?: number
+        time_minutes?: number
+        partition?: string
+      }
+    }
+    provenance?: {
+      format: "openscience.provenance.v1"
+      kind: "kernel" | "local_compute" | "remote_compute" | "artifact_version"
+      identity: {
+        project_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        session_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      input: {
+        code:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        cwd:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        code_state:
+          | {
+              status: "available"
+              value: {
+                repository:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                branch:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                commit:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                dirty:
+                  | {
+                      status: "available"
+                      value: boolean
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      environment: {
+        host:
+          | {
+              status: "available"
+              value: {
+                platform: string
+                arch: string
+                runtimes: {
+                  [key: string]: string
+                }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        kernel:
+          | {
+              status: "available"
+              value: {
+                id: string
+                language: string
+                incarnation:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_id:
+                  | {
+                      status: "available"
+                      value: number
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+                process_started_at:
+                  | {
+                      status: "available"
+                      value: string
+                    }
+                  | {
+                      status: "unavailable"
+                      reason:
+                        | "not_applicable"
+                        | "not_captured"
+                        | "not_implemented"
+                        | "not_published"
+                        | "not_versioned"
+                        | "remote_unverified"
+                    }
+              }
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      outputs: {
+        status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted" | "inconclusive"
+        items: Array<{
+          kind: "stream" | "display" | "result" | "error" | "artifact" | "checkpoint"
+          label: string
+          artifact_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          path:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          sha256: string
+          size: number
+          version_id:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          version:
+            | {
+                status: "available"
+                value: number
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+          created_at:
+            | {
+                status: "available"
+                value: string
+              }
+            | {
+                status: "unavailable"
+                reason:
+                  | "not_applicable"
+                  | "not_captured"
+                  | "not_implemented"
+                  | "not_published"
+                  | "not_versioned"
+                  | "remote_unverified"
+              }
+        }>
+      }
+      timestamps: {
+        created_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        started_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        completed_at:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+      handoff: {
+        atlas_compute_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+        atlas_run_id:
+          | {
+              status: "available"
+              value: string
+            }
+          | {
+              status: "unavailable"
+              reason:
+                | "not_applicable"
+                | "not_captured"
+                | "not_implemented"
+                | "not_published"
+                | "not_versioned"
+                | "remote_unverified"
+            }
+      }
+    }
+    capture_error?: string
+    cleanup_error?: string
+    recovery_attempts?: number
+    recovery_retry_at?: string
+    session_id?: string
+    authority?: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    }
+    scope?: {
+      directory: string
+      key: string
+    }
+    sandbox?: {
+      requested: boolean
+      enforced: boolean
+      backend: "seatbelt" | "bubblewrap" | "none"
+      network: "allow" | "deny"
+      warning?: string
+    }
+    lifecycle?: {
+      execution:
+        | "planned"
+        | "awaiting_approval"
+        | "queued"
+        | "starting"
+        | "running"
+        | "succeeded"
+        | "failed"
+        | "timed_out"
+        | "cancelled"
+        | "interrupted"
+      delivery: "none" | "pending" | "complete" | "rejected" | "failed"
+      resource: "none" | "starting" | "active" | "closed" | "unknown"
+      recoverable: boolean
+      error_kind?:
+        | "provider_disabled"
+        | "image_build_failed"
+        | "unauthorized"
+        | "quota_exhausted"
+        | "rate_limited"
+        | "ownership_mismatch"
+        | "result_rejected"
+        | "harvest_failed"
+        | "input_changed"
+        | "session_concurrency_full"
+        | "invalid_request"
+        | "not_found"
+      system_hint?: string
+      deadline_fired?: boolean
+    }
+    remote_id?: string
+    modal?: {
+      app: string
+      environment?: string
+      image: string
+      packages?: Array<string>
+      gpu: string
+      network: "unrestricted" | "none"
+      timeout_minutes: number
+      uploads: Array<{
+        path: string
+        size: number
+        sha256: string
+      }>
+      upload_bytes: number
+      approval: string
+      sdk: string
+      volume?: string
+    }
+  }
+}
+
+export type SettingsComputeJobsCancelResponse =
+  SettingsComputeJobsCancelResponses[keyof SettingsComputeJobsCancelResponses]
+
+export type SettingsReviewGetData = {
   body?: never
   path?: never
   query?: never
-  url: "/settings/permissions"
+  url: "/settings/review"
 }
 
-export type SettingsPermissionsGetResponses = {
+export type SettingsReviewGetResponses = {
   /**
-   * Registry write permissions
+   * Reviewer preferences
    */
   200: {
-    grants?: {
-      [key: string]: "global" | "session" | "revoked"
-    }
+    auto: boolean
+    model?: {
+      providerID: string
+      modelID: string
+    } | null
   }
 }
 
-export type SettingsPermissionsGetResponse = SettingsPermissionsGetResponses[keyof SettingsPermissionsGetResponses]
+export type SettingsReviewGetResponse = SettingsReviewGetResponses[keyof SettingsReviewGetResponses]
 
-export type SettingsPermissionsSetData = {
+export type SettingsReviewSetData = {
   body?: {
-    scope: "global" | "session" | "revoked"
-  }
-  path: {
-    action: string
-  }
-  query?: never
-  url: "/settings/permissions/{action}"
-}
-
-export type SettingsPermissionsSetErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type SettingsPermissionsSetError = SettingsPermissionsSetErrors[keyof SettingsPermissionsSetErrors]
-
-export type SettingsPermissionsSetResponses = {
-  /**
-   * Updated
-   */
-  200: {
-    grants?: {
-      [key: string]: "global" | "session" | "revoked"
-    }
-  }
-}
-
-export type SettingsPermissionsSetResponse = SettingsPermissionsSetResponses[keyof SettingsPermissionsSetResponses]
-
-export type SettingsPermissionsRevokeAllData = {
-  body?: {
-    actions: Array<string>
+    auto: boolean
+    model?: {
+      providerID: string
+      modelID: string
+    } | null
   }
   path?: never
   query?: never
-  url: "/settings/permissions/revoke-all"
+  url: "/settings/review"
 }
 
-export type SettingsPermissionsRevokeAllErrors = {
+export type SettingsReviewSetResponses = {
   /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type SettingsPermissionsRevokeAllError =
-  SettingsPermissionsRevokeAllErrors[keyof SettingsPermissionsRevokeAllErrors]
-
-export type SettingsPermissionsRevokeAllResponses = {
-  /**
-   * Updated
+   * Updated preferences
    */
   200: {
-    grants?: {
-      [key: string]: "global" | "session" | "revoked"
-    }
+    auto: boolean
+    model?: {
+      providerID: string
+      modelID: string
+    } | null
   }
 }
 
-export type SettingsPermissionsRevokeAllResponse =
-  SettingsPermissionsRevokeAllResponses[keyof SettingsPermissionsRevokeAllResponses]
+export type SettingsReviewSetResponse = SettingsReviewSetResponses[keyof SettingsReviewSetResponses]
 
 export type SettingsPreferencesGetData = {
   body?: never
@@ -3059,6 +6360,10 @@ export type SettingsPreferencesGetResponses = {
     reasoning_effort?: "minimal" | "low" | "medium" | "high"
     intent?: "commercial" | "non-commercial"
     extra_budget_usd?: number
+    show_trace?: boolean
+    atlas_enabled?: boolean
+    delegation_enabled?: boolean
+    delegation_specialist?: string | null
   }
 }
 
@@ -3069,6 +6374,10 @@ export type SettingsPreferencesUpdateData = {
     reasoning_effort?: "minimal" | "low" | "medium" | "high"
     intent?: "commercial" | "non-commercial"
     extra_budget_usd?: number
+    show_trace?: boolean
+    atlas_enabled?: boolean
+    delegation_enabled?: boolean
+    delegation_specialist?: string | null
   }
   path?: never
   query?: never
@@ -3083,11 +6392,76 @@ export type SettingsPreferencesUpdateResponses = {
     reasoning_effort?: "minimal" | "low" | "medium" | "high"
     intent?: "commercial" | "non-commercial"
     extra_budget_usd?: number
+    show_trace?: boolean
+    atlas_enabled?: boolean
+    delegation_enabled?: boolean
+    delegation_specialist?: string | null
   }
 }
 
 export type SettingsPreferencesUpdateResponse =
   SettingsPreferencesUpdateResponses[keyof SettingsPreferencesUpdateResponses]
+
+export type PostSettingsLocalStartData = {
+  body?: {
+    id: string
+  }
+  path?: never
+  query?: never
+  url: "/settings/local/start"
+}
+
+export type PostSettingsLocalStartResponses = {
+  200: unknown
+}
+
+export type PostSettingsLocalModelsData = {
+  body?: {
+    url: string
+    key?: string
+  }
+  path?: never
+  query?: never
+  url: "/settings/local/models"
+}
+
+export type PostSettingsLocalModelsResponses = {
+  200: unknown
+}
+
+export type PostSettingsLocalData = {
+  body?: {
+    url: string
+    id?: string
+    name?: string
+    key?: string
+    models: Array<string>
+    setDefault?: boolean
+  }
+  path?: never
+  query?: never
+  url: "/settings/local"
+}
+
+export type PostSettingsLocalResponses = {
+  200: unknown
+}
+
+export type PutSettingsSandboxData = {
+  body?: {
+    enabled?: boolean
+    network?: "allow" | "deny"
+    allowWrite?: Array<string>
+    onUnavailable?: "warn" | "error" | "allow"
+  }
+  path?: never
+  query?: never
+  url: "/settings/sandbox"
+}
+
+export type PutSettingsSandboxResponses = {
+  200: unknown
+}
 
 export type SettingsBillingGetData = {
   body?: never
@@ -3109,7 +6483,7 @@ export type SettingsBillingGetResponses = {
        */
       signedIn: boolean
       /**
-       * CLI wallet balance in USD; -1 when signed out or unavailable
+       * Credit balance in USD; -1 when signed out or unavailable
        */
       balanceUsd: number
     }
@@ -3141,7 +6515,7 @@ export type SettingsBillingUpdateResponses = {
        */
       signedIn: boolean
       /**
-       * CLI wallet balance in USD; -1 when signed out or unavailable
+       * Credit balance in USD; -1 when signed out or unavailable
        */
       balanceUsd: number
     }
@@ -3149,6 +6523,61 @@ export type SettingsBillingUpdateResponses = {
 }
 
 export type SettingsBillingUpdateResponse = SettingsBillingUpdateResponses[keyof SettingsBillingUpdateResponses]
+
+export type SettingsWalletGetData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/settings/wallet"
+}
+
+export type SettingsWalletGetResponses = {
+  /**
+   * Wallet state
+   */
+  200: {
+    signedIn: boolean
+    /**
+     * Wallet balance in USD; -1 when signed out or unavailable
+     */
+    balanceUsd: number
+    billingMode: "managed" | "byok" | null
+    managedSupported: boolean
+    lifetimeSpentUsd: number
+    transactions: Array<{
+      id: string
+      amountCents: number
+      source: string
+      description: string
+      createdAt: string
+    }>
+  }
+}
+
+export type SettingsWalletGetResponse = SettingsWalletGetResponses[keyof SettingsWalletGetResponses]
+
+export type SettingsUpdatesCheckData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/settings/updates"
+}
+
+export type SettingsUpdatesCheckResponses = {
+  /**
+   * Current and latest package versions
+   */
+  200: {
+    current: string
+    latest: string
+    channel: string
+    method: string
+    updateAvailable: boolean
+    releaseNotes: string
+  }
+}
+
+export type SettingsUpdatesCheckResponse = SettingsUpdatesCheckResponses[keyof SettingsUpdatesCheckResponses]
 
 export type AuthRemoveData = {
   body?: never
@@ -3240,6 +6669,206 @@ export type ProjectCurrentResponses = {
 
 export type ProjectCurrentResponse = ProjectCurrentResponses[keyof ProjectCurrentResponses]
 
+export type ProjectTrustGetData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/project/{projectID}/trust"
+}
+
+export type ProjectTrustGetErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type ProjectTrustGetError = ProjectTrustGetErrors[keyof ProjectTrustGetErrors]
+
+export type ProjectTrustGetResponses = {
+  /**
+   * Project trust state and remediation
+   */
+  200: {
+    projectID: string
+    root: string
+    revision: number
+    state: "trusted" | "untrusted" | "revoked"
+    source: "default" | "persisted"
+    canExecuteProjectCode: boolean
+    time?: {
+      updated: number
+      trusted?: number
+      revoked?: number
+    }
+    remediation?: {
+      code: "trust_project_required"
+      message: string
+      method: "PUT"
+      path: string
+      body: {
+        trusted: true
+        root: string
+      }
+    }
+  }
+}
+
+export type ProjectTrustGetResponse = ProjectTrustGetResponses[keyof ProjectTrustGetResponses]
+
+export type ProjectTrustUpdateData = {
+  body?:
+    | {
+        trusted: true
+        /**
+         * Canonical root returned by the trust status endpoint
+         */
+        root: string
+      }
+    | {
+        trusted: false
+      }
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/project/{projectID}/trust"
+}
+
+export type ProjectTrustUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type ProjectTrustUpdateError = ProjectTrustUpdateErrors[keyof ProjectTrustUpdateErrors]
+
+export type ProjectTrustUpdateResponses = {
+  /**
+   * Updated project trust state
+   */
+  200: {
+    projectID: string
+    root: string
+    revision: number
+    state: "trusted" | "untrusted" | "revoked"
+    source: "default" | "persisted"
+    canExecuteProjectCode: boolean
+    time?: {
+      updated: number
+      trusted?: number
+      revoked?: number
+    }
+    remediation?: {
+      code: "trust_project_required"
+      message: string
+      method: "PUT"
+      path: string
+      body: {
+        trusted: true
+        root: string
+      }
+    }
+  }
+}
+
+export type ProjectTrustUpdateResponse = ProjectTrustUpdateResponses[keyof ProjectTrustUpdateResponses]
+
+export type ProjectExecutionData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query: {
+    directory?: string
+    sessionID: string
+    capability:
+      | "terminal"
+      | "kernel"
+      | "shell"
+      | "local_job"
+      | "remote_job"
+      | "package_install"
+      | "project_plugin"
+      | "project_mcp"
+      | "project_formatter"
+      | "project_lsp"
+      | "provider_token_command"
+  }
+  url: "/project/{projectID}/execution"
+}
+
+export type ProjectExecutionErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type ProjectExecutionError = ProjectExecutionErrors[keyof ProjectExecutionErrors]
+
+export type ProjectExecutionResponses = {
+  /**
+   * Effective process authority
+   */
+  200: {
+    allowed: boolean
+    reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+    capability:
+      | "terminal"
+      | "kernel"
+      | "shell"
+      | "local_job"
+      | "remote_job"
+      | "package_install"
+      | "project_plugin"
+      | "project_mcp"
+      | "project_formatter"
+      | "project_lsp"
+      | "provider_token_command"
+    mode: "read_only" | "sandboxed" | "host"
+    projectID: string
+    sessionID: string
+    trustRevision: number
+    grantRevision: number
+    generation: string
+    workspace: string
+    writable: Array<string>
+    sandbox: {
+      enabled: boolean
+      network: "allow" | "deny"
+      allowWrite: Array<string>
+      onUnavailable: "warn" | "error" | "allow"
+      backend: "seatbelt" | "bubblewrap" | "none"
+      available: boolean
+      enforced: boolean
+    }
+    remediation?: {
+      code: "trust_project_required"
+      message: string
+      method: "PUT"
+      path: string
+      body: {
+        trusted: true
+        root: string
+      }
+    }
+  }
+}
+
+export type ProjectExecutionResponse = ProjectExecutionResponses[keyof ProjectExecutionResponses]
+
 export type ProjectUpdateData = {
   body?: {
     name?: string
@@ -3306,13 +6935,8 @@ export type PtyListResponse = PtyListResponses[keyof PtyListResponses]
 
 export type PtyCreateData = {
   body?: {
-    command?: string
-    args?: Array<string>
-    cwd?: string
+    sessionID: string
     title?: string
-    env?: {
-      [key: string]: string
-    }
   }
   path?: never
   query?: {
@@ -3873,6 +7497,7 @@ export type SessionUpdateData = {
     title?: string
     time?: {
       archived?: number
+      pinned?: number
     }
   }
   path: {
@@ -3939,6 +7564,434 @@ export type SessionChildrenResponses = {
 
 export type SessionChildrenResponse = SessionChildrenResponses[keyof SessionChildrenResponses]
 
+export type SessionTraceData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/trace"
+}
+
+export type SessionTraceErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionTraceError = SessionTraceErrors[keyof SessionTraceErrors]
+
+export type SessionTraceResponses = {
+  /**
+   * Local observable session trace
+   */
+  200: {
+    version: 1
+    session: {
+      id: string
+      parentID?: string
+      title: string
+      status: "idle" | "retry" | "busy" | "compacting"
+      createdAt: number
+      updatedAt: number
+    }
+    summary: {
+      startedAt: number
+      firstUsefulOutputAt?: number
+      timeToFirstUsefulOutputMs?: number
+      completedAt?: number
+      totalCompletionTimeMs?: number
+      cost: number
+      tokens: {
+        input: number
+        output: number
+        reasoning: number
+        cache: {
+          read: number
+          write: number
+        }
+      }
+      toolCalls: number
+      childCount: number
+      searchCount: number
+      dedupeHits: number
+      approvalCount: number
+      artifactSaves: number
+      reviewerFindings: number
+      failureCount: number
+      retryCount: number
+    }
+    turns: Array<{
+      messageID: string
+      agent: string
+      startedAt: number
+      firstUsefulOutputAt?: number
+      timeToFirstUsefulOutputMs?: number
+      completedAt?: number
+      totalCompletionTimeMs?: number
+      toolCalls: number
+      childCount: number
+      cost: number
+      tokens: {
+        input: number
+        output: number
+        reasoning: number
+        cache: {
+          read: number
+          write: number
+        }
+      }
+    }>
+    inference: Array<{
+      messageID: string
+      parentMessageID: string
+      agent: string
+      model: string
+      provider: string
+      effort: string
+      source: "managed" | "byok" | "chatgpt" | "local" | "oauth" | "unknown"
+      tier?: string
+      startedAt: number
+      completedAt?: number
+      durationMs?: number
+      cost: number
+      tokens: {
+        input: number
+        output: number
+        reasoning: number
+        cache: {
+          read: number
+          write: number
+        }
+      }
+    }>
+    tools: Array<{
+      id: string
+      callID: string
+      messageID: string
+      name: string
+      category: "tool" | "search" | "kernel" | "child" | "artifact" | "review" | "external"
+      status: "pending" | "running" | "completed" | "error"
+      title?: string
+      startedAt?: number
+      completedAt?: number
+      durationMs?: number
+      inputHash: string
+      inputKeys: Array<string>
+    }>
+    children: Array<{
+      toolID: string
+      sessionID?: string
+      agent: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
+      status: "pending" | "running" | "completed" | "error"
+      startedAt?: number
+      completedAt?: number
+      durationMs?: number
+      toolCalls?: number
+      failedToolCalls?: number
+      usage?: {
+        cost: number
+        tokens: {
+          input: number
+          output: number
+          cache: {
+            read: number
+            write: number
+          }
+        }
+      }
+    }>
+    searches: Array<{
+      toolID: string
+      messageID: string
+      tool: string
+      query?: string
+      signature: string
+      status: "pending" | "running" | "completed" | "error"
+      dedupeHit: boolean
+      dedupeOf?: {
+        messageID: string
+        partID: string
+        callID: string
+      }
+      startedAt?: number
+      completedAt?: number
+      durationMs?: number
+    }>
+    kernels: Array<{
+      toolID: string
+      messageID: string
+      language: "python" | "r"
+      status: "pending" | "running" | "completed" | "error"
+      startedAt?: number
+      completedAt?: number
+      durationMs?: number
+      executionCount?: number
+      provenanceID?: string
+    }>
+    jobs: Array<{
+      id: string
+      name: string
+      target: "local" | "ssh"
+      targetLabel: string
+      status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted"
+      createdAt: string
+      startedAt?: string
+      completedAt?: string
+      durationMs?: number
+      exitCode?: number | null
+      resources?: {
+        cpus?: number
+        gpus?: number
+        memory_gb?: number
+        time_minutes?: number
+        partition?: string
+      }
+      artifactCount: number
+    }>
+    approvals: Array<{
+      id: string
+      permission: string
+      patterns: Array<string>
+      requestedAt: number
+      tool?: {
+        messageID: string
+        callID: string
+      }
+      reply?: "once" | "session" | "project" | "always" | "reject"
+      repliedAt?: number
+    }>
+    external: Array<{
+      kind: "model" | "api" | "compute"
+      id: string
+      name: string
+      source: string
+      external: boolean
+      startedAt?: number
+      completedAt?: number
+      cost?: number
+    }>
+    artifacts: Array<{
+      toolID: string
+      messageID: string
+      action: "register" | "update"
+      artifactID?: string
+      versionID?: string
+      durable: boolean
+      completedAt?: number
+    }>
+    reviewerFindings: Array<{
+      toolID: string
+      messageID: string
+      id?: string
+      target?: string
+      relation?: "refutes" | "supports"
+      severity?: "blocking" | "major" | "minor" | "info"
+      claim?: string
+      issue?: string
+      evidence?: string
+      completedAt?: number
+    }>
+    failures: Array<{
+      kind: "model" | "tool" | "approval" | "job"
+      id: string
+      message: string
+      createdAt: number
+    }>
+    retries: Array<{
+      id: string
+      messageID: string
+      attempt: number
+      message: string
+      delayMs: number
+      createdAt: number
+    }>
+    privacy: {
+      local: true
+      atlasRequired: false
+      hiddenReasoningStored: false
+      toolOutputsCopied: false
+    }
+  }
+}
+
+export type SessionTraceResponse = SessionTraceResponses[keyof SessionTraceResponses]
+
+export type SessionFilesystemListData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/filesystem"
+}
+
+export type SessionFilesystemListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionFilesystemListError = SessionFilesystemListErrors[keyof SessionFilesystemListErrors]
+
+export type SessionFilesystemListResponses = {
+  /**
+   * Versioned filesystem grant state
+   */
+  200: {
+    version: 1
+    revision: number
+    sessionID: string
+    projectID: string
+    directory: string
+    grants: Array<{
+      id: string
+      path: string
+      access: "read" | "write"
+      scope: "once" | "session" | "project" | "installation"
+      source: "workspace" | "permission" | "api"
+      time: {
+        created: number
+        consumed?: number
+        revoked?: number
+      }
+    }>
+    workspace: {
+      schemaVersion: 1
+      workspaceID: string
+      projectID: string
+      sessionID: string
+      scratchRoot: string
+      mode: "isolated" | "legacy"
+      state: "active" | "stopped" | "trash"
+      grantRevision: number
+      createdAt: number
+      lastUsedAt: number
+      trashedAt?: number
+      trashRoot?: string
+      size: number
+    }
+    enforcement: {
+      broker: "enforced"
+      processWrite: "workspace_only"
+      processRead: "policy_only"
+    }
+  }
+}
+
+export type SessionFilesystemListResponse = SessionFilesystemListResponses[keyof SessionFilesystemListResponses]
+
+export type SessionFilesystemGrantData = {
+  body?: {
+    path: string
+    access: "read" | "write"
+    scope?: "once" | "session" | "project" | "installation"
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/filesystem"
+}
+
+export type SessionFilesystemGrantErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionFilesystemGrantError = SessionFilesystemGrantErrors[keyof SessionFilesystemGrantErrors]
+
+export type SessionFilesystemGrantResponses = {
+  /**
+   * Created filesystem grant
+   */
+  200: {
+    id: string
+    path: string
+    access: "read" | "write"
+    scope: "once" | "session" | "project" | "installation"
+    source: "workspace" | "permission" | "api"
+    time: {
+      created: number
+      consumed?: number
+      revoked?: number
+    }
+  }
+}
+
+export type SessionFilesystemGrantResponse = SessionFilesystemGrantResponses[keyof SessionFilesystemGrantResponses]
+
+export type SessionFilesystemRevokeData = {
+  body?: never
+  path: {
+    sessionID: string
+    grantID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/filesystem/{grantID}"
+}
+
+export type SessionFilesystemRevokeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionFilesystemRevokeError = SessionFilesystemRevokeErrors[keyof SessionFilesystemRevokeErrors]
+
+export type SessionFilesystemRevokeResponses = {
+  /**
+   * Revoked filesystem grant
+   */
+  200: {
+    id: string
+    path: string
+    access: "read" | "write"
+    scope: "once" | "session" | "project" | "installation"
+    source: "workspace" | "permission" | "api"
+    time: {
+      created: number
+      consumed?: number
+      revoked?: number
+    }
+  }
+}
+
+export type SessionFilesystemRevokeResponse = SessionFilesystemRevokeResponses[keyof SessionFilesystemRevokeResponses]
+
 export type SessionTodoData = {
   body?: never
   path: {
@@ -3974,6 +8027,95 @@ export type SessionTodoResponses = {
 }
 
 export type SessionTodoResponse = SessionTodoResponses[keyof SessionTodoResponses]
+
+export type SessionReviewData = {
+  body?: never
+  path: {
+    /**
+     * Session ID
+     */
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/review"
+}
+
+export type SessionReviewErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionReviewError = SessionReviewErrors[keyof SessionReviewErrors]
+
+export type SessionReviewResponses = {
+  /**
+   * Review started
+   */
+  200: {
+    started: boolean
+  }
+}
+
+export type SessionReviewResponse = SessionReviewResponses[keyof SessionReviewResponses]
+
+export type SessionReviewArtifactData = {
+  body?: {
+    artifactID: string
+    versionID: string
+  }
+  path: {
+    /**
+     * Session ID
+     */
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/session/{sessionID}/review/artifact"
+}
+
+export type SessionReviewArtifactErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionReviewArtifactError = SessionReviewArtifactErrors[keyof SessionReviewArtifactErrors]
+
+export type SessionReviewArtifactResponses = {
+  /**
+   * Exact-version review started
+   */
+  200: {
+    started: boolean
+    target: {
+      id: string
+      artifactID: string
+      versionID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+    }
+  }
+}
+
+export type SessionReviewArtifactResponse = SessionReviewArtifactResponses[keyof SessionReviewArtifactResponses]
 
 export type SessionInitData = {
   body?: {
@@ -4186,10 +8328,10 @@ export type SessionPromptData = {
     tools?: {
       [key: string]: boolean
     }
+    delegation?: boolean
     system?: string
     variant?: string
-    tier?: "fast" | "pro" | "ultra"
-    fast?: boolean
+    tier?: string
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -4375,10 +8517,10 @@ export type SessionPromptAsyncData = {
     tools?: {
       [key: string]: boolean
     }
+    delegation?: boolean
     system?: string
     variant?: string
-    tier?: "fast" | "pro" | "ultra"
-    fast?: boolean
+    tier?: string
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -4423,6 +8565,7 @@ export type SessionCommandData = {
     arguments: string
     command: string
     variant?: string
+    tier?: string
     parts?: Array<{
       id?: string
       type: "file"
@@ -4583,7 +8726,7 @@ export type SessionUnrevertResponse = SessionUnrevertResponses[keyof SessionUnre
 
 export type PermissionRespondData = {
   body?: {
-    response: "once" | "always" | "reject"
+    response: "once" | "session" | "project" | "always" | "reject"
   }
   path: {
     sessionID: string
@@ -4617,9 +8760,44 @@ export type PermissionRespondResponses = {
 
 export type PermissionRespondResponse = PermissionRespondResponses[keyof PermissionRespondResponses]
 
+export type SearchQueryData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    q: string
+  }
+  url: "/search"
+}
+
+export type SearchQueryResponses = {
+  /**
+   * Grouped plain-text matches
+   */
+  200: {
+    sessions: Array<{
+      id: string
+      title: string
+    }>
+    messages: Array<{
+      sessionID: string
+      messageID: string
+      role: string
+      snippet: string
+    }>
+    artifacts: Array<{
+      path: string
+      name: string
+      kind: string
+    }>
+  }
+}
+
+export type SearchQueryResponse = SearchQueryResponses[keyof SearchQueryResponses]
+
 export type PermissionReplyData = {
   body?: {
-    reply: "once" | "always" | "reject"
+    reply: "once" | "session" | "project" | "always" | "reject"
     message?: string
   }
   path: {
@@ -4670,6 +8848,45 @@ export type PermissionListResponses = {
 }
 
 export type PermissionListResponse = PermissionListResponses[keyof PermissionListResponses]
+
+export type PermissionStandingListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/permission/standing"
+}
+
+export type PermissionStandingListResponses = {
+  /**
+   * Standing approvals
+   */
+  200: Array<PermissionStanding>
+}
+
+export type PermissionStandingListResponse = PermissionStandingListResponses[keyof PermissionStandingListResponses]
+
+export type PermissionStandingRevokeData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/permission/standing/{id}"
+}
+
+export type PermissionStandingRevokeResponses = {
+  /**
+   * Whether an approval was removed
+   */
+  200: boolean
+}
+
+export type PermissionStandingRevokeResponse =
+  PermissionStandingRevokeResponses[keyof PermissionStandingRevokeResponses]
 
 export type QuestionListData = {
   body?: never
@@ -4774,67 +8991,7 @@ export type ProviderListResponses = {
    * List of providers
    */
   200: {
-    all: Array<{
-      api?: string
-      name: string
-      env: Array<string>
-      id: string
-      npm?: string
-      models: {
-        [key: string]: {
-          id: string
-          name: string
-          family?: string
-          release_date: string
-          attachment: boolean
-          reasoning: boolean
-          temperature: boolean
-          tool_call: boolean
-          interleaved?:
-            | true
-            | {
-                field: "reasoning_content" | "reasoning_details"
-              }
-          cost?: {
-            input: number
-            output: number
-            cache_read?: number
-            cache_write?: number
-            context_over_200k?: {
-              input: number
-              output: number
-              cache_read?: number
-              cache_write?: number
-            }
-          }
-          limit: {
-            context: number
-            input?: number
-            output: number
-          }
-          modalities?: {
-            input: Array<"text" | "audio" | "image" | "video" | "pdf">
-            output: Array<"text" | "audio" | "image" | "video" | "pdf">
-          }
-          experimental?: boolean
-          status?: "alpha" | "beta" | "deprecated"
-          options: {
-            [key: string]: unknown
-          }
-          headers?: {
-            [key: string]: string
-          }
-          provider?: {
-            npm: string
-          }
-          variants?: {
-            [key: string]: {
-              [key: string]: unknown
-            }
-          }
-        }
-      }
-    }>
+    all: Array<Provider>
     default: {
       [key: string]: string
     }
@@ -5024,6 +9181,7 @@ export type FileListData = {
   query: {
     directory?: string
     path: string
+    sessionID?: string
   }
   url: "/file"
 }
@@ -5043,6 +9201,7 @@ export type FileReadData = {
   query: {
     directory?: string
     path: string
+    sessionID?: string
   }
   url: "/file/content"
 }
@@ -5060,6 +9219,7 @@ export type FileWriteData = {
   body?: {
     path: string
     content: string
+    sessionID: string
   }
   path?: never
   query?: {
@@ -5076,6 +9236,1498 @@ export type FileWriteResponses = {
 }
 
 export type FileWriteResponse = FileWriteResponses[keyof FileWriteResponses]
+
+export type FileInspectData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+    sessionID?: string
+  }
+  url: "/file/inspect"
+}
+
+export type FileInspectResponses = {
+  /**
+   * Scientific file inspection
+   */
+  200: {
+    format: "bam" | "cram" | "h5ad" | "loom"
+    name: string
+    size: number
+    modified: number
+    signature: boolean
+    index?: string
+    tool: {
+      name: string
+      available: boolean
+      detail?: string
+    }
+    details: {
+      [key: string]: unknown
+    }
+  }
+}
+
+export type FileInspectResponse = FileInspectResponses[keyof FileInspectResponses]
+
+export type FileRawData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+    sessionID?: string
+  }
+  url: "/file/raw"
+}
+
+export type FileRawResponses = {
+  /**
+   * Raw file contents
+   */
+  200: unknown
+}
+
+export type FileArtifactsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    sessionID?: string
+  }
+  url: "/file/artifacts"
+}
+
+export type FileArtifactsResponses = {
+  /**
+   * Research artifacts
+   */
+  200: Array<{
+    name: string
+    path: string
+    kind:
+      | "notebook"
+      | "dataset"
+      | "figure"
+      | "report"
+      | "structure"
+      | "sequence"
+      | "genomics"
+      | "spectrum"
+      | "model"
+      | "archive"
+    format: string
+    size: number
+    modified: number
+  }>
+}
+
+export type FileArtifactsResponse = FileArtifactsResponses[keyof FileArtifactsResponses]
+
+export type FileArtifactSaveData = {
+  body?: {
+    path: string
+    sessionID: string
+    messageID?: string
+    summary?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/artifact"
+}
+
+export type FileArtifactSaveErrors = {
+  /**
+   * Path is not readable within the project
+   */
+  403: unknown
+  /**
+   * File not found
+   */
+  404: unknown
+  /**
+   * File exceeds the 1 GiB artifact version limit
+   */
+  413: unknown
+  /**
+   * Insufficient free space to preserve the safety reserve
+   */
+  507: unknown
+}
+
+export type FileArtifactSaveResponses = {
+  /**
+   * Registered artifact version
+   */
+  200: {
+    schemaVersion: 1
+    id: string
+    projectID: string
+    title: string
+    kind: string
+    currentVersionID: string
+    createdAt: number
+    updatedAt: number
+    state: "active" | "trash"
+    trashedAt?: number
+    versionCount: number
+    current: {
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }
+  }
+}
+
+export type FileArtifactSaveResponse = FileArtifactSaveResponses[keyof FileArtifactSaveResponses]
+
+export type FileArtifactStoreListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    state?: "active" | "trash"
+  }
+  url: "/file/artifact-store"
+}
+
+export type FileArtifactStoreListResponses = {
+  /**
+   * Saved artifacts
+   */
+  200: Array<{
+    schemaVersion: 1
+    id: string
+    projectID: string
+    title: string
+    kind: string
+    currentVersionID: string
+    createdAt: number
+    updatedAt: number
+    state: "active" | "trash"
+    trashedAt?: number
+    versionCount: number
+    current: {
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }
+  }>
+}
+
+export type FileArtifactStoreListResponse = FileArtifactStoreListResponses[keyof FileArtifactStoreListResponses]
+
+export type FileArtifactStoreTrashData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/artifact-store/{id}"
+}
+
+export type FileArtifactStoreTrashErrors = {
+  /**
+   * Artifact not found
+   */
+  404: unknown
+}
+
+export type FileArtifactStoreTrashResponses = {
+  /**
+   * Trashed artifact
+   */
+  200: {
+    schemaVersion: 1
+    id: string
+    projectID: string
+    title: string
+    kind: string
+    currentVersionID: string
+    createdAt: number
+    updatedAt: number
+    state: "active" | "trash"
+    trashedAt?: number
+    versionCount: number
+    current: {
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }
+  }
+}
+
+export type FileArtifactStoreTrashResponse = FileArtifactStoreTrashResponses[keyof FileArtifactStoreTrashResponses]
+
+export type FileArtifactStoreGetData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/artifact-store/{id}"
+}
+
+export type FileArtifactStoreGetErrors = {
+  /**
+   * Artifact not found
+   */
+  404: unknown
+}
+
+export type FileArtifactStoreGetResponses = {
+  /**
+   * Saved artifact detail
+   */
+  200: {
+    schemaVersion: 1
+    id: string
+    projectID: string
+    title: string
+    kind: string
+    currentVersionID: string
+    createdAt: number
+    updatedAt: number
+    state: "active" | "trash"
+    trashedAt?: number
+    versionCount: number
+    current: {
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }
+    versions: Array<{
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }>
+    execution?: {
+      id: string
+      artifactVersionID: string
+      command?: string
+      code?: string
+      status: "succeeded" | "failed" | "cancelled" | "unknown"
+      stdout?: string
+      stderr?: string
+      model?: string
+      provider?: string
+      effort?: string
+      source?: string
+      permissionSnapshot?: {
+        [key: string]: unknown
+      }
+      inputs?: {
+        [key: string]: unknown
+      }
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      files: Array<{
+        path: string
+        sha256: string
+        size: number
+      }>
+      environment?: {
+        [key: string]: unknown
+      }
+      createdAt: number
+    }
+  }
+}
+
+export type FileArtifactStoreGetResponse = FileArtifactStoreGetResponses[keyof FileArtifactStoreGetResponses]
+
+export type FileArtifactStoreRenameData = {
+  body?: {
+    title: string
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/artifact-store/{id}"
+}
+
+export type FileArtifactStoreRenameErrors = {
+  /**
+   * Artifact not found
+   */
+  404: unknown
+}
+
+export type FileArtifactStoreRenameResponses = {
+  /**
+   * Renamed artifact
+   */
+  200: {
+    schemaVersion: 1
+    id: string
+    projectID: string
+    title: string
+    kind: string
+    currentVersionID: string
+    createdAt: number
+    updatedAt: number
+    state: "active" | "trash"
+    trashedAt?: number
+    versionCount: number
+    current: {
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }
+  }
+}
+
+export type FileArtifactStoreRenameResponse = FileArtifactStoreRenameResponses[keyof FileArtifactStoreRenameResponses]
+
+export type FileArtifactStoreRestoreData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/artifact-store/{id}/restore"
+}
+
+export type FileArtifactStoreRestoreErrors = {
+  /**
+   * Artifact not found
+   */
+  404: unknown
+}
+
+export type FileArtifactStoreRestoreResponses = {
+  /**
+   * Restored artifact
+   */
+  200: {
+    schemaVersion: 1
+    id: string
+    projectID: string
+    title: string
+    kind: string
+    currentVersionID: string
+    createdAt: number
+    updatedAt: number
+    state: "active" | "trash"
+    trashedAt?: number
+    versionCount: number
+    current: {
+      id: string
+      artifactID: string
+      version: number
+      filename: string
+      mimeType: string
+      size: number
+      sha256: string
+      sessionID: string
+      messageID?: string
+      executionID?: string
+      sourcePath: string
+      captureQuality: "exact" | "declared" | "partial" | "unknown"
+      createdAt: number
+    }
+  }
+}
+
+export type FileArtifactStoreRestoreResponse =
+  FileArtifactStoreRestoreResponses[keyof FileArtifactStoreRestoreResponses]
+
+export type FileArtifactStoreRawData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    versionID?: string
+    download?: "true" | "false"
+  }
+  url: "/file/artifact-store/{id}/raw"
+}
+
+export type FileArtifactStoreRawErrors = {
+  /**
+   * Artifact version not found
+   */
+  404: unknown
+}
+
+export type FileArtifactStoreRawResponses = {
+  /**
+   * Immutable artifact bytes
+   */
+  200: unknown
+}
+
+export type FileProvenanceData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+    sessionID?: string
+  }
+  url: "/file/provenance"
+}
+
+export type FileProvenanceResponses = {
+  /**
+   * Local provenance
+   */
+  200: {
+    path: string
+    tracked: boolean
+    dirty: boolean
+    status: "clean" | "modified" | "added" | "deleted" | "untracked" | "local"
+    branch?: string
+    commit?: {
+      sha: string
+      author: string
+      email: string
+      date: string
+      message: string
+    }
+  }
+}
+
+export type FileProvenanceResponse = FileProvenanceResponses[keyof FileProvenanceResponses]
+
+export type FileLineageData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+    sessionID?: string
+  }
+  url: "/file/lineage"
+}
+
+export type FileLineageResponses = {
+  /**
+   * Artifact lineage
+   */
+  200: {
+    runs: Array<{
+      id: string
+      tool: string
+      label: string
+      status?: "ok" | "error"
+      recordedAt: string
+      sessionID?: string
+      messageID?: string
+      callID?: string
+      code?: string
+      command?: string
+      cwd?: string
+      kernel?: {
+        language?: string
+        name?: string
+      }
+      startedAt?: string
+      completedAt?: string
+    }>
+    messages: Array<{
+      sessionID: string
+      messageID: string
+    }>
+  }
+}
+
+export type FileLineageResponse = FileLineageResponses[keyof FileLineageResponses]
+
+export type FileReproducibilityData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/reproducibility"
+}
+
+export type FileReproducibilityResponses = {
+  /**
+   * Project reproducibility audit
+   */
+  200: {
+    generated_at: string
+    score: number
+    status: "ready" | "warnings" | "blocked"
+    git?: {
+      branch?: string
+      commit?: string
+      dirty: boolean
+    }
+    lockfiles: Array<string>
+    environments: Array<string>
+    notebooks: {
+      total: number
+      valid: number
+      invalid: Array<string>
+    }
+    artifacts: {
+      total: number
+      nonempty: number
+      bytes: number
+    }
+    checks: Array<{
+      id: string
+      label: string
+      status: "pass" | "warn" | "fail"
+      detail: string
+      weight: number
+    }>
+  }
+}
+
+export type FileReproducibilityResponse = FileReproducibilityResponses[keyof FileReproducibilityResponses]
+
+export type FileAnnotationsListData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+  }
+  url: "/file/annotations"
+}
+
+export type FileAnnotationsListResponses = {
+  /**
+   * Artifact annotations
+   */
+  200: Array<{
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    anchor:
+      | {
+          kind: "artifact"
+          label?: string
+        }
+      | {
+          kind: "text"
+          startLine: number
+          endLine: number
+          quote?: string
+        }
+      | {
+          kind: "notebook"
+          cellId: string
+          line?: number
+        }
+      | {
+          kind: "molecule"
+          selection: string
+          count?: number
+        }
+      | {
+          kind: "genome"
+          chromosome: string
+          start: number
+          end: number
+        }
+    messages: Array<{
+      id: string
+      body: string
+      author: string
+      createdAt: number
+    }>
+    status: "open" | "resolved"
+    version: number
+    revisions: Array<{
+      version: number
+      event: "created" | "edited" | "replied" | "resolved" | "reopened" | "deleted"
+      actor: string
+      at: number
+      status: "open" | "resolved"
+      messages: Array<{
+        id: string
+        body: string
+        author: string
+        createdAt: number
+      }>
+      deletedAt?: number
+    }>
+    createdAt: number
+    updatedAt: number
+    deletedAt?: number
+  }>
+}
+
+export type FileAnnotationsListResponse = FileAnnotationsListResponses[keyof FileAnnotationsListResponses]
+
+export type FileAnnotationsCreateData = {
+  body?: {
+    path: string
+    body: string
+    author?: string
+    anchor?:
+      | {
+          kind: "artifact"
+          label?: string
+        }
+      | {
+          kind: "text"
+          startLine: number
+          endLine: number
+          quote?: string
+        }
+      | {
+          kind: "notebook"
+          cellId: string
+          line?: number
+        }
+      | {
+          kind: "molecule"
+          selection: string
+          count?: number
+        }
+      | {
+          kind: "genome"
+          chromosome: string
+          start: number
+          end: number
+        }
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/annotations"
+}
+
+export type FileAnnotationsCreateResponses = {
+  /**
+   * Created annotation
+   */
+  200: {
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    anchor:
+      | {
+          kind: "artifact"
+          label?: string
+        }
+      | {
+          kind: "text"
+          startLine: number
+          endLine: number
+          quote?: string
+        }
+      | {
+          kind: "notebook"
+          cellId: string
+          line?: number
+        }
+      | {
+          kind: "molecule"
+          selection: string
+          count?: number
+        }
+      | {
+          kind: "genome"
+          chromosome: string
+          start: number
+          end: number
+        }
+    messages: Array<{
+      id: string
+      body: string
+      author: string
+      createdAt: number
+    }>
+    status: "open" | "resolved"
+    version: number
+    revisions: Array<{
+      version: number
+      event: "created" | "edited" | "replied" | "resolved" | "reopened" | "deleted"
+      actor: string
+      at: number
+      status: "open" | "resolved"
+      messages: Array<{
+        id: string
+        body: string
+        author: string
+        createdAt: number
+      }>
+      deletedAt?: number
+    }>
+    createdAt: number
+    updatedAt: number
+    deletedAt?: number
+  }
+}
+
+export type FileAnnotationsCreateResponse = FileAnnotationsCreateResponses[keyof FileAnnotationsCreateResponses]
+
+export type FileAnnotationsHistoryData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/annotations/{id}/history"
+}
+
+export type FileAnnotationsHistoryResponses = {
+  /**
+   * Versioned artifact annotation
+   */
+  200: {
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    anchor:
+      | {
+          kind: "artifact"
+          label?: string
+        }
+      | {
+          kind: "text"
+          startLine: number
+          endLine: number
+          quote?: string
+        }
+      | {
+          kind: "notebook"
+          cellId: string
+          line?: number
+        }
+      | {
+          kind: "molecule"
+          selection: string
+          count?: number
+        }
+      | {
+          kind: "genome"
+          chromosome: string
+          start: number
+          end: number
+        }
+    messages: Array<{
+      id: string
+      body: string
+      author: string
+      createdAt: number
+    }>
+    status: "open" | "resolved"
+    version: number
+    revisions: Array<{
+      version: number
+      event: "created" | "edited" | "replied" | "resolved" | "reopened" | "deleted"
+      actor: string
+      at: number
+      status: "open" | "resolved"
+      messages: Array<{
+        id: string
+        body: string
+        author: string
+        createdAt: number
+      }>
+      deletedAt?: number
+    }>
+    createdAt: number
+    updatedAt: number
+    deletedAt?: number
+  }
+}
+
+export type FileAnnotationsHistoryResponse = FileAnnotationsHistoryResponses[keyof FileAnnotationsHistoryResponses]
+
+export type FileAnnotationsDeleteData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/annotations/{id}"
+}
+
+export type FileAnnotationsDeleteResponses = {
+  /**
+   * Tombstoned annotation
+   */
+  200: {
+    deleted: true
+    version: number
+  }
+}
+
+export type FileAnnotationsDeleteResponse = FileAnnotationsDeleteResponses[keyof FileAnnotationsDeleteResponses]
+
+export type FileAnnotationsUpdateData = {
+  body?: {
+    status?: "open" | "resolved"
+    body?: string
+    reply?: string
+    author?: string
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/annotations/{id}"
+}
+
+export type FileAnnotationsUpdateResponses = {
+  /**
+   * Updated annotation
+   */
+  200: {
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    anchor:
+      | {
+          kind: "artifact"
+          label?: string
+        }
+      | {
+          kind: "text"
+          startLine: number
+          endLine: number
+          quote?: string
+        }
+      | {
+          kind: "notebook"
+          cellId: string
+          line?: number
+        }
+      | {
+          kind: "molecule"
+          selection: string
+          count?: number
+        }
+      | {
+          kind: "genome"
+          chromosome: string
+          start: number
+          end: number
+        }
+    messages: Array<{
+      id: string
+      body: string
+      author: string
+      createdAt: number
+    }>
+    status: "open" | "resolved"
+    version: number
+    revisions: Array<{
+      version: number
+      event: "created" | "edited" | "replied" | "resolved" | "reopened" | "deleted"
+      actor: string
+      at: number
+      status: "open" | "resolved"
+      messages: Array<{
+        id: string
+        body: string
+        author: string
+        createdAt: number
+      }>
+      deletedAt?: number
+    }>
+    createdAt: number
+    updatedAt: number
+    deletedAt?: number
+  }
+}
+
+export type FileAnnotationsUpdateResponse = FileAnnotationsUpdateResponses[keyof FileAnnotationsUpdateResponses]
+
+export type FileManifestData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/manifest"
+}
+
+export type FileManifestResponses = {
+  /**
+   * Artifact checksum manifest
+   */
+  200: {
+    format: "openscience.artifact-manifest.v1"
+    generated_at: string
+    digest: string
+    artifacts: Array<{
+      name: string
+      path: string
+      kind:
+        | "notebook"
+        | "dataset"
+        | "figure"
+        | "report"
+        | "structure"
+        | "sequence"
+        | "genomics"
+        | "spectrum"
+        | "model"
+        | "archive"
+      format: string
+      size: number
+      modified: number
+      sha256: string
+    }>
+  }
+}
+
+export type FileManifestResponse = FileManifestResponses[keyof FileManifestResponses]
+
+export type FileStarterData = {
+  body?: {
+    template: "single-cell" | "dose-response" | "protein-structure"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/starters"
+}
+
+export type FileStarterResponses = {
+  /**
+   * Created starter files
+   */
+  200: {
+    template: "single-cell" | "dose-response" | "protein-structure"
+    directory: string
+    files: Array<string>
+    notebook: string
+    readme: string
+  }
+}
+
+export type FileStarterResponse = FileStarterResponses[keyof FileStarterResponses]
+
+export type FilePublicationCapabilitiesData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/publication/capabilities"
+}
+
+export type FilePublicationCapabilitiesResponses = {
+  /**
+   * Available local publication formats
+   */
+  200: {
+    pandoc: boolean
+    pdf_engine?: string
+    formats: {
+      [key: string]: boolean
+    }
+  }
+}
+
+export type FilePublicationCapabilitiesResponse =
+  FilePublicationCapabilitiesResponses[keyof FilePublicationCapabilitiesResponses]
+
+export type FilePublicationData = {
+  body?: {
+    path: string
+    format: "html" | "pdf" | "docx" | "latex" | "pptx"
+    readiness?: "draft" | "reviewed"
+    review_id?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/publication"
+}
+
+export type FilePublicationResponses = {
+  /**
+   * Created publication artifact
+   */
+  200: {
+    path: string
+    format: "html" | "pdf" | "docx" | "latex" | "pptx"
+    size: number
+    created_at: string
+    engine: string
+    readiness: "draft" | "reviewed"
+    review_id?: string
+  }
+}
+
+export type FilePublicationResponse = FilePublicationResponses[keyof FilePublicationResponses]
+
+export type FileReviewsCurrentData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+  }
+  url: "/file/reviews"
+}
+
+export type FileReviewsCurrentErrors = {
+  /**
+   * No publication preflight exists for this manuscript
+   */
+  404: unknown
+}
+
+export type FileReviewsCurrentResponses = {
+  /**
+   * Current publication preflight
+   */
+  200: {
+    format: "openscience.publication-review.v1"
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    version: number
+    status: "blocked" | "warnings" | "ready"
+    summary: {
+      total: number
+      open: number
+      blocking: number
+      major: number
+      minor: number
+      info: number
+      resolved: number
+      overridden: number
+    }
+    findings: Array<{
+      id: string
+      check: "citation" | "numeric" | "figure" | "provenance"
+      severity: "blocking" | "major" | "minor" | "info"
+      status: "open" | "resolved" | "overridden"
+      title: string
+      detail: string
+      evidence: Array<string>
+      location: {
+        path: string
+        line?: number
+      }
+      resolution?: {
+        kind: "resolved" | "overridden"
+        actor: string
+        reason: string
+        at: number
+      }
+    }>
+    events: Array<{
+      version: number
+      type: "generated" | "resolved" | "overridden" | "finalized"
+      actor: string
+      at: number
+      findingID?: string
+      reason?: string
+    }>
+    finalized?: {
+      actor: string
+      at: number
+      artifactHash: string
+    }
+    createdAt: number
+    updatedAt: number
+    stale: boolean
+  }
+}
+
+export type FileReviewsCurrentResponse = FileReviewsCurrentResponses[keyof FileReviewsCurrentResponses]
+
+export type FileReviewsRunData = {
+  body?: {
+    path: string
+    actor?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/file/reviews"
+}
+
+export type FileReviewsRunResponses = {
+  /**
+   * Generated publication preflight
+   */
+  200: {
+    format: "openscience.publication-review.v1"
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    version: number
+    status: "blocked" | "warnings" | "ready"
+    summary: {
+      total: number
+      open: number
+      blocking: number
+      major: number
+      minor: number
+      info: number
+      resolved: number
+      overridden: number
+    }
+    findings: Array<{
+      id: string
+      check: "citation" | "numeric" | "figure" | "provenance"
+      severity: "blocking" | "major" | "minor" | "info"
+      status: "open" | "resolved" | "overridden"
+      title: string
+      detail: string
+      evidence: Array<string>
+      location: {
+        path: string
+        line?: number
+      }
+      resolution?: {
+        kind: "resolved" | "overridden"
+        actor: string
+        reason: string
+        at: number
+      }
+    }>
+    events: Array<{
+      version: number
+      type: "generated" | "resolved" | "overridden" | "finalized"
+      actor: string
+      at: number
+      findingID?: string
+      reason?: string
+    }>
+    finalized?: {
+      actor: string
+      at: number
+      artifactHash: string
+    }
+    createdAt: number
+    updatedAt: number
+  }
+}
+
+export type FileReviewsRunResponse = FileReviewsRunResponses[keyof FileReviewsRunResponses]
+
+export type FileReviewsHistoryData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    path: string
+  }
+  url: "/file/reviews/history"
+}
+
+export type FileReviewsHistoryResponses = {
+  /**
+   * Publication preflight history
+   */
+  200: Array<{
+    format: "openscience.publication-review.v1"
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    version: number
+    status: "blocked" | "warnings" | "ready"
+    summary: {
+      total: number
+      open: number
+      blocking: number
+      major: number
+      minor: number
+      info: number
+      resolved: number
+      overridden: number
+    }
+    findings: Array<{
+      id: string
+      check: "citation" | "numeric" | "figure" | "provenance"
+      severity: "blocking" | "major" | "minor" | "info"
+      status: "open" | "resolved" | "overridden"
+      title: string
+      detail: string
+      evidence: Array<string>
+      location: {
+        path: string
+        line?: number
+      }
+      resolution?: {
+        kind: "resolved" | "overridden"
+        actor: string
+        reason: string
+        at: number
+      }
+    }>
+    events: Array<{
+      version: number
+      type: "generated" | "resolved" | "overridden" | "finalized"
+      actor: string
+      at: number
+      findingID?: string
+      reason?: string
+    }>
+    finalized?: {
+      actor: string
+      at: number
+      artifactHash: string
+    }
+    createdAt: number
+    updatedAt: number
+  }>
+}
+
+export type FileReviewsHistoryResponse = FileReviewsHistoryResponses[keyof FileReviewsHistoryResponses]
+
+export type FileReviewsResolveData = {
+  body?: {
+    status: "resolved" | "overridden"
+    actor: string
+    reason: string
+  }
+  path: {
+    id: string
+    finding: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/reviews/{id}/findings/{finding}"
+}
+
+export type FileReviewsResolveErrors = {
+  /**
+   * Finding cannot be updated
+   */
+  409: unknown
+}
+
+export type FileReviewsResolveResponses = {
+  /**
+   * Updated publication preflight
+   */
+  200: {
+    format: "openscience.publication-review.v1"
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    version: number
+    status: "blocked" | "warnings" | "ready"
+    summary: {
+      total: number
+      open: number
+      blocking: number
+      major: number
+      minor: number
+      info: number
+      resolved: number
+      overridden: number
+    }
+    findings: Array<{
+      id: string
+      check: "citation" | "numeric" | "figure" | "provenance"
+      severity: "blocking" | "major" | "minor" | "info"
+      status: "open" | "resolved" | "overridden"
+      title: string
+      detail: string
+      evidence: Array<string>
+      location: {
+        path: string
+        line?: number
+      }
+      resolution?: {
+        kind: "resolved" | "overridden"
+        actor: string
+        reason: string
+        at: number
+      }
+    }>
+    events: Array<{
+      version: number
+      type: "generated" | "resolved" | "overridden" | "finalized"
+      actor: string
+      at: number
+      findingID?: string
+      reason?: string
+    }>
+    finalized?: {
+      actor: string
+      at: number
+      artifactHash: string
+    }
+    createdAt: number
+    updatedAt: number
+  }
+}
+
+export type FileReviewsResolveResponse = FileReviewsResolveResponses[keyof FileReviewsResolveResponses]
+
+export type FileReviewsFinalizeData = {
+  body?: {
+    actor: string
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/file/reviews/{id}/finalize"
+}
+
+export type FileReviewsFinalizeErrors = {
+  /**
+   * Review is blocked, stale, or already invalid
+   */
+  409: unknown
+}
+
+export type FileReviewsFinalizeResponses = {
+  /**
+   * Finalized publication preflight
+   */
+  200: {
+    format: "openscience.publication-review.v1"
+    id: string
+    projectID: string
+    path: string
+    artifactHash: string
+    version: number
+    status: "blocked" | "warnings" | "ready"
+    summary: {
+      total: number
+      open: number
+      blocking: number
+      major: number
+      minor: number
+      info: number
+      resolved: number
+      overridden: number
+    }
+    findings: Array<{
+      id: string
+      check: "citation" | "numeric" | "figure" | "provenance"
+      severity: "blocking" | "major" | "minor" | "info"
+      status: "open" | "resolved" | "overridden"
+      title: string
+      detail: string
+      evidence: Array<string>
+      location: {
+        path: string
+        line?: number
+      }
+      resolution?: {
+        kind: "resolved" | "overridden"
+        actor: string
+        reason: string
+        at: number
+      }
+    }>
+    events: Array<{
+      version: number
+      type: "generated" | "resolved" | "overridden" | "finalized"
+      actor: string
+      at: number
+      findingID?: string
+      reason?: string
+    }>
+    finalized?: {
+      actor: string
+      at: number
+      artifactHash: string
+    }
+    createdAt: number
+    updatedAt: number
+  }
+}
+
+export type FileReviewsFinalizeResponse = FileReviewsFinalizeResponses[keyof FileReviewsFinalizeResponses]
 
 export type FileStatusData = {
   body?: never
@@ -5094,6 +10746,1214 @@ export type FileStatusResponses = {
 }
 
 export type FileStatusResponse = FileStatusResponses[keyof FileStatusResponses]
+
+export type NotebookComputeData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/compute"
+}
+
+export type NotebookComputeResponses = {
+  /**
+   * Machine capacity and the share kernels hold
+   */
+  200: unknown
+}
+
+export type NotebookKernelsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    sessionID?: string
+  }
+  url: "/notebook/kernels"
+}
+
+export type NotebookKernelsResponses = {
+  /**
+   * Project kernel records and live process state
+   */
+  200: {
+    kernels: Array<{
+      id: string
+      active: boolean
+      state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+      projectID: string
+      sessionID: string
+      name: string
+      language: string
+      target: {
+        kind: "local"
+      }
+      incarnation: number | null
+      execution_count: number
+      queue_depth: number
+      environment: {
+        cwd: string
+        atlas: {
+          access: "host_broker"
+          credentials: "withheld"
+          sources: "source_ids_only"
+        }
+        sandbox: {
+          requested: boolean
+          enforced: boolean
+          backend: "seatbelt" | "bubblewrap" | "none"
+          network: "allow" | "deny"
+          platform: string
+          available: boolean
+          tool?: string
+          reason?: string
+          warning?: string
+        }
+      } | null
+      process_id: number | null
+      process_started_at: number | null
+      process_identity_verified: boolean | null
+      started_at: number | null
+      last_activity_at: number | null
+      authority: {
+        allowed: boolean
+        reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+        capability:
+          | "terminal"
+          | "kernel"
+          | "shell"
+          | "local_job"
+          | "remote_job"
+          | "package_install"
+          | "project_plugin"
+          | "project_mcp"
+          | "project_formatter"
+          | "project_lsp"
+          | "provider_token_command"
+        mode: "read_only" | "sandboxed" | "host"
+        projectID: string
+        sessionID: string
+        trustRevision: number
+        grantRevision: number
+        generation: string
+        workspace: string
+        writable: Array<string>
+        sandbox: {
+          enabled: boolean
+          network: "allow" | "deny"
+          allowWrite: Array<string>
+          onUnavailable: "warn" | "error" | "allow"
+          backend: "seatbelt" | "bubblewrap" | "none"
+          available: boolean
+          enforced: boolean
+        }
+        remediation?: {
+          code: "trust_project_required"
+          message: string
+          method: "PUT"
+          path: string
+          body: {
+            trusted: true
+            root: string
+          }
+        }
+      } | null
+      resources?: {
+        cpu_percent?: number
+        memory_bytes?: number
+        gpu_percent?: number
+        vram_bytes?: number
+      }
+    }>
+  }
+}
+
+export type NotebookKernelsResponse = NotebookKernelsResponses[keyof NotebookKernelsResponses]
+
+export type NotebookKernelCreateData = {
+  body?: {
+    sessionID: string
+    name: string
+    language: "python" | "r"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/kernels"
+}
+
+export type NotebookKernelCreateResponses = {
+  /**
+   * Lazy named kernel record
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+  }
+}
+
+export type NotebookKernelCreateResponse = NotebookKernelCreateResponses[keyof NotebookKernelCreateResponses]
+
+export type NotebookKernelRestartData = {
+  body?: {
+    sessionID: string
+  }
+  path: {
+    kernelID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/kernels/{kernelID}/restart"
+}
+
+export type NotebookKernelRestartResponses = {
+  /**
+   * Fresh live kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+  }
+}
+
+export type NotebookKernelRestartResponse = NotebookKernelRestartResponses[keyof NotebookKernelRestartResponses]
+
+export type NotebookKernelStopData = {
+  body?: {
+    sessionID: string
+  }
+  path: {
+    kernelID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/kernels/{kernelID}/stop"
+}
+
+export type NotebookKernelStopResponses = {
+  /**
+   * Stopped kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+  }
+}
+
+export type NotebookKernelStopResponse = NotebookKernelStopResponses[keyof NotebookKernelStopResponses]
+
+export type NotebookKernelInterruptData = {
+  body?: {
+    sessionID: string
+  }
+  path: {
+    kernelID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/kernels/{kernelID}/interrupt"
+}
+
+export type NotebookKernelInterruptResponses = {
+  /**
+   * Kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+    state_preserved?: boolean
+  }
+}
+
+export type NotebookKernelInterruptResponse = NotebookKernelInterruptResponses[keyof NotebookKernelInterruptResponses]
+
+export type NotebookKernelDeleteData = {
+  body?: never
+  path: {
+    kernelID: string
+  }
+  query: {
+    directory?: string
+    sessionID: string
+  }
+  url: "/notebook/kernels/{kernelID}"
+}
+
+export type NotebookKernelDeleteResponses = {
+  /**
+   * Kernel record forgotten
+   */
+  204: void
+}
+
+export type NotebookKernelDeleteResponse = NotebookKernelDeleteResponses[keyof NotebookKernelDeleteResponses]
+
+export type NotebookExecuteData = {
+  body?: {
+    sessionID: string
+    id: string
+    language: "python" | "r"
+    code: string
+    timeout?: number
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/execute"
+}
+
+export type NotebookExecuteResponses = {
+  /**
+   * Jupyter-compatible cell outputs
+   */
+  200: unknown
+}
+
+export type NotebookStatusData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    sessionID: string
+    id: string
+    language: "python" | "r"
+  }
+  url: "/notebook/status"
+}
+
+export type NotebookStatusResponses = {
+  /**
+   * Kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+  }
+}
+
+export type NotebookStatusResponse = NotebookStatusResponses[keyof NotebookStatusResponses]
+
+export type NotebookRestartData = {
+  body?: {
+    sessionID: string
+    id: string
+    language: "python" | "r"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/restart"
+}
+
+export type NotebookRestartResponses = {
+  /**
+   * Fresh live kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+  }
+}
+
+export type NotebookRestartResponse = NotebookRestartResponses[keyof NotebookRestartResponses]
+
+export type NotebookStopData = {
+  body?: {
+    sessionID: string
+    id: string
+    language: "python" | "r"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/stop"
+}
+
+export type NotebookStopResponses = {
+  /**
+   * Stopped kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+  }
+}
+
+export type NotebookStopResponse = NotebookStopResponses[keyof NotebookStopResponses]
+
+export type NotebookInterruptData = {
+  body?: {
+    sessionID: string
+    id: string
+    language: "python" | "r"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/notebook/interrupt"
+}
+
+export type NotebookInterruptResponses = {
+  /**
+   * Kernel state
+   */
+  200: {
+    id: string
+    active: boolean
+    state: "lazy" | "starting" | "idle" | "running" | "stopped" | "crashed"
+    projectID: string
+    sessionID: string
+    name: string
+    language: string
+    target: {
+      kind: "local"
+    }
+    incarnation: number | null
+    execution_count: number
+    queue_depth: number
+    environment: {
+      cwd: string
+      atlas: {
+        access: "host_broker"
+        credentials: "withheld"
+        sources: "source_ids_only"
+      }
+      sandbox: {
+        requested: boolean
+        enforced: boolean
+        backend: "seatbelt" | "bubblewrap" | "none"
+        network: "allow" | "deny"
+        platform: string
+        available: boolean
+        tool?: string
+        reason?: string
+        warning?: string
+      }
+    } | null
+    process_id: number | null
+    process_started_at: number | null
+    process_identity_verified: boolean | null
+    started_at: number | null
+    last_activity_at: number | null
+    authority: {
+      allowed: boolean
+      reason: "allowed" | "project_untrusted" | "sandbox_unavailable"
+      capability:
+        | "terminal"
+        | "kernel"
+        | "shell"
+        | "local_job"
+        | "remote_job"
+        | "package_install"
+        | "project_plugin"
+        | "project_mcp"
+        | "project_formatter"
+        | "project_lsp"
+        | "provider_token_command"
+      mode: "read_only" | "sandboxed" | "host"
+      projectID: string
+      sessionID: string
+      trustRevision: number
+      grantRevision: number
+      generation: string
+      workspace: string
+      writable: Array<string>
+      sandbox: {
+        enabled: boolean
+        network: "allow" | "deny"
+        allowWrite: Array<string>
+        onUnavailable: "warn" | "error" | "allow"
+        backend: "seatbelt" | "bubblewrap" | "none"
+        available: boolean
+        enforced: boolean
+      }
+      remediation?: {
+        code: "trust_project_required"
+        message: string
+        method: "PUT"
+        path: string
+        body: {
+          trusted: true
+          root: string
+        }
+      }
+    } | null
+    resources?: {
+      cpu_percent?: number
+      memory_bytes?: number
+      gpu_percent?: number
+      vram_bytes?: number
+    }
+    state_preserved?: boolean
+  }
+}
+
+export type NotebookInterruptResponse = NotebookInterruptResponses[keyof NotebookInterruptResponses]
+
+export type ProvenanceListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provenance"
+}
+
+export type ProvenanceListResponses = {
+  /**
+   * Project provenance graph
+   */
+  200: unknown
+}
+
+export type ProvenanceRecordData = {
+  body?: {
+    kind: "artifact" | "run" | "source" | "claim"
+    label: string
+    artifact_type?: string
+    path?: string
+    content_hash?: string
+    size?: number
+    tool?: string
+    status?: "ok" | "error"
+    meta?: {
+      [key: string]: unknown
+    }
+    derived_from?: string
+    relation?: "produced" | "consumed" | "derived-from" | "supports" | "refutes"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provenance/nodes"
+}
+
+export type ProvenanceRecordErrors = {
+  /**
+   * Invalid link target
+   */
+  400: unknown
+}
+
+export type ProvenanceRecordResponses = {
+  /**
+   * Recorded node
+   */
+  200: unknown
+}
+
+export type ProvenanceReviewsListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provenance/reviews"
+}
+
+export type ProvenanceReviewsListResponses = {
+  /**
+   * Reviewer findings
+   */
+  200: unknown
+}
+
+export type ProvenanceReviewData = {
+  body?: {
+    target: string
+    claim: string
+    issue: string
+    severity: "blocking" | "major" | "minor" | "info"
+    evidence: string
+    verdict?: "refutes" | "supports"
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provenance/reviews"
+}
+
+export type ProvenanceReviewErrors = {
+  /**
+   * Invalid target
+   */
+  400: unknown
+}
+
+export type ProvenanceReviewResponses = {
+  /**
+   * Recorded finding
+   */
+  200: unknown
+}
+
+export type ProvenanceReviewsResolveData = {
+  body?: {
+    actor: string
+    reason: string
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/provenance/reviews/{id}/resolve"
+}
+
+export type ProvenanceReviewsResolveErrors = {
+  /**
+   * Not a refuting finding
+   */
+  400: unknown
+}
+
+export type ProvenanceReviewsResolveResponses = {
+  /**
+   * Resolution node
+   */
+  200: unknown
+}
+
+export type ProvenanceExportData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/provenance/export"
+}
+
+export type ProvenanceExportResponses = {
+  /**
+   * Portable JSON audit packet
+   */
+  200: unknown
+}
+
+export type ProvenanceTraceData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/provenance/{id}"
+}
+
+export type ProvenanceTraceErrors = {
+  /**
+   * Node not found
+   */
+  404: unknown
+}
+
+export type ProvenanceTraceResponses = {
+  /**
+   * Connected lineage
+   */
+  200: unknown
+}
 
 export type McpStatusData = {
   body?: never
@@ -5146,6 +12006,35 @@ export type McpAddResponses = {
 }
 
 export type McpAddResponse = McpAddResponses[keyof McpAddResponses]
+
+export type McpInspectData = {
+  body?: never
+  path: {
+    name: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/mcp/{name}"
+}
+
+export type McpInspectErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type McpInspectError = McpInspectErrors[keyof McpInspectErrors]
+
+export type McpInspectResponses = {
+  /**
+   * MCP server inspection
+   */
+  200: McpInspection
+}
+
+export type McpInspectResponse = McpInspectResponses[keyof McpInspectResponses]
 
 export type McpConfigRemoveData = {
   body?: never
@@ -5399,10 +12288,6 @@ export type SettingsSkillsInstallData = {
      * Public git repository URL containing one or more SKILL.md skills
      */
     url: string
-    /**
-     * Bypass the server-side Layer-3 classifier review
-     */
-    skipClassifier?: boolean
   }
   path?: never
   query?: {
@@ -5442,77 +12327,6 @@ export type SettingsSkillsInstallResponses = {
 }
 
 export type SettingsSkillsInstallResponse = SettingsSkillsInstallResponses[keyof SettingsSkillsInstallResponses]
-
-export type SettingsMemoryGetData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    scope?: "global" | "project"
-  }
-  url: "/settings/memory"
-}
-
-export type SettingsMemoryGetResponses = {
-  /**
-   * Memory document
-   */
-  200: {
-    enabled: boolean
-    categories: Array<{
-      id: string
-      name: string
-      notes: Array<{
-        id: string
-        text: string
-        createdAt: number
-      }>
-    }>
-  }
-}
-
-export type SettingsMemoryGetResponse = SettingsMemoryGetResponses[keyof SettingsMemoryGetResponses]
-
-export type SettingsMemorySetData = {
-  body?: {
-    enabled: boolean
-    categories: Array<{
-      id: string
-      name: string
-      notes: Array<{
-        id: string
-        text: string
-        createdAt: number
-      }>
-    }>
-  }
-  path?: never
-  query?: {
-    directory?: string
-    scope?: "global" | "project"
-  }
-  url: "/settings/memory"
-}
-
-export type SettingsMemorySetResponses = {
-  /**
-   * Updated memory document
-   */
-  200: {
-    enabled: boolean
-    categories: Array<{
-      id: string
-      name: string
-      notes: Array<{
-        id: string
-        text: string
-        createdAt: number
-      }>
-    }>
-  }
-}
-
-export type SettingsMemorySetResponse = SettingsMemorySetResponses[keyof SettingsMemorySetResponses]
 
 export type SettingsNetworkGetData = {
   body?: never
@@ -5783,6 +12597,7 @@ export type AppSkillsResponses = {
     location: string
     category?: string
     tags?: Array<string>
+    origin: "default" | "installed" | "learned" | "user" | "project"
     entry?: boolean
   }>
 }
@@ -5832,6 +12647,7 @@ export type AppSkillWriteResponses = {
     location: string
     category?: string
     tags?: Array<string>
+    origin: "default" | "installed" | "learned" | "user" | "project"
     entry?: boolean
   }
 }

@@ -11,11 +11,17 @@
  *   POST /commit  { directory, message }
  *   POST /push    { directory, branch? }
  *   POST /remote  { directory, url } — sets origin (add or replace)
+ *
+ * `directory` remains supported for legacy clients. Project-aware clients may
+ * instead send the opaque project selector header/query/body field; any
+ * directory supplied alongside it is treated only as a checked worktree
+ * override.
  */
 
 import { Hono } from "hono"
 import { spawn } from "child_process"
 import { lazy } from "../../util/lazy"
+import { projectSelection } from "../project-selection"
 
 interface RunResult {
   code: number
@@ -206,32 +212,44 @@ async function wrap<T>(fn: () => Promise<T>) {
 export const RepoRoutes = lazy(() =>
   new Hono()
     .get("/status", async (c) => {
-      const directory = String(c.req.query("directory") ?? "").trim()
-      const r = await wrap(() => status(directory))
+      const selected = await projectSelection(c)
+      const r = await wrap(() => status(selected.directory ?? ""))
       return c.json(r.body, r.ok ? 200 : 400)
     })
     .post("/commit", async (c) => {
-      let body: { directory?: string; message?: unknown } = {}
+      let body: { directory?: string; project?: string; projectID?: string; message?: unknown } = {}
       try {
         body = await c.req.json()
       } catch {}
-      const r = await wrap(() => commit(String(body.directory ?? ""), body.message))
+      const selected = await projectSelection(c, {
+        projectID: body.projectID ?? body.project,
+        directory: body.directory,
+      })
+      const r = await wrap(() => commit(selected.directory ?? "", body.message))
       return c.json(r.body, r.ok ? 200 : 400)
     })
     .post("/push", async (c) => {
-      let body: { directory?: string; branch?: unknown } = {}
+      let body: { directory?: string; project?: string; projectID?: string; branch?: unknown } = {}
       try {
         body = await c.req.json()
       } catch {}
-      const r = await wrap(() => push(String(body.directory ?? ""), body.branch))
+      const selected = await projectSelection(c, {
+        projectID: body.projectID ?? body.project,
+        directory: body.directory,
+      })
+      const r = await wrap(() => push(selected.directory ?? "", body.branch))
       return c.json(r.body, r.ok ? 200 : 400)
     })
     .post("/remote", async (c) => {
-      let body: { directory?: string; url?: unknown } = {}
+      let body: { directory?: string; project?: string; projectID?: string; url?: unknown } = {}
       try {
         body = await c.req.json()
       } catch {}
-      const r = await wrap(() => setRemote(String(body.directory ?? ""), body.url))
+      const selected = await projectSelection(c, {
+        projectID: body.projectID ?? body.project,
+        directory: body.directory,
+      })
+      const r = await wrap(() => setRemote(selected.directory ?? "", body.url))
       return c.json(r.body, r.ok ? 200 : 400)
     }),
 )

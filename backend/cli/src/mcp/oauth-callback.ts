@@ -1,4 +1,5 @@
 import { Log } from "../util/log"
+import { escapeHtml, htmlResponse } from "../util/html"
 import { OAUTH_CALLBACK_PORT, OAUTH_CALLBACK_PATH } from "./oauth-provider"
 
 const log = Log.create({ service: "mcp.oauth-callback" })
@@ -19,7 +20,6 @@ const HTML_SUCCESS = `<!DOCTYPE html>
     <h1>Authorization Successful</h1>
     <p>You can close this window and return to OpenScience.</p>
   </div>
-  <script>setTimeout(() => window.close(), 2000);</script>
 </body>
 </html>`
 
@@ -39,7 +39,7 @@ const HTML_ERROR = (error: string) => `<!DOCTYPE html>
   <div class="container">
     <h1>Authorization Failed</h1>
     <p>An error occurred during authorization.</p>
-    <div class="error">${error}</div>
+    <div class="error">${escapeHtml(error)}</div>
   </div>
 </body>
 </html>`
@@ -67,6 +67,7 @@ export namespace McpOAuthCallback {
 
     server = Bun.serve({
       port: OAUTH_CALLBACK_PORT,
+      hostname: "127.0.0.1",
       fetch(req) {
         const url = new URL(req.url)
 
@@ -85,9 +86,8 @@ export namespace McpOAuthCallback {
         if (!state) {
           const errorMsg = "Missing required state parameter - potential CSRF attack"
           log.error("oauth callback missing state parameter", { url: url.toString() })
-          return new Response(HTML_ERROR(errorMsg), {
+          return htmlResponse(HTML_ERROR(errorMsg), {
             status: 400,
-            headers: { "Content-Type": "text/html" },
           })
         }
 
@@ -99,15 +99,12 @@ export namespace McpOAuthCallback {
             pendingAuths.delete(state)
             pending.reject(new Error(errorMsg))
           }
-          return new Response(HTML_ERROR(errorMsg), {
-            headers: { "Content-Type": "text/html" },
-          })
+          return htmlResponse(HTML_ERROR(errorMsg))
         }
 
         if (!code) {
-          return new Response(HTML_ERROR("No authorization code provided"), {
+          return htmlResponse(HTML_ERROR("No authorization code provided"), {
             status: 400,
-            headers: { "Content-Type": "text/html" },
           })
         }
 
@@ -115,9 +112,8 @@ export namespace McpOAuthCallback {
         if (!pendingAuths.has(state)) {
           const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
           log.error("oauth callback with invalid state", { state, pendingStates: Array.from(pendingAuths.keys()) })
-          return new Response(HTML_ERROR(errorMsg), {
+          return htmlResponse(HTML_ERROR(errorMsg), {
             status: 400,
-            headers: { "Content-Type": "text/html" },
           })
         }
 
@@ -127,9 +123,7 @@ export namespace McpOAuthCallback {
         pendingAuths.delete(state)
         pending.resolve(code)
 
-        return new Response(HTML_SUCCESS, {
-          headers: { "Content-Type": "text/html" },
-        })
+        return htmlResponse(HTML_SUCCESS)
       },
     })
 
@@ -187,7 +181,7 @@ export namespace McpOAuthCallback {
       log.info("oauth callback server stopped")
     }
 
-    for (const [name, pending] of pendingAuths) {
+    for (const [, pending] of pendingAuths) {
       clearTimeout(pending.timeout)
       pending.reject(new Error("OAuth callback server stopped"))
     }

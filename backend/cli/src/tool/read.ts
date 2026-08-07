@@ -30,15 +30,15 @@ export const ReadTool = Tool.define("read", {
     limit: z.coerce.number().describe("The number of lines to read (defaults to 2000)").optional(),
   }),
   async execute(params, ctx) {
-    let filepath = params.filePath
-    if (!path.isAbsolute(filepath)) {
-      filepath = path.resolve(Instance.directory, filepath)
-    }
-    const title = path.relative(Instance.worktree, filepath)
-
-    await assertExternalDirectory(ctx, filepath, {
+    const requested = path.isAbsolute(params.filePath)
+      ? params.filePath
+      : path.resolve(Instance.directory, params.filePath)
+    const authorized = await assertExternalDirectory(ctx, requested, {
       bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
+      access: "read",
     })
+    const filepath = authorized?.path ?? requested
+    const title = path.relative(Instance.worktree, filepath)
 
     await ctx.ask({
       permission: "read",

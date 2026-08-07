@@ -52,12 +52,16 @@ import { TaskTool } from "@/tool/task"
 import { Tool } from "@/tool/tool"
 import { PermissionNext } from "@/permission/next"
 import { SessionStatus } from "./status"
+import { SessionFilesystem } from "./filesystem"
 import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { correctImageMime } from "@/util/image"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
-import { Memory } from "@/settings/memory"
+import { PlanMode } from "@/tool/plan-mode"
+import { Inference } from "@/provider/inference"
+import { OpenScience } from "@/openscience"
+import { assertExternalDirectory } from "@/tool/external-directory"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -71,6 +75,7 @@ export namespace SessionPrompt {
   const ARTIFACT_AGENTS = ["research", "biology", "physics", "ml"]
   // Science agents that dispatch GPU/compute work and should honor billing.compute.
   const COMPUTE_AGENTS = new Set(["research", "biology", "physics", "ml"])
+  const SKILL_ROUTING_AGENTS = new Set(["research", "biology", "physics", "ml"])
 
   const state = Instance.state(
     () => {
@@ -96,6 +101,19 @@ export namespace SessionPrompt {
     },
   )
 
+  // Decode the text payload of a data: URL (data:<mime>[;base64],<payload>) — an
+  // uploaded .txt/.md arrives this way. Only the part after the comma is the
+  // payload; base64url-decoding the whole URL left a ~12-byte garbage prefix from
+  // "data:text/plain," on the inlined text (#170). FileReader.readAsDataURL always
+  // emits the ;base64 form; a hand-written percent-encoded data URL is also handled.
+  export function decodeDataUrlText(url: string): string {
+    const comma = url.indexOf(",")
+    const payload = comma === -1 ? url : url.slice(comma + 1)
+    return url.slice(0, comma).includes(";base64")
+      ? Buffer.from(payload, "base64").toString()
+      : decodeURIComponent(payload)
+  }
+
   export function assertNotBusy(sessionID: string) {
     const match = state()[sessionID]
     if (match) throw new Session.BusyError(sessionID)
@@ -118,9 +136,10 @@ export namespace SessionPrompt {
       .describe(
         "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
       ),
+    delegation: z.boolean().optional(),
     system: z.string().optional(),
     variant: z.string().optional(),
-    tier: z.enum(["fast", "pro", "ultra"]).optional(),
+    tier: z.string().optional(),
     parts: z.array(
       z.discriminatedUnion("type", [
         MessageV2.TextPart.omit({
@@ -290,6 +309,7 @@ export namespace SessionPrompt {
   }
 
   export const loop = fn(Identifier.schema("session"), async (sessionID) => {
+    const session = await Session.get(sessionID)
     const abort = start(sessionID)
     if (!abort) {
       return new Promise<MessageV2.WithParts>((resolve, reject) => {
@@ -309,7 +329,19 @@ export namespace SessionPrompt {
     // threshold. Prevents an infinite compaction loop when fixed system+tool+
     // summary overhead alone already exceeds the 0.75 threshold.
     let compactionArmed = true
-    const session = await Session.get(sessionID)
+    // Text doom-loop guard (#176): weak/local models sometimes emit a near-identical
+    // "continuity summary" turn over and over instead of converging on an answer.
+    // The processor's doom-loop guard can't catch it — the TOOL calls vary (or are
+    // absent), only the TEXT repeats. Normalize an assistant turn's own text;
+    // SessionProcessor.isTextLoop does the (unit-tested) detection.
+    const turnText = (m: MessageV2.WithParts) =>
+      m.parts
+        .filter((p) => p.type === "text" && !p.synthetic && !p.ignored)
+        .map((p) => (p as MessageV2.TextPart).text)
+        .join("\n")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim()
     while (true) {
       SessionStatus.set(sessionID, { type: "busy" })
       log.info("loop", { step, sessionID })
@@ -318,12 +350,16 @@ export namespace SessionPrompt {
 
       let lastUser: MessageV2.User | undefined
       let lastAssistant: MessageV2.Assistant | undefined
+      let lastAssistantMsg: MessageV2.WithParts | undefined
       let lastFinished: MessageV2.Assistant | undefined
       let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i]
         if (!lastUser && msg.info.role === "user") lastUser = msg.info as MessageV2.User
-        if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info as MessageV2.Assistant
+        if (!lastAssistant && msg.info.role === "assistant") {
+          lastAssistant = msg.info as MessageV2.Assistant
+          lastAssistantMsg = msg
+        }
         if (!lastFinished && msg.info.role === "assistant" && msg.info.finish)
           lastFinished = msg.info as MessageV2.Assistant
         if (lastUser && lastFinished) break
@@ -390,16 +426,30 @@ export namespace SessionPrompt {
         return true
       }
       const bareMode = lastUser.tools?.["*"] === false
-      if (
-        lastAssistant?.finish &&
-        (!MessageV2.isContinuing(lastAssistant.finish) || bareMode) &&
-        lastUser.id < lastAssistant.id
-      ) {
+      // A text-only turn that finished "unknown" (no tool call to feed back) is a
+      // completed turn, not a continue — otherwise the loop re-prompts the identical
+      // context forever (the #176 doom loop). See MessageV2.isContinuingTurn.
+      const lastAssistantHasTool = lastAssistantMsg?.parts.some((p) => p.type === "tool") ?? false
+      const continuing = MessageV2.isContinuingTurn(lastAssistant?.finish, lastAssistantHasTool)
+      if (lastAssistant?.finish && (!continuing || bareMode) && lastUser.id < lastAssistant.id) {
         log.info("exiting loop", { sessionID, bareMode })
         // RSI: capture trajectory from ultra agent sessions (async, non-blocking)
         if (lastUser.agent && RSITrajectory.ARTIFACT_AGENTS.includes(lastUser.agent as any)) {
           RSITrajectory.pipeline(sessionID).catch(() => {})
         }
+        break
+      }
+
+      // Trip the text doom-loop guard when the last 3 finished assistant turns are
+      // long AND share a large identical leading block (the repeated "continuity
+      // summary"). Conservative on purpose — 3 substantial near-identical turns in a
+      // row is a clear non-convergence signal that legitimate progress never produces.
+      const finishedTurns = msgs.filter((m) => m.info.role === "assistant" && m.info.finish)
+      if (SessionProcessor.isTextLoop(finishedTurns.map(turnText))) {
+        log.info("text doom-loop detected — stopping", { sessionID, step })
+        await failTooLarge(
+          "The model repeated nearly the same response several times without making progress — a known failure mode of smaller local models on multi-step research tasks. Stopping to avoid an endless loop. Try a larger or hosted model for this task, or break it into smaller steps.",
+        )
         break
       }
 
@@ -755,6 +805,7 @@ export namespace SessionPrompt {
         session,
         model,
         tools: lastUser.tools,
+        delegation: lastUser.delegation,
         processor,
         bypassAgentCheck,
         messages: msgs,
@@ -809,8 +860,9 @@ export namespace SessionPrompt {
 
       const system = [
         ...(await SystemPrompt.environment(model)),
+        ...(await SystemPrompt.compute()),
         ...(await InstructionPrompt.system()),
-        ...(await Memory.recall()),
+        ...(SKILL_ROUTING_AGENTS.has(agent.name) ? [await SystemPrompt.availableSkills(agent.permission)] : []),
         ...artifactContext,
       ]
 
@@ -892,8 +944,11 @@ export namespace SessionPrompt {
       // A historical model can reference a provider that is no longer available
       // (e.g. its API key was removed) — validate before reusing it.
       const model = item.info.model
-      const provider = await Provider.getProvider(model.providerID)
-      if (provider?.models[model.modelID]) return model
+      const resolved = await Provider.getModel(model.providerID, model.modelID).catch((e) => {
+        if (Provider.ModelNotFoundError.isInstance(e)) return undefined
+        throw e
+      })
+      if (resolved) return { providerID: resolved.providerID, modelID: resolved.id }
       log.warn("last used model is no longer available, falling back to default", model)
       break
     }
@@ -905,6 +960,7 @@ export namespace SessionPrompt {
     model: Provider.Model
     session: Session.Info
     tools?: Record<string, boolean>
+    delegation?: boolean
     processor: SessionProcessor.Info
     bypassAgentCheck: boolean
     messages: MessageV2.WithParts[]
@@ -958,28 +1014,30 @@ export namespace SessionPrompt {
         inputSchema: jsonSchema(schema as any),
         async execute(args, options) {
           const ctx = context(args, options)
-          await Plugin.trigger(
-            "tool.execute.before",
-            {
-              tool: item.id,
-              sessionID: ctx.sessionID,
-              callID: ctx.callID,
-            },
-            {
-              args,
-            },
-          )
-          const result = await item.execute(args, ctx)
-          await Plugin.trigger(
-            "tool.execute.after",
-            {
-              tool: item.id,
-              sessionID: ctx.sessionID,
-              callID: ctx.callID,
-            },
-            result,
-          )
-          return result
+          return PlanMode.run(item.id, ctx.agent, async () => {
+            await Plugin.trigger(
+              "tool.execute.before",
+              {
+                tool: item.id,
+                sessionID: ctx.sessionID,
+                callID: ctx.callID,
+              },
+              {
+                args,
+              },
+            )
+            const result = await item.execute(args, ctx)
+            await Plugin.trigger(
+              "tool.execute.after",
+              {
+                tool: item.id,
+                sessionID: ctx.sessionID,
+                callID: ctx.callID,
+              },
+              result,
+            )
+            return result
+          })
         },
       })
     }
@@ -991,107 +1049,123 @@ export namespace SessionPrompt {
       // Wrap execute to add plugin hooks and format output
       item.execute = async (args, opts) => {
         const ctx = context(args, opts)
+        return PlanMode.run(key, ctx.agent, async () => {
+          await Plugin.trigger(
+            "tool.execute.before",
+            {
+              tool: key,
+              sessionID: ctx.sessionID,
+              callID: opts.toolCallId,
+            },
+            {
+              args,
+            },
+          )
 
-        await Plugin.trigger(
-          "tool.execute.before",
-          {
-            tool: key,
-            sessionID: ctx.sessionID,
-            callID: opts.toolCallId,
-          },
-          {
-            args,
-          },
-        )
+          await ctx.ask({
+            permission: "mcp",
+            metadata: {},
+            patterns: [key],
+            always: [key],
+          })
 
-        await ctx.ask({
-          permission: "mcp",
-          metadata: {},
-          patterns: [key],
-          always: [key],
-        })
+          const result = await execute(args, opts)
 
-        const result = await execute(args, opts)
+          await Plugin.trigger(
+            "tool.execute.after",
+            {
+              tool: key,
+              sessionID: ctx.sessionID,
+              callID: opts.toolCallId,
+            },
+            result,
+          )
 
-        await Plugin.trigger(
-          "tool.execute.after",
-          {
-            tool: key,
-            sessionID: ctx.sessionID,
-            callID: opts.toolCallId,
-          },
-          result,
-        )
+          const textParts: string[] = []
+          const attachments: MessageV2.FilePart[] = []
 
-        const textParts: string[] = []
-        const attachments: MessageV2.FilePart[] = []
-
-        for (const contentItem of result.content) {
-          if (contentItem.type === "text") {
-            textParts.push(contentItem.text)
-          } else if (contentItem.type === "image") {
-            const detectedMime = correctImageMime(
-              contentItem.mimeType,
-              Buffer.from(contentItem.data.slice(0, 24), "base64"),
-            )
-            attachments.push({
-              id: Identifier.ascending("part"),
-              sessionID: input.session.id,
-              messageID: input.processor.message.id,
-              type: "file",
-              mime: detectedMime,
-              url: `data:${detectedMime};base64,${contentItem.data}`,
-            })
-          } else if (contentItem.type === "resource") {
-            const { resource } = contentItem
-            if (resource.text) {
-              textParts.push(resource.text)
-            }
-            if (resource.blob) {
-              const blobMime = correctImageMime(
-                resource.mimeType ?? "application/octet-stream",
-                Buffer.from(resource.blob.slice(0, 24), "base64"),
+          for (const contentItem of result.content) {
+            if (contentItem.type === "text") {
+              textParts.push(contentItem.text)
+            } else if (contentItem.type === "image") {
+              const detectedMime = correctImageMime(
+                contentItem.mimeType,
+                Buffer.from(contentItem.data.slice(0, 24), "base64"),
               )
               attachments.push({
                 id: Identifier.ascending("part"),
                 sessionID: input.session.id,
                 messageID: input.processor.message.id,
                 type: "file",
-                mime: blobMime,
-                url: `data:${blobMime};base64,${resource.blob}`,
-                filename: resource.uri,
+                mime: detectedMime,
+                url: `data:${detectedMime};base64,${contentItem.data}`,
               })
+            } else if (contentItem.type === "resource") {
+              const { resource } = contentItem
+              if (resource.text) {
+                textParts.push(resource.text)
+              }
+              if (resource.blob) {
+                const blobMime = correctImageMime(
+                  resource.mimeType ?? "application/octet-stream",
+                  Buffer.from(resource.blob.slice(0, 24), "base64"),
+                )
+                attachments.push({
+                  id: Identifier.ascending("part"),
+                  sessionID: input.session.id,
+                  messageID: input.processor.message.id,
+                  type: "file",
+                  mime: blobMime,
+                  url: `data:${blobMime};base64,${resource.blob}`,
+                  filename: resource.uri,
+                })
+              }
             }
           }
-        }
 
-        const truncated = await Truncate.output(textParts.join("\n\n"), {}, input.agent)
-        const metadata = {
-          ...(result.metadata ?? {}),
-          truncated: truncated.truncated,
-          ...(truncated.truncated && { outputPath: truncated.outputPath }),
-        }
+          const truncated = await Truncate.output(textParts.join("\n\n"), {}, input.agent)
+          const metadata = {
+            ...(result.metadata ?? {}),
+            truncated: truncated.truncated,
+            ...(truncated.truncated && { outputPath: truncated.outputPath }),
+          }
 
-        return {
-          title: "",
-          metadata,
-          output: truncated.content,
-          attachments,
-          content: result.content, // directly return content to preserve ordering when outputting to model
-        }
+          return {
+            title: "",
+            metadata,
+            output: truncated.content,
+            attachments,
+            content: result.content, // directly return content to preserve ordering when outputting to model
+          }
+        })
       }
       tools[key] = item
     }
 
+    if (!allowsDelegation(input.delegation, input.bypassAgentCheck)) delete tools.task
     return tools
+  }
+
+  export function allowsDelegation(enabled: boolean | undefined, explicit: boolean) {
+    return enabled !== false || explicit
   }
 
   async function createUserMessage(input: PromptInput) {
     const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
+    const session = await Session.get(input.sessionID)
+    const ruleset = PermissionNext.merge(agent.permission, session.permission ?? [])
+    const ask = async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
+      await PermissionNext.ask({
+        ...req,
+        sessionID: input.sessionID,
+        ruleset,
+      })
+    }
     // Regenerate ID if client-provided one would sort before existing messages
     // (48-bit Identifier timestamp field wraps every ~2.2y; cross-clock drift
     // in pre-existing sessions can cause new IDs to sort below old ones).
     const messageID = await MessageV2.nextMessageID(input.sessionID, input.messageID)
+    const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
     const info: MessageV2.Info = {
       id: messageID,
       role: "user",
@@ -1100,11 +1174,13 @@ export namespace SessionPrompt {
         created: Date.now(),
       },
       tools: input.tools,
+      delegation: input.delegation,
       agent: agent.name,
-      model: input.model ?? agent.model ?? (await lastModel(input.sessionID)),
+      model,
       system: input.system,
       variant: input.variant,
       tier: input.tier,
+      inference: await Inference.resolve(model.providerID, input.variant),
     }
     using _ = defer(() => InstructionPrompt.clear(info.id))
 
@@ -1202,7 +1278,8 @@ export namespace SessionPrompt {
                     sessionID: input.sessionID,
                     type: "text",
                     synthetic: true,
-                    text: Buffer.from(part.url, "base64url").toString(),
+                    // Decode only the payload after the comma — see decodeDataUrlText (#170).
+                    text: decodeDataUrlText(part.url),
                   },
                   {
                     ...part,
@@ -1278,12 +1355,12 @@ export namespace SessionPrompt {
                     const readCtx: Tool.Context = {
                       sessionID: input.sessionID,
                       abort: new AbortController().signal,
-                      agent: input.agent!,
+                      agent: agent.name,
                       messageID: info.id,
-                      extra: { bypassCwdCheck: true, model },
+                      extra: { model },
                       messages: [],
                       metadata: async () => {},
-                      ask: async () => {},
+                      ask,
                     }
                     const result = await t.execute(args, readCtx)
                     pieces.push({
@@ -1340,12 +1417,12 @@ export namespace SessionPrompt {
                 const listCtx: Tool.Context = {
                   sessionID: input.sessionID,
                   abort: new AbortController().signal,
-                  agent: input.agent!,
+                  agent: agent.name,
                   messageID: info.id,
-                  extra: { bypassCwdCheck: true },
+                  extra: {},
                   messages: [],
                   metadata: async () => {},
-                  ask: async () => {},
+                  ask,
                 }
                 const result = await ListTool.init().then((t) => t.execute(args, listCtx))
                 return [
@@ -1375,6 +1452,23 @@ export namespace SessionPrompt {
               }
 
               const file = Bun.file(filepath)
+              const readCtx: Tool.Context = {
+                sessionID: input.sessionID,
+                abort: new AbortController().signal,
+                agent: agent.name,
+                messageID: info.id,
+                extra: {},
+                messages: [],
+                metadata: async () => {},
+                ask,
+              }
+              await assertExternalDirectory(readCtx, filepath)
+              await readCtx.ask({
+                permission: "read",
+                patterns: [filepath],
+                always: ["*"],
+                metadata: {},
+              })
               FileTime.read(input.sessionID, filepath)
               const bytes = await file.bytes()
               const mime = correctImageMime(part.mime, bytes)
@@ -1480,8 +1574,8 @@ export namespace SessionPrompt {
         sessionID: userMessage.info.sessionID,
         type: "text",
         text: managed
-          ? "<system-reminder>Compute spend is set to MANAGED. Run GPU/training work through the bundled `atlas compute` CLI (e.g. `atlas compute:up`), which bills the Atlas wallet. Do not fall back to the user's own GPU providers unless `atlas doctor` reports managed compute unavailable.</system-reminder>"
-          : "<system-reminder>Compute spend is set to BYOK. Run GPU/training work on the user's own connected providers (Modal, Tinker, TensorPool, …) via the cloud-compute skills — do not launch managed `atlas compute` leases that bill the Atlas wallet.</system-reminder>",
+          ? "<system-reminder>Compute spend is set to MANAGED. Run GPU/training work through the bundled `atlas compute` CLI (e.g. `atlas compute:up`), which bills Credits. Do not fall back to the user's own GPU providers unless `atlas doctor` reports managed compute unavailable.</system-reminder>"
+          : "<system-reminder>Compute spend is set to BYOK. Run GPU/training work on the user's own connected providers (Modal, Tinker, TensorPool, …) via the cloud-compute skills — do not launch managed `atlas compute` leases that bill Credits.</system-reminder>",
         synthetic: true,
       })
     }
@@ -1647,74 +1741,19 @@ export namespace SessionPrompt {
         sessionID: userMessage.info.sessionID,
         type: "text",
         text: `<system-reminder>
-Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+Plan mode is active. Do not execute commands that mutate state, edit project files, start
+jobs, upload data, or spend money. The only writable file is the plan below.
 
-## Plan File Info:
-${exists ? `A plan file already exists at ${plan}. You can read it and make incremental edits using the edit tool.` : `No plan file exists yet. You should create your plan at ${plan} using the write tool.`}
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+${exists ? `Plan file: ${plan}. Read it and update only what the current request changes.` : `Plan file: ${plan}. Create it only after you understand the request.`}
 
-## Plan Workflow
+Inspect the relevant code and evidence directly. Default to zero child agents. Use at most
+one Explore child only when an independent search would materially reduce uncertainty; never
+delegate just to validate your own plan.
 
-### Phase 1: Initial Understanding
-Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Critical: In this phase you should only use the explore subagent type.
-
-1. Focus on understanding the user's request and the code associated with their request
-
-2. **Launch up to 3 explore agents IN PARALLEL** (single message, multiple tool calls) to efficiently explore the codebase.
-   - Use 1 agent when the task is isolated to known files, the user provided specific file paths, or you're making a small targeted change.
-   - Use multiple agents when: the scope is uncertain, multiple areas of the codebase are involved, or you need to understand existing patterns before planning.
-   - Quality over quantity - 3 agents maximum, but you should try to use the minimum number of agents necessary (usually just 1)
-   - If using multiple agents: Provide each agent with a specific search focus or area to explore. Example: One agent searches for existing implementations, another explores related components, a third investigates testing patterns
-
-3. After exploring the code, use the question tool to clarify ambiguities in the user request up front.
-
-### Phase 2: Design
-Goal: Design an implementation approach.
-
-Launch general agent(s) to design the implementation based on the user's intent and your exploration results from Phase 1.
-
-You can launch up to 1 agent(s) in parallel.
-
-**Guidelines:**
-- **Default**: Launch at least 1 Plan agent for most tasks - it helps validate your understanding and consider alternatives
-- **Skip agents**: Only for truly trivial tasks (typo fixes, single-line changes, simple renames)
-
-Examples of when to use multiple agents:
-- The task touches multiple parts of the codebase
-- It's a large refactor or architectural change
-- There are many edge cases to consider
-- You'd benefit from exploring different approaches
-
-Example perspectives by task type:
-- New feature: simplicity vs performance vs maintainability
-- Bug fix: root cause vs workaround vs prevention
-- Refactoring: minimal change vs clean architecture
-
-In the agent prompt:
-- Provide comprehensive background context from Phase 1 exploration including filenames and code path traces
-- Describe requirements and constraints
-- Request a detailed implementation plan
-
-### Phase 3: Review
-Goal: Review the plan(s) from Phase 2 and ensure alignment with the user's intentions.
-1. Read the critical files identified by agents to deepen your understanding
-2. Ensure that the plans align with the user's original request
-3. Use question tool to clarify any remaining questions with the user
-
-### Phase 4: Final Plan
-Goal: Write your final plan to the plan file (the only file you can edit).
-- Include only your recommended approach, not all alternatives
-- Ensure that the plan file is concise enough to scan quickly, but detailed enough to execute effectively
-- Include the paths of critical files to be modified
-- Include a verification section describing how to test the changes end-to-end (run the code, use MCP tools, run tests)
-
-### Phase 5: Call plan_exit tool
-At the very end of your turn, once you have asked the user questions and are happy with your final plan file - you should always call plan_exit to indicate to the user that you are done planning.
-This is critical - your turn should only end with either asking the user a question or calling plan_exit. Do not stop unless it's for these 2 reasons.
-
-**Important:** Use question tool to clarify requirements/approach, use plan_exit to request plan approval. Do NOT use question tool to ask "Is this plan okay?" - that's what plan_exit does.
-
-NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications. Don't make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.
+Ask a question only when the answer cannot be discovered and would materially change the
+implementation. Then write one concise recommended plan with the outcome, critical files,
+ordered changes, risks, and end-to-end verification. Do not include discarded alternatives
+or internal reasoning. Call plan_exit when the plan is ready for approval.
 </system-reminder>`,
         synthetic: true,
       })
@@ -1737,13 +1776,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
   })
   export type ShellInput = z.infer<typeof ShellInput>
   export async function shell(input: ShellInput) {
+    const session = await Session.get(input.sessionID)
+    const cwd = await SessionFilesystem.workspace(input.sessionID)
     const abort = start(input.sessionID)
     if (!abort) {
       throw new Session.BusyError(input.sessionID)
     }
     using _ = defer(() => cancel(input.sessionID))
 
-    const session = await Session.get(input.sessionID)
     if (session.revert) {
       await SessionRevert.cleanup(session)
     }
@@ -1781,7 +1821,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       agent: input.agent,
       cost: 0,
       path: {
-        cwd: Instance.directory,
+        cwd,
         root: Instance.worktree,
       },
       time: {
@@ -1872,11 +1912,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const args = matchingInvocation?.args
 
     const proc = spawn(shell, args, {
-      cwd: Instance.directory,
+      cwd,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...(await OpenScience.subprocessEnv(process.env)),
         TERM: "dumb",
       },
     })
@@ -1908,7 +1948,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     let aborted = false
     let exited = false
 
-    const kill = () => Shell.killTree(proc, { exited: () => exited })
+    const kill = () => Shell.killTree(proc, { exited: () => exited, detached: process.platform !== "win32" })
 
     if (abort.aborted) {
       aborted = true
@@ -1963,6 +2003,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     arguments: z.string(),
     command: z.string(),
     variant: z.string().optional(),
+    tier: z.string().optional(),
     parts: z
       .array(
         z.discriminatedUnion("type", [
@@ -1982,6 +2023,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
   const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
   const placeholderRegex = /\$(\d+)/g
   const quoteTrimRegex = /^["']|["']$/g
+
+  export function modelTier(
+    value: string | undefined,
+    source: { providerID: string; modelID: string },
+    target: { providerID: string; modelID: string },
+  ) {
+    if (source.providerID !== target.providerID || source.modelID !== target.modelID) return undefined
+    return value
+  }
+
   /**
    * Regular expression to match @ file references in text
    * Matches @ followed by file paths, excluding commas, periods at end of sentences, and backticks
@@ -1990,6 +2041,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
   export async function command(input: CommandInput) {
     log.info("command", input)
+    await Session.assertDirectory(input.sessionID)
 
     // /compact is an action, not a prompt template: enqueue a compaction task
     // and run the loop to process it (same machinery as auto-compaction), then
@@ -2048,6 +2100,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     const command = await Command.get(input.command)
     const agentName = command.agent ?? input.agent ?? (await Agent.defaultAgent())
+    const selectedModel = input.model ? Provider.parseModel(input.model) : await lastModel(input.sessionID)
 
     const raw = input.arguments.match(argsRegex) ?? []
     const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
@@ -2104,8 +2157,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           return cmdAgent.model
         }
       }
-      if (input.model) return Provider.parseModel(input.model)
-      return await lastModel(input.sessionID)
+      return selectedModel
     })()
 
     try {
@@ -2153,11 +2205,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       : [...templateParts, ...(input.parts ?? [])]
 
     const userAgent = isSubtask ? (input.agent ?? (await Agent.defaultAgent())) : agentName
-    const userModel = isSubtask
-      ? input.model
-        ? Provider.parseModel(input.model)
-        : await lastModel(input.sessionID)
-      : taskModel
+    const userModel = isSubtask ? selectedModel : taskModel
 
     await Plugin.trigger(
       "command.execute.before",
@@ -2176,6 +2224,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       agent: userAgent,
       parts,
       variant: input.variant,
+      tier: modelTier(input.tier, selectedModel, userModel),
     })) as MessageV2.WithParts
 
     Bus.publish(Command.Event.Executed, {

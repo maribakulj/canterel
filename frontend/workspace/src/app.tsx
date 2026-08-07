@@ -2,13 +2,7 @@ import "@/index.css"
 import { ErrorBoundary, Show, lazy, type ParentProps } from "solid-js"
 import { Router, Route, Navigate } from "@solidjs/router"
 import { MetaProvider } from "@solidjs/meta"
-import { Font } from "@synsci/ui/font"
-import { MarkedProvider } from "@synsci/ui/context/marked"
-import { DiffComponentProvider } from "@synsci/ui/context/diff"
-import { CodeComponentProvider } from "@synsci/ui/context/code"
 import { I18nProvider } from "@synsci/ui/context"
-import { Diff } from "@synsci/ui/diff"
-import { Code } from "@synsci/ui/code"
 import { ThemeProvider } from "@synsci/ui/theme"
 import { GlobalSyncProvider } from "@/context/global-sync"
 import { PermissionProvider } from "@/context/permission"
@@ -31,14 +25,12 @@ import Layout from "@/pages/layout"
 import DirectoryLayout from "@/pages/directory-layout"
 import { ErrorPage } from "./pages/error"
 import { URLS } from "@/config/urls"
-// Side effect: registers the inline science-artifact tool renderer + pulls in
-// the renderer registry so `metadata.artifact` envelopes render in chat.
-import "@/science/tool-renderer"
+import { resolveDefaultServerUrl } from "@/config/server-url"
 import { Suspense } from "solid-js"
-import { AsciiSpinner } from "@/thesis/shared/AsciiSpinner"
+import { AsciiSpinner } from "@/atlas/shared/AsciiSpinner"
+import Home from "@/pages/home"
 
-const Home = lazy(() => import("@/pages/home"))
-const Session = lazy(() => import("@/pages/session"))
+const Session = lazy(() => import("@/pages/session-shell"))
 const Loading = () => (
   <div class="size-full" style={{ display: "flex", "align-items": "center", "justify-content": "center" }}>
     <AsciiSpinner label="loading…" color="var(--color-text-faint)" />
@@ -57,26 +49,14 @@ declare global {
   }
 }
 
-function MarkedProviderWithNativeParser(props: ParentProps) {
-  const platform = usePlatform()
-  return <MarkedProvider nativeParser={platform.parseMarkdown}>{props.children}</MarkedProvider>
-}
-
 export function AppBaseProviders(props: ParentProps) {
   return (
     <MetaProvider>
-      <Font />
       <ThemeProvider>
         <LanguageProvider>
           <UiI18nBridge>
             <ErrorBoundary fallback={(error) => <ErrorPage error={error} />}>
-              <DialogProvider>
-                <MarkedProviderWithNativeParser>
-                  <DiffComponentProvider component={Diff}>
-                    <CodeComponentProvider component={Code}>{props.children}</CodeComponentProvider>
-                  </DiffComponentProvider>
-                </MarkedProviderWithNativeParser>
-              </DialogProvider>
+              <DialogProvider>{props.children}</DialogProvider>
             </ErrorBoundary>
           </UiI18nBridge>
         </LanguageProvider>
@@ -106,13 +86,25 @@ export function AppInterface(props: { defaultUrl?: string }) {
   })()
 
   const defaultServerUrl = () => {
-    if (props.defaultUrl) return props.defaultUrl
-    if (stored) return stored
-    if (location.hostname.includes(URLS.host)) return "http://localhost:4096"
-    if (import.meta.env.DEV)
-      return `http://${import.meta.env.VITE_OPENSCIENCE_SERVER_HOST ?? "localhost"}:${import.meta.env.VITE_OPENSCIENCE_SERVER_PORT ?? "4096"}`
+    const configured = (() => {
+      const direct = normalizeServerUrl(import.meta.env.VITE_OPENSCIENCE_SERVER_URL ?? "")
+      if (direct) return direct
 
-    return window.location.origin
+      const host = import.meta.env.VITE_OPENSCIENCE_SERVER_HOST
+      const port = import.meta.env.VITE_OPENSCIENCE_SERVER_PORT
+      if (!host && !port) return
+      return normalizeServerUrl(`http://${host ?? "localhost"}:${port ?? "4096"}`)
+    })()
+
+    return resolveDefaultServerUrl({
+      explicit: normalizeServerUrl(props.defaultUrl ?? ""),
+      stored,
+      configured,
+      hostname: location.hostname,
+      origin: window.location.origin,
+      hostedDomain: URLS.host,
+      dev: import.meta.env.DEV,
+    })
   }
 
   return (

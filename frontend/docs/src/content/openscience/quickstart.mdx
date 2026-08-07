@@ -13,6 +13,8 @@ Five minutes from zero to a running research session. No account required.
     ```
 
     Or without a global install, `npx synsci` runs the same workbench in one step. The install script (`curl -fsSL https://openscience.sh/install | bash`) drops a standalone `openscience` binary into `~/.openscience/bin`, and platform binaries are attached to every [GitHub release](https://github.com/synthetic-sciences/openscience/releases).
+
+    Linux requires kernel 5.1 or newer. Glibc builds require glibc 2.17 or newer, and musl builds are selected separately. CentOS 7's stock 3.10 kernel is not supported; use a newer host kernel or VM.
   </Step>
   <Step title="Set a provider key">
     ```bash
@@ -26,7 +28,7 @@ Five minutes from zero to a running research session. No account required.
     openscience
     ```
 
-    The command starts a local server and opens the browser workspace: file tree, editor, terminal, and session history, with inline rendering for molecules, structures, genomes, and plots. See [Workspace](/openscience/workspace).
+    The command starts a local server and opens the browser workspace: file tree, editor, and session history, with inline rendering for molecules, structures, genomes, and plots. See [Workspace](/openscience/workspace).
   </Step>
   <Step title="Give it a goal">
     Ask for the outcome, not the steps. The default `research` agent plans, reads, codes, runs, and reports:
@@ -36,7 +38,7 @@ Five minutes from zero to a running research session. No account required.
     and tell me whether it holds at 125M parameters.
     ```
 
-    Prefer the terminal? One-shot runs work without the browser:
+    Prefer your system terminal? One-shot runs work without the browser:
 
     ```bash
     openscience run "Profile train.py and find the input-pipeline bottleneck"

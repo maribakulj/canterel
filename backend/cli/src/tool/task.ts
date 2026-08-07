@@ -12,8 +12,16 @@ import { defer } from "@/util/defer"
 import { Config } from "../config/config"
 import { PermissionNext } from "@/permission/next"
 import { RLMState } from "../session/rlm/state"
+import { HierarchicalSemaphore } from "../util/semaphore"
 
 const ARTIFACT_AGENTS = ["research", "biology", "ml"]
+const COMPUTE_SUBAGENTS = new Set(["biology", "ml", "physics"])
+export const MAX_CHILD_AGENTS = 2
+const childSlots = new HierarchicalSemaphore(MAX_CHILD_AGENTS)
+const configuredComputeCap = Number(process.env.OPENSCIENCE_MAX_COMPUTE_SUBAGENTS)
+const MAX_COMPUTE_SUBAGENTS =
+  Number.isFinite(configuredComputeCap) && configuredComputeCap >= 1 ? Math.floor(configuredComputeCap) : 2
+const computeSlots = new HierarchicalSemaphore(MAX_COMPUTE_SUBAGENTS)
 
 const parameters = z.object({
   description: z.string().describe("A short (3-5 words) description of the task"),
@@ -43,6 +51,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
     parameters,
     async execute(params: z.infer<typeof parameters>, ctx) {
       const config = await Config.get()
+      const started = Date.now()
 
       // Skip permission check when user explicitly invoked via @ or command subtask
       if (!ctx.extra?.bypassAgentCheck) {
@@ -64,7 +73,9 @@ export const TaskTool = Tool.define("task", async (ctx) => {
 
       const session = await iife(async () => {
         if (params.session_id) {
-          const found = await Session.get(params.session_id).catch(() => {})
+          const found = await Session.get(params.session_id).catch((error) => {
+            if (Session.DirectoryMismatchError.isInstance(error)) throw error
+          })
           if (found) return found
         }
 
@@ -99,6 +110,21 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           ],
         })
       })
+
+      // Child work is exceptional and bounded. The hierarchical lease prevents
+      // nested agents from bypassing the global ceiling or deadlocking while
+      // their parent waits for them.
+      const releaseChildSlot = await childSlots.acquire(session.id, { parent: ctx.sessionID, signal: ctx.abort })
+      using _childSlot = defer(() => releaseChildSlot())
+
+      // A nested compute agent takes over its waiting parent's permit. Parallel
+      // nested siblings serialize on that lease, so nesting cannot bypass the
+      // global cap and a full pool cannot deadlock on permits held by parents.
+      const releaseComputeSlot = COMPUTE_SUBAGENTS.has(agent.name)
+        ? await computeSlots.acquire(session.id, { parent: ctx.sessionID, signal: ctx.abort })
+        : undefined
+      using _computeSlot = defer(() => releaseComputeSlot?.())
+
       const msg = await MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID })
       if (msg.info.role !== "assistant") throw new Error("Not an assistant message")
 
@@ -113,6 +139,8 @@ export const TaskTool = Tool.define("task", async (ctx) => {
         metadata: {
           sessionId: session.id,
           model,
+          startedAt: started,
+          maxConcurrentChildren: MAX_CHILD_AGENTS,
         },
       })
 
@@ -137,6 +165,9 @@ export const TaskTool = Tool.define("task", async (ctx) => {
             summary: Object.values(parts).sort((a, b) => a.id.localeCompare(b.id)),
             sessionId: session.id,
             model,
+            startedAt: started,
+            elapsedMs: Date.now() - started,
+            maxConcurrentChildren: MAX_CHILD_AGENTS,
           },
         })
       })
@@ -170,7 +201,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
       const messages = await Session.messages({ sessionID: session.id })
       const summary = messages
         .filter((x) => x.info.role === "assistant")
-        .flatMap((msg) => msg.parts.filter((x: any) => x.type === "tool") as MessageV2.ToolPart[])
+        .flatMap((msg) => msg.parts.filter((part): part is MessageV2.ToolPart => part.type === "tool"))
         .map((part) => ({
           id: part.id,
           tool: part.tool,
@@ -179,15 +210,36 @@ export const TaskTool = Tool.define("task", async (ctx) => {
             title: part.state.status === "completed" ? part.state.title : undefined,
           },
         }))
+      const usage = messages.reduce(
+        (total, message) => {
+          if (message.info.role !== "assistant") return total
+          total.cost += message.info.cost
+          total.tokens.input += message.info.tokens.input
+          total.tokens.output += message.info.tokens.output
+          total.tokens.cache.read += message.info.tokens.cache.read
+          total.tokens.cache.write += message.info.tokens.cache.write
+          return total
+        },
+        {
+          cost: 0,
+          tokens: {
+            input: 0,
+            output: 0,
+            cache: { read: 0, write: 0 },
+          },
+        },
+      )
       const text = result.parts.findLast((x) => x.type === "text")?.text ?? ""
 
       const callingAgent = msg.info.agent
       const useStructuredOutput = callingAgent && ARTIFACT_AGENTS.includes(callingAgent)
 
-      let output: string
-      if (useStructuredOutput) {
+      const output = (() => {
+        if (!useStructuredOutput) {
+          return text + "\n\n" + ["<task_metadata>", `session_id: ${session.id}`, "</task_metadata>"].join("\n")
+        }
         const compressed = RLMState.parseExecutorOutput(text)
-        output = [
+        return [
           "<task_result>",
           `<status>${compressed.status}</status>`,
           `<findings>${JSON.stringify(compressed.findings)}</findings>`,
@@ -202,9 +254,7 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           `session_id: ${session.id}`,
           "</task_metadata>",
         ].join("\n")
-      } else {
-        output = text + "\n\n" + ["<task_metadata>", `session_id: ${session.id}`, "</task_metadata>"].join("\n")
-      }
+      })()
 
       return {
         title: params.description,
@@ -212,6 +262,11 @@ export const TaskTool = Tool.define("task", async (ctx) => {
           summary,
           sessionId: session.id,
           model,
+          durationMs: Date.now() - started,
+          toolCalls: summary.length,
+          failedToolCalls: summary.filter((part) => part.state.status === "error").length,
+          usage,
+          maxConcurrentChildren: MAX_CHILD_AGENTS,
         },
         output,
       }

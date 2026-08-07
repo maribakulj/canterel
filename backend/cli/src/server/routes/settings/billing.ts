@@ -3,13 +3,14 @@ import { describeRoute, resolver, validator } from "hono-openapi"
 import z from "zod"
 import { Config } from "../../../config/config"
 import { OpenScience } from "../../../openscience"
+import { Provider } from "../../../provider/provider"
 import { lazy } from "../../../util/lazy"
 import { Log } from "../../../util/log"
 
 const log = Log.create({ service: "settings-billing" })
 
 // The two independent spend toggles (Settings → Spend), backed by the strict
-// config (`billing.llm` / `billing.compute`). "managed" runs on the Atlas wallet;
+// config (`billing.llm` / `billing.compute`). "managed" runs on Credits;
 // "byok" runs on the user's own keys/OAuth and is never billed. LLM is nullable
 // (unset = auto-detect from the resolved credential); compute defaults to byok.
 export const BillingState = z.object({
@@ -17,7 +18,7 @@ export const BillingState = z.object({
   compute: z.enum(["managed", "byok"]),
   wallet: z.object({
     signedIn: z.boolean().describe("Whether an Atlas session (thk_ key) is available"),
-    balanceUsd: z.number().describe("CLI wallet balance in USD; -1 when signed out or unavailable"),
+    balanceUsd: z.number().describe("Credit balance in USD; -1 when signed out or unavailable"),
   }),
 })
 export type BillingState = z.infer<typeof BillingState>
@@ -74,6 +75,12 @@ export const BillingSettingsRoutes = lazy(() =>
         // Persist only the delta. updateGlobal deep-merges into the raw file;
         // writing back Config.getGlobal() would bake resolved {env:}/{file:}
         // secrets into openscience.json in plaintext.
+        // Config.updateGlobal awaits its own per-directory config-cache
+        // invalidation (Instance.disposeAll()) AND drops the memoized provider
+        // map before announcing the disposal, so both the new billing.llm and
+        // a provider map rebuilt under it are visible to the next reader by
+        // the time this line completes — no separate disposeAll() or
+        // Provider.invalidate() needed here (see disposeGlobalInstances).
         await Config.updateGlobal({ billing: patch })
         log.info("update", { keys: Object.keys(patch) })
 
@@ -89,6 +96,18 @@ export const BillingSettingsRoutes = lazy(() =>
           await OpenScience.syncServices().catch((e) =>
             log.warn("resync after billing change failed", { error: e instanceof Error ? e.message : String(e) }),
           )
+          // syncServices() (openscience/index.ts) writes fresh credentials
+          // into process.env (e.g. OPENROUTER_API_KEY / OPENROUTER_BASE_URL)
+          // - invalidate() exists specifically to pick up env a background
+          // sync just wrote, so it must run again AFTER this, not just
+          // before. Without this second call, a Provider.list() that lands
+          // between the two calls above and this point (e.g. the frontend's
+          // global.disposed listener re-fetching providers while this
+          // request is still awaiting the Atlas round-trip) rebuilds and
+          // re-memoizes the cache from the PRE-sync env, and the synced
+          // credential is invisible until another auth.set, another billing
+          // PUT, or a restart.
+          Provider.invalidate()
         }
         return c.json(await readState())
       },

@@ -7,12 +7,12 @@ import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "./global-sync"
 import { useParams } from "@solidjs/router"
 import { base64Encode } from "@synsci/util/encode"
-import { decode64 } from "@/utils/base64"
+import { projectScope, resolveProjectRoute } from "@/utils/project-route"
 
 type PermissionRespondFn = (input: {
   sessionID: string
   permissionID: string
-  response: "once" | "always" | "reject"
+  response: "once" | "session" | "project" | "always" | "reject"
   directory?: string
 }) => void
 
@@ -54,9 +54,9 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
     const globalSync = useGlobalSync()
 
     const permissionsEnabled = createMemo(() => {
-      const directory = decode64(params.dir)
-      if (!directory) return false
-      const [store] = globalSync.child(directory)
+      const route = resolveProjectRoute(params.dir, globalSync.data.project)
+      if (!route) return false
+      const [store] = globalSync.child(route.directory, { projectID: route.projectID })
       return hasAutoAcceptPermissionConfig(store.config.permission)
     })
 
@@ -106,12 +106,13 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
 
     function acceptKey(sessionID: string, directory?: string) {
       if (!directory) return sessionID
-      return `${base64Encode(directory)}/${sessionID}`
+      return `${projectScope(globalSync.data.project, directory)}/${sessionID}`
     }
 
     function isAutoAccepting(sessionID: string, directory?: string) {
       const key = acceptKey(sessionID, directory)
-      return store.autoAcceptEdits[key] ?? store.autoAcceptEdits[sessionID] ?? false
+      const legacy = directory ? `${base64Encode(directory)}/${sessionID}` : undefined
+      return store.autoAcceptEdits[key] ?? (legacy ? store.autoAcceptEdits[legacy] : undefined) ?? false
     }
 
     const unsubscribe = globalSDK.event.listen((e) => {

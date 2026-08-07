@@ -3,6 +3,9 @@ import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
 import type { Config } from "../../src/config/config"
+import { Instance } from "../../src/project/instance"
+import { ProjectTrust } from "../../src/project/trust"
+import { Session } from "../../src/session"
 
 // Strip null bytes from paths (defensive fix for CI environment issues)
 function sanitizePath(p: string): string {
@@ -36,10 +39,24 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
   const result = {
     [Symbol.asyncDispose]: async () => {
       await options?.dispose?.(dirpath)
-      // await fs.rm(dirpath, { recursive: true, force: true })
+      await fs.rm(dirpath, { recursive: true, force: true })
     },
     path: realpath,
     extra: extra as T,
   }
   return result
+}
+
+export async function trustProject() {
+  const status = await ProjectTrust.status(Instance.project)
+  if (status.canExecuteProjectCode) return status
+  return ProjectTrust.update(Instance.project, {
+    trusted: true,
+    root: status.root,
+  })
+}
+
+export async function executionSession() {
+  await trustProject()
+  return Session.create({})
 }

@@ -68,7 +68,8 @@ const Sandbox: Component = () => {
   const [testing, setTesting] = createSignal(false)
   const [newPath, setNewPath] = createSignal("")
 
-  const config = () => data()?.config ?? {}
+  const config = (): SandboxConfig =>
+    data()?.config ?? { enabled: true, network: "deny", allowWrite: [], onUnavailable: "error" }
   const status = () => data()?.status
 
   const patch = async (body: SandboxConfig, failure: string) => {
@@ -109,18 +110,18 @@ const Sandbox: Component = () => {
 
   return (
     <div class="flex flex-col h-full overflow-y-auto no-scrollbar">
-      <div class="sticky top-0 z-10 bg-[linear-gradient(to_bottom,var(--surface-raised-stronger-non-alpha)_calc(100%_-_24px),transparent)]">
-        <div class="flex flex-col gap-1 px-4 py-8 sm:p-8 max-w-[820px]">
+      <div class="settings-page-header">
+        <div class="settings-page-header__inner">
           <h2 class="text-16-medium text-text-strong">Execution sandbox</h2>
           <p class="text-13-regular text-text-weak">
             Permissions decide <em>whether</em> the agent runs a shell command — not what it can reach once it does.
-            Turn this on to confine the agent's commands inside an OS sandbox: writes are limited to the workspace, and
-            network egress can be denied.
+            OpenScience confines local terminals, kernels, and shell commands by default: writes are limited to
+            authorized project roots and network egress is denied unless you explicitly relax the machine-wide policy.
           </p>
         </div>
       </div>
 
-      <div class="flex flex-col gap-8 px-4 pb-12 sm:px-8 max-w-[820px]">
+      <div class="settings-page-body">
         {/* ── Backend availability ── */}
         <Show when={status()}>
           {(s) => (
@@ -154,13 +155,13 @@ const Sandbox: Component = () => {
             <div class="flex flex-col gap-0.5 min-w-0 pr-4">
               <span class="text-14-medium text-text-strong">Sandbox agent commands</span>
               <span class="text-12-regular text-text-weak">
-                {config().enabled
+                {config().enabled !== false
                   ? "On — commands run confined to the workspace."
                   : "Off — commands run with your full user authority."}
               </span>
             </div>
             <Switch
-              checked={config().enabled === true}
+              checked={config().enabled !== false}
               disabled={busy()}
               onChange={(checked) => patch({ enabled: checked }, "Couldn't update the sandbox setting")}
             />
@@ -168,7 +169,7 @@ const Sandbox: Component = () => {
         </section>
 
         {/* ── Options (only when enabled) ── */}
-        <Show when={config().enabled}>
+        <Show when={config().enabled !== false}>
           <section class="flex flex-col gap-4">
             <h3 class="text-13-medium text-text-strong">Policy</h3>
 
@@ -182,7 +183,7 @@ const Sandbox: Component = () => {
                 </div>
                 <Select
                   options={NETWORK_OPTS}
-                  current={NETWORK_OPTS.find((o) => o.value === (config().network ?? "allow"))}
+                  current={NETWORK_OPTS.find((o) => o.value === (config().network ?? "deny"))}
                   value={(o) => o.value}
                   label={(o) => o.label}
                   onSelect={(o) => o && patch({ network: o.value }, "Couldn't update network policy")}
@@ -201,7 +202,7 @@ const Sandbox: Component = () => {
                 </div>
                 <Select
                   options={UNAVAILABLE_OPTS}
-                  current={UNAVAILABLE_OPTS.find((o) => o.value === (config().onUnavailable ?? "warn"))}
+                  current={UNAVAILABLE_OPTS.find((o) => o.value === (config().onUnavailable ?? "error"))}
                   value={(o) => o.value}
                   label={(o) => o.label}
                   onSelect={(o) => o && patch({ onUnavailable: o.value }, "Couldn't update fallback behavior")}
@@ -237,7 +238,7 @@ const Sandbox: Component = () => {
                   onKeyDown={(e) => e.key === "Enter" && addPath()}
                 />
                 <Button size="small" variant="secondary" disabled={busy() || !newPath().trim()} onClick={addPath}>
-                  add
+                  Add
                 </Button>
               </div>
             </div>
@@ -252,7 +253,7 @@ const Sandbox: Component = () => {
                   </span>
                 </div>
                 <Button size="small" variant="secondary" disabled={testing() || !status()?.available} onClick={runTest}>
-                  {testing() ? "testing…" : "run self-test"}
+                  {testing() ? "Testing…" : "Run self-test"}
                 </Button>
               </div>
               <Show when={test()}>
@@ -276,7 +277,7 @@ const Sandbox: Component = () => {
                       class="text-12-medium pt-1"
                       classList={{ "text-text-success": t().ok, "text-text-danger": !t().ok }}
                     >
-                      {t().ok ? "Containment verified." : "Containment FAILED — do not rely on the sandbox."}
+                      {t().ok ? "Containment verified." : "Containment failed — do not rely on the sandbox."}
                     </span>
                   </div>
                 )}

@@ -4,7 +4,7 @@ description: "Run OpenScience against a local LLM — Ollama, LM Studio, llama.c
 icon: "server"
 ---
 
-OpenScience talks to any **OpenAI-compatible** endpoint running on your machine. That covers [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), [llama.cpp](https://github.com/ggml-org/llama.cpp)'s server, [vLLM](https://github.com/vllm-project/vllm), [Jan](https://jan.ai), and anything else that speaks the OpenAI `/v1` API. Local models run entirely on your hardware — they are **free, offline, and never metered against an Atlas wallet**.
+OpenScience talks to any **OpenAI-compatible** endpoint running on your machine. That covers [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), [llama.cpp](https://github.com/ggml-org/llama.cpp)'s server, [vLLM](https://github.com/vllm-project/vllm), [Jan](https://jan.ai), and anything else that speaks the OpenAI `/v1` API. Local models run entirely on your hardware and are **free, offline, and never metered against Credits**.
 
 ## Quick start (Ollama)
 
@@ -58,13 +58,13 @@ openscience local add --url http://localhost:1234/v1 --id lmstudio --model qwen2
 
 ## From the workspace GUI
 
-Open **Settings → Local models**. You get three ways in, no terminal required:
+Open **Settings → Local models**. You can start a detected runtime, copy commands for your system terminal, or connect an endpoint:
 
 - **Run a model locally** — for a detected runtime (Ollama, LM Studio), click **start** and OpenScience launches the server for you (`ollama serve`), waits for it, and adds its models. If the runtime isn't installed, the button links to its installer.
-- **Pull a model** — type a model name and hit **pull in terminal**; OpenScience opens the workspace terminal running `ollama pull <name>` so you can watch the download.
+- **Pull a model** — type a model name and click **Copy command**. Paste and run `ollama pull <name>` in your system terminal; OpenScience copies the command but does not execute it.
 - **Custom endpoint** — paste any `http://host:port/v1`, list its models, and pick which to add.
 
-Prefer to drive it from the **terminal on the right**? The panel's shortcuts open a terminal tab running the command; or just run `ollama serve` / `ollama pull <model>` there yourself — OpenScience detects the running server automatically.
+The workspace does not provide a Terminal tab. To run `ollama serve` or `ollama pull <model>` yourself, copy the command from the Local models panel and paste it into your system terminal. When the command finishes, return to the panel and click **rescan**; OpenScience detects the running server automatically.
 
 ## By hand (config)
 
@@ -91,6 +91,6 @@ A local endpoint is just a provider block in `openscience.json`. `openscience lo
 
 ## Notes
 
-- **Billing:** local providers are always classified as your-own (BYOK) — never wallet-gated, never billed. They stay available even if your Atlas LLM spend is set to *managed* (the wallet still routes only through OpenRouter).
+- **Billing:** local providers are always classified as your-own (BYOK) — never wallet-gated, never billed. They stay available even if your Atlas LLM spend is set to *managed* (the wallet routes through the curated OpenRouter catalog and the direct Meta/Muse proxy, never through local endpoints).
 - **Tools & reasoning:** models are registered with `tool_call: true` by default. If a local model doesn't support tool calling, set `"tool_call": false` on that model in config.
 - **New models:** after `ollama pull <model>`, re-run `openscience local add` to register it, or add it under `models` in config.

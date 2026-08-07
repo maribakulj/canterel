@@ -838,6 +838,155 @@ describe("session.message-v2.toModelMessage", () => {
       },
     ])
   })
+
+  test("forwards one complete OpenRouter reasoning signature across tool turns", () => {
+    const assistantID = "m-openrouter"
+    const metadata = {
+      openrouter: {
+        reasoning_details: [
+          {
+            type: "reasoning.text",
+            text: "Read both files.",
+            format: "anthropic-claude-v1",
+            index: 0,
+            signature: "signed-thinking-block",
+          },
+        ],
+      },
+    }
+    const openrouter = {
+      ...model,
+      id: "anthropic/claude-sonnet-4.6",
+      providerID: "openrouter",
+      api: { ...model.api, id: "anthropic/claude-sonnet-4.6" },
+    }
+    const input: MessageV2.WithParts[] = [
+      {
+        info: assistantInfo(assistantID, "m-user", undefined, {
+          providerID: openrouter.providerID,
+          modelID: openrouter.id,
+        }),
+        parts: [
+          {
+            ...basePart(assistantID, "reasoning"),
+            type: "reasoning",
+            text: "Read both files.",
+            metadata: {
+              openrouter: {
+                reasoning_details: [
+                  {
+                    type: "reasoning.text",
+                    text: "Read both files.",
+                    format: "anthropic-claude-v1",
+                    index: 0,
+                  },
+                ],
+              },
+            },
+            time: { start: 0, end: 1 },
+          },
+          {
+            ...basePart(assistantID, "read-a"),
+            type: "tool",
+            callID: "call-a",
+            tool: "read",
+            state: {
+              status: "completed",
+              input: { filePath: "a.md" },
+              output: "a",
+              title: "a.md",
+              metadata: {},
+              time: { start: 1, end: 2 },
+            },
+            metadata,
+          },
+          {
+            ...basePart(assistantID, "read-b"),
+            type: "tool",
+            callID: "call-b",
+            tool: "read",
+            state: {
+              status: "completed",
+              input: { filePath: "b.csv" },
+              output: "b",
+              title: "b.csv",
+              metadata: {},
+              time: { start: 1, end: 2 },
+            },
+            metadata,
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = MessageV2.toModelMessages(input, openrouter)
+    const assistant = result.find((message) => message.role === "assistant")
+    const options =
+      assistant && Array.isArray(assistant.content)
+        ? assistant.content.flatMap((part) =>
+            "providerOptions" in part && part.providerOptions ? [part.providerOptions] : [],
+          )
+        : []
+
+    expect(options).toStrictEqual([metadata])
+    expect(JSON.stringify(result)).not.toContain('"format":"anthropic-claude-v1","index":0}}')
+  })
+
+  test("does not replay an unsigned OpenRouter Anthropic reasoning detail", () => {
+    const assistantID = "m-openrouter-unsigned"
+    const openrouter = {
+      ...model,
+      id: "anthropic/claude-opus-4.8",
+      providerID: "openrouter",
+      api: { ...model.api, id: "anthropic/claude-opus-4.8" },
+    }
+    const input: MessageV2.WithParts[] = [
+      {
+        info: assistantInfo(assistantID, "m-user", undefined, {
+          providerID: openrouter.providerID,
+          modelID: openrouter.id,
+        }),
+        parts: [
+          {
+            ...basePart(assistantID, "reasoning"),
+            type: "reasoning",
+            text: "Answer concisely.",
+            metadata: {
+              openrouter: {
+                reasoning_details: [
+                  {
+                    type: "reasoning.text",
+                    text: "Answer concisely.",
+                    format: "anthropic-claude-v1",
+                    index: 0,
+                  },
+                ],
+              },
+            },
+            time: { start: 0, end: 1 },
+          },
+          {
+            ...basePart(assistantID, "answer"),
+            type: "text",
+            text: "The answer.",
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = MessageV2.toModelMessages(input, openrouter)
+    const assistant = result.find((message) => message.role === "assistant")
+    const options =
+      assistant && Array.isArray(assistant.content)
+        ? assistant.content.flatMap((part) =>
+            "providerOptions" in part && part.providerOptions ? [part.providerOptions] : [],
+          )
+        : []
+
+    expect(options).toEqual([])
+    expect(JSON.stringify(result)).not.toContain("reasoning_details")
+    expect(JSON.stringify(result)).toContain("Answer concisely.")
+  })
 })
 
 describe("session.message-v2.filterCompacted — verbatim tail (P3.2)", () => {

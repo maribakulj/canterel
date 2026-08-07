@@ -9,7 +9,6 @@ import { lazy } from "@/util/lazy"
 import { Language } from "web-tree-sitter"
 
 import { $ } from "bun"
-import { Filesystem } from "@/util/filesystem"
 import { fileURLToPath } from "url"
 import { Flag } from "@/flag/flag.ts"
 import { Shell } from "@/shell/shell"
@@ -18,12 +17,90 @@ import { BashArity } from "@/permission/arity"
 import { Truncate } from "./truncation"
 import { OpenScience } from "@/openscience"
 import { Sandbox } from "@/sandbox/sandbox"
-import { Config } from "@/config/config"
+import { SessionFilesystem } from "@/session/filesystem"
+import { Filesystem } from "@/util/filesystem"
+import { Provenance } from "@/science/provenance/store"
+import { ProvenanceEnvelope } from "@/science/provenance/envelope"
+import { ExecutionAuthority } from "@/project/execution"
 
 const MAX_METADATA_LENGTH = 30_000
 const DEFAULT_TIMEOUT = Flag.OPENSCIENCE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 0
 
 export const log = Log.create({ service: "bash-tool" })
+
+const clip = (value: string, max = 2000) => (value.length > max ? `${value.slice(0, max)}\n\n... (truncated)` : value)
+
+/** Record a provenance run node for a completed shell command (mirrors the
+ *  kernel registry's provenance helper, but for the shell). Command and
+ *  captured streams are redacted before recording. */
+async function provenance(input: {
+  sessionID: string
+  messageID: string
+  callID?: string
+  command: string
+  cwd: string
+  exit: number | null
+  stdout: string
+  stderr: string
+  startedAt: number
+  completedAt: number
+}) {
+  const command = OpenScience.redactSecrets(input.command)
+  const stdout = clip(OpenScience.redactSecrets(input.stdout))
+  const stderr = clip(OpenScience.redactSecrets(input.stderr))
+  const ok = input.exit === 0
+  const envelope = ProvenanceEnvelope.create({
+    kind: "local_compute",
+    projectID: Instance.project.id,
+    sessionID: input.sessionID,
+    runID: `run-${crypto.randomUUID()}`,
+    code: command,
+    cwd: input.cwd,
+    host: {
+      platform: process.platform,
+      arch: process.arch,
+      runtimes: {
+        bun: Bun.version,
+        node: process.version,
+      },
+    },
+    status: ok ? "succeeded" : "failed",
+    outputs: [
+      ProvenanceEnvelope.output({
+        kind: "stream",
+        label: "shell output",
+        content: JSON.stringify({ stdout, stderr }),
+        createdAt: input.completedAt,
+      }),
+    ],
+    createdAt: input.startedAt,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+  })
+  return Provenance.recordOwned(
+    {
+      projectID: Instance.project.id,
+      directory: Instance.directory,
+    },
+    {
+      kind: "run",
+      label: command.slice(0, 140),
+      tool: "bash",
+      sessionID: input.sessionID,
+      inputs: { command },
+      status: ok ? "ok" : "error",
+      provenance: envelope,
+      meta: {
+        messageID: input.messageID,
+        callID: input.callID,
+        exit: input.exit,
+        cwd: input.cwd,
+        stdout,
+        stderr,
+      },
+    } as Parameters<typeof Provenance.record>[0],
+  )
+}
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -67,9 +144,7 @@ export const BashTool = Tool.define("bash", async () => {
       timeout: z.number().describe("Optional timeout in milliseconds").optional(),
       workdir: z
         .string()
-        .describe(
-          `The working directory to run the command in. Defaults to ${Instance.directory}. Use this instead of 'cd' commands.`,
-        )
+        .describe("The working directory to run the command in. Defaults to the session workspace.")
         .optional(),
       description: z
         .string()
@@ -78,13 +153,17 @@ export const BashTool = Tool.define("bash", async () => {
         ),
     }),
     async execute(params, ctx) {
-      const cwd = params.workdir || Instance.directory
-      try {
-        const { existsSync, mkdirSync } = await import("fs")
-        if (!existsSync(cwd)) {
-          mkdirSync(cwd, { recursive: true })
-        }
-      } catch {}
+      const authority = await ExecutionAuthority.require({
+        projectID: Instance.project.id,
+        sessionID: ctx.sessionID,
+        capability: "shell",
+      })
+      const writable = authority.writable
+      const workspace = authority.workspace
+      const requested = params.workdir || workspace
+      const target = path.isAbsolute(requested) ? requested : path.resolve(workspace, requested)
+      const cwd = (await Filesystem.canonical(target)) ?? path.resolve(target)
+      const contained = (value: string) => writable.some((root) => Filesystem.contains(root, value))
       if (params.timeout !== undefined && params.timeout < 0) {
         throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
       }
@@ -93,14 +172,14 @@ export const BashTool = Tool.define("bash", async () => {
       if (!tree) {
         throw new Error("Failed to parse command")
       }
-      const directories = new Set<string>()
-      if (!Instance.containsPath(cwd)) directories.add(cwd)
+      const directories = new Map<string, SessionFilesystem.Access>()
+      if (!contained(cwd)) directories.set(cwd, "write")
       const patterns = new Set<string>()
       const always = new Set<string>()
 
       for (const node of tree.rootNode.descendantsOfType("command")) {
         if (!node) continue
-        const command = []
+        const command: string[] = []
         for (let i = 0; i < node.childCount; i++) {
           const child = node.child(i)
           if (!child) continue
@@ -118,8 +197,10 @@ export const BashTool = Tool.define("bash", async () => {
 
         // not an exhaustive list, but covers most common cases
         if (["cd", "rm", "cp", "mv", "mkdir", "touch", "chmod", "chown", "cat"].includes(command[0])) {
-          for (const arg of command.slice(1)) {
-            if (arg.startsWith("-") || (command[0] === "chmod" && arg.startsWith("+"))) continue
+          const operands = command
+            .slice(1)
+            .filter((arg) => !arg.startsWith("-") && !(command[0] === "chmod" && arg.startsWith("+")))
+          for (const [index, arg] of operands.entries()) {
             const resolved = await $`realpath ${arg}`
               .cwd(cwd)
               .quiet()
@@ -133,7 +214,14 @@ export const BashTool = Tool.define("bash", async () => {
                 process.platform === "win32" && resolved.match(/^\/[a-z]\//)
                   ? resolved.replace(/^\/([a-z])\//, (_, drive) => `${drive.toUpperCase()}:\\`).replace(/\//g, "\\")
                   : resolved
-              if (!Instance.containsPath(normalized)) directories.add(normalized)
+              if (!contained(normalized)) {
+                const access =
+                  command[0] === "cd" || command[0] === "cat" || (command[0] === "cp" && index < operands.length - 1)
+                    ? "read"
+                    : "write"
+                const current = directories.get(normalized)
+                if (!current || access === "write") directories.set(normalized, access)
+              }
             }
           }
         }
@@ -145,14 +233,35 @@ export const BashTool = Tool.define("bash", async () => {
         }
       }
 
-      if (directories.size > 0) {
+      for (const [directory, access] of directories) {
+        if (access === "write") {
+          throw new Error(
+            `External paths are read-only to shell commands: ${directory}. Use the write, edit, or apply_patch tool for brokered mutation.`,
+          )
+        }
+        const parent = path.dirname(directory)
+        const glob = path.join(parent, "*")
         await ctx.ask({
           permission: "external_directory",
-          patterns: Array.from(directories),
-          always: Array.from(directories).map((x) => path.dirname(x) + "*"),
-          metadata: {},
+          patterns: [glob],
+          always: [glob],
+          metadata: {
+            filepath: directory,
+            parentDir: parent,
+            filesystem: {
+              path: parent,
+              access,
+            },
+          },
+        })
+        await SessionFilesystem.authorize({
+          sessionID: ctx.sessionID,
+          path: directory,
+          access,
         })
       }
+      const { existsSync, mkdirSync } = await import("fs")
+      if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
 
       if (patterns.size > 0) {
         await ctx.ask({
@@ -168,18 +277,19 @@ export const BashTool = Tool.define("bash", async () => {
       await OpenScience.refreshByokSecrets(process.env).catch(() => {})
 
       const env = await OpenScience.subprocessEnv(process.env)
-
-      // Wrap the command in an OS sandbox when configured. The permission checks
-      // above decide *whether* to run; this decides *with what authority*. When
-      // sandbox is off (default) `plan` returns the raw command unchanged.
+      // Wrap the command in the authority's effective OS-sandbox policy. The
+      // permission checks above decide *whether* to run; this decides *with what
+      // authority*. An explicit trusted machine-level opt-out returns the raw
+      // command unchanged.
       const sandbox = Sandbox.plan({
         command: params.command,
         shell,
         cwd,
-        workspace: [Instance.directory, Instance.worktree],
-        options: await Config.trustedSandbox(),
+        workspace: writable,
+        options: authority.sandbox,
       })
 
+      const started = Date.now()
       const proc = sandbox.sandboxed
         ? spawn(sandbox.file, sandbox.args ?? [], {
             cwd,
@@ -225,14 +335,20 @@ export const BashTool = Tool.define("bash", async () => {
         })
       }
 
-      proc.stdout?.on("data", append)
-      proc.stderr?.on("data", append)
+      const streams = { stdout: "", stderr: "" }
+      const capture = (channel: keyof typeof streams) => (chunk: Buffer) => {
+        streams[channel] += chunk.toString()
+        append(chunk)
+      }
+
+      proc.stdout?.on("data", capture("stdout"))
+      proc.stderr?.on("data", capture("stderr"))
 
       let timedOut = false
       let aborted = false
       let exited = false
 
-      const kill = () => Shell.killTree(proc, { exited: () => exited })
+      const kill = () => Shell.killTree(proc, { exited: () => exited, detached: process.platform !== "win32" })
 
       if (ctx.abort.aborted) {
         aborted = true
@@ -273,6 +389,24 @@ export const BashTool = Tool.define("bash", async () => {
         })
       })
 
+      const completed = Date.now()
+
+      // The command spawned and ran to completion (or was killed) — record a
+      // provenance run node so "what ran" is capturable for shell-produced
+      // artifacts. Recording must never break the tool.
+      const node = await provenance({
+        sessionID: ctx.sessionID,
+        messageID: ctx.messageID,
+        callID: ctx.callID,
+        command: params.command,
+        cwd,
+        exit: proc.exitCode,
+        stdout: streams.stdout,
+        stderr: streams.stderr,
+        startedAt: started,
+        completedAt: completed,
+      }).catch(() => undefined)
+
       const resultMetadata: string[] = []
 
       if (sandbox.warning) {
@@ -292,15 +426,24 @@ export const BashTool = Tool.define("bash", async () => {
       }
 
       const redactedOutput = redact(output)
+      const clipped =
+        redactedOutput.length > MAX_METADATA_LENGTH
+          ? redactedOutput.slice(0, MAX_METADATA_LENGTH) + "\n\n..."
+          : redactedOutput
+      ctx.metadata({
+        metadata: {
+          output: clipped,
+          description: params.description,
+          provenanceID: node?.id,
+        },
+      })
       return {
         title: params.description,
         metadata: {
-          output:
-            redactedOutput.length > MAX_METADATA_LENGTH
-              ? redactedOutput.slice(0, MAX_METADATA_LENGTH) + "\n\n..."
-              : redactedOutput,
+          output: clipped,
           exit: proc.exitCode,
           description: params.description,
+          provenanceID: node?.id,
         },
         output: redactedOutput,
       }

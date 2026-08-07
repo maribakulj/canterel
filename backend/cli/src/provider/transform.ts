@@ -290,7 +290,16 @@ export namespace ProviderTransform {
           if (part.type === "file") return fileToText(part)
           return part
         }
-        if (model.capabilities.input[modality]) return part
+        // #192: fine-grained input.image/input.pdf can be missing/wrong in the
+        // catalog (e.g. the synthetic OpenRouter model) even though the model
+        // is flagged attachment-capable. Fall back to the coarse `attachment`
+        // capability for image/pdf only — audio/video stay gated on their own
+        // modality flag.
+        if (
+          model.capabilities.input[modality] ||
+          (model.capabilities.attachment && (modality === "image" || modality === "pdf"))
+        )
+          return part
 
         const name = filename ? `"${filename}"` : modality
         return {
@@ -425,6 +434,15 @@ export namespace ProviderTransform {
 
   const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
 
+  function catalogEfforts(model: Provider.Model) {
+    const options = model.reasoningOptions
+    if (!options) return undefined
+    const effort = options.find((option) => option.type === "effort")
+    if (!effort) return undefined
+    const values = Array.isArray(effort.values) ? effort.values : []
+    return values.filter((value): value is string => typeof value === "string")
+  }
+
   // The reasoning-effort ladder OpenAI actually accepts, per model — verified
   // against developers.openai.com model pages + the API changelog (July 2026):
   //   o-series          low/medium/high
@@ -432,6 +450,7 @@ export namespace ProviderTransform {
   //   gpt-5.1 (2025-11-13) none/low/medium/high         (none replaces minimal)
   //   gpt-5.2 (2025-12-11) none/low/medium/high/xhigh
   //   gpt-5.5 (2026-04) none/low/medium/high/xhigh
+  //   gpt-5.6 (2026-07) none/low/medium/high/xhigh/max
   //   *-codex           low/medium/high (+xhigh on 5.2-codex); never none/minimal
   //   gpt-5-pro         high only (fixed) → [] (no effort dial)
   //   gpt-5.2-pro       medium/high/xhigh
@@ -440,6 +459,10 @@ export namespace ProviderTransform {
   // of the same date (a pure date gate would misfire on those).
   function openaiEfforts(model: Provider.Model): string[] {
     const id = model.id.toLowerCase()
+    // OpenRouter publishes separate GPT-5.6 `-pro` routes, but their effort
+    // contract is still the full 5.6 ladder. Check 5.6 before the generic
+    // historical Pro handling below.
+    if (/gpt-5[.-]6\b/.test(id)) return ["none", ...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
     if (id.includes("gpt-5-pro")) return []
     if (id.includes("gpt-5") && id.includes("pro")) return ["medium", "high", "xhigh"]
     if (id.includes("codex"))
@@ -448,54 +471,96 @@ export namespace ProviderTransform {
     if (model.release_date >= "2025-11-13") arr.unshift("none")
     else if (id.includes("gpt-5")) arr.unshift("minimal")
     if (model.release_date >= "2025-12-11") arr.push("xhigh")
+    if (/gpt-5[.-]6(?:\b|[.-])/.test(id)) arr.push("max")
     return arr
+  }
+
+  // ChatGPT/Codex is not the public OpenAI API. Keep this exact model-by-model
+  // ladder in sync with the OAuth model catalog rather than deriving it from a
+  // release date or inheriting API-only `none`/`minimal` values.
+  function codexOAuthEfforts(id: string): string[] | undefined {
+    if (/^gpt-5[.-]6-(?:sol|terra)$/.test(id)) {
+      return [...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max", "ultra"]
+    }
+    if (/^gpt-5[.-]6-luna$/.test(id)) {
+      return [...WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
+    }
+    if (/^gpt-5[.-](?:5|4)(?:-mini)?$/.test(id)) {
+      return [...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+    }
+    return undefined
   }
 
   export function variants(model: Provider.Model): Record<string, Record<string, any>> {
     if (!model.capabilities.reasoning) return {}
 
     const id = model.id.toLowerCase()
+    const exact = catalogEfforts(model)
+    const budget = model.reasoningOptions?.some((option) => option.type === "budget_tokens") ?? false
+    if (model.reasoningOptions && exact === undefined && !budget) return {}
+
+    // The synthesized provider recomputes variants after changing provider id,
+    // so this transport-specific contract cannot inherit public-API options.
+    const codexEfforts = model.providerID === "openai-codex" ? codexOAuthEfforts(id) : undefined
+    if (codexEfforts) {
+      return Object.fromEntries(
+        codexEfforts.map((effort) => [
+          effort,
+          {
+            reasoningEffort: effort,
+            reasoningSummary: "auto",
+            include: ["reasoning.encrypted_content"],
+          },
+        ]),
+      )
+    }
 
     // Reasoning-effort coverage for families that previously had none. On
-    // OpenRouter the unified `reasoning.effort` works for ANY reasoning model (it
-    // normalizes effort to a token budget where the native API is on/off only), so
-    // these fall through to the OpenRouter case below. Natively: DeepSeek (v4) and
-    // GLM-5.2+ expose `reasoning_effort` through their OpenAI-compatible API
-    // (handled in the openai-compatible case); Kimi rejects `reasoning_effort`
-    // alongside its `thinking` param, and MiniMax/Mistral have no effort dial — so
-    // those get no *native* effort variants (they still get them on OpenRouter).
-    if (model.api.npm !== "@openrouter/ai-sdk-provider") {
-      if (id.includes("minimax") || id.includes("mistral") || id.includes("kimi")) return {}
+    // OpenRouter the unified `reasoning.effort` works for reasoning models; native
+    // OpenAI-compatible providers receive `reasoningEffort`. Kimi K3 is handled
+    // explicitly below because its low/high/max ladder differs from the common
+    // low/medium/high set. Older Kimi models reject `reasoning_effort` alongside
+    // `thinking`, and MiniMax/Mistral have no effort dial.
+    if (!exact && model.api.npm !== "@openrouter/ai-sdk-provider") {
+      if (id.includes("minimax") || id.includes("mistral")) return {}
+      if (id.includes("kimi") && !/kimi-k3\b/.test(id)) return {}
       if (id.includes("glm") && !/glm-[5-9]/.test(id)) return {}
       if (id.includes("deepseek") && !/deepseek-v[4-9]/.test(id)) return {}
     }
 
+    const efforts = (values: string[]) =>
+      Object.fromEntries(
+        values.map((effort) => [
+          effort,
+          model.api.npm === "@openrouter/ai-sdk-provider" ? { reasoning: { effort } } : { reasoningEffort: effort },
+        ]),
+      )
+
+    // https://www.kimi.com/help/kimi-api/api-model-selection
+    if (/kimi-k3\b/.test(id)) return efforts(exact ?? ["low", "high", "max"])
+
     // see: https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
     if (id.includes("grok") && id.includes("grok-3-mini")) {
-      if (model.api.npm === "@openrouter/ai-sdk-provider") {
-        return {
-          low: { reasoning: { effort: "low" } },
-          high: { reasoning: { effort: "high" } },
-        }
-      }
-      return {
-        low: { reasoningEffort: "low" },
-        high: { reasoningEffort: "high" },
-      }
+      return efforts(exact ?? ["low", "high"])
     }
+    // https://docs.x.ai/developers/model-capabilities/text/reasoning
+    if (/grok-4[.-]5\b/.test(id)) return efforts(exact ?? WIDELY_SUPPORTED_EFFORTS)
+    if (/grok-4[.-]3\b/.test(id)) return efforts(exact ?? ["none", ...WIDELY_SUPPORTED_EFFORTS])
+    if (/grok-4[.-]20/.test(id) && id.includes("multi-agent"))
+      return efforts(exact ?? [...WIDELY_SUPPORTED_EFFORTS, "xhigh"])
     if (id.includes("grok")) return {}
+
+    // Meta's OpenAI-compatible Muse endpoint accepts this exact ladder. Keep it
+    // separate from OpenAI's date-derived GPT ladder: `none` is rejected with
+    // HTTP 400, while `minimal` is the lowest supported tier and there is no
+    // `max` tier.
+    if (/muse-spark-1[.-]1\b/.test(id)) {
+      const values = exact ?? ["minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+      return Object.fromEntries(values.map((effort) => [effort, { reasoningEffort: effort }]))
+    }
 
     switch (model.api.npm) {
       case "@openrouter/ai-sdk-provider": {
-        // Claude via OpenRouter cannot round-trip reasoning (#167): Anthropic requires
-        // the signed thinking block replayed unmodified on the next step of a tool-use
-        // turn, but @openrouter/ai-sdk-provider@1.5.x strips that signature → 400
-        // "Invalid signature" that stalls multi-step turns. Offer NO reasoning for
-        // Claude here so no thinking block is ever generated to fail; native-Anthropic
-        // BYOK (@ai-sdk/anthropic) carries a valid signature and keeps its full ladder.
-        // Re-enable when @openrouter/ai-sdk-provider@2.x + ai@^6 lands (drop this guard
-        // AND the options() one). Same predicate as options() so the guards can't drift.
-        if (isAnthropic(model)) return {}
         // OpenRouter takes a unified `reasoning.effort` and clamps any level a model
         // doesn't support to the nearest one (no 400) — verified against
         // openrouter.ai/docs/use-cases/reasoning-tokens. The only hazard is silent
@@ -505,6 +570,7 @@ export namespace ProviderTransform {
           Object.fromEntries(efforts.map((effort) => [effort, { reasoning: { effort } }]))
         // No effort dial (reasoning is on/off only): low/medium/high would be three
         // identical "on" options — misleading — so expose none (runs at default).
+        if (exact) return orEffort(exact)
         if (id.includes("kimi") || id.includes("minimax") || id.includes("mistral")) return {}
         if (id.includes("glm") && !/glm-[5-9]/.test(id)) return {} // GLM-4.6 = thinking toggle only
         if (model.id.includes("gpt")) return orEffort(openaiEfforts(model))
@@ -517,7 +583,9 @@ export namespace ProviderTransform {
       // conflict is resolved in maxOutputTokens() (drops the cap for gateway
       // calls carrying a reasoningEffort), so the effort variants are safe here.
       case "@ai-sdk/gateway":
-        return Object.fromEntries(openaiEfforts(model).map((effort) => [effort, { reasoningEffort: effort }]))
+        return Object.fromEntries(
+          (exact ?? openaiEfforts(model)).map((effort) => [effort, { reasoningEffort: effort }]),
+        )
 
       case "@ai-sdk/github-copilot":
         const copilotEfforts = iife(() => {
@@ -544,6 +612,9 @@ export namespace ProviderTransform {
       case "@ai-sdk/deepinfra":
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/deepinfra
       case "@ai-sdk/openai-compatible":
+        if (exact) {
+          return Object.fromEntries(exact.map((effort) => [effort, { reasoningEffort: effort }]))
+        }
         // DeepSeek-v4 and GLM-5.2+ accept a `max` tier above high; their OpenAI-
         // compatible provider maps `reasoningEffort` -> body `reasoning_effort`.
         // Other openai-compatible providers use the widely-supported floor.
@@ -575,7 +646,7 @@ export namespace ProviderTransform {
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/openai
         // openaiEfforts() returns [] for gpt-5-pro (fixed high) → no variants.
         return Object.fromEntries(
-          openaiEfforts(model).map((effort) => [
+          (exact ?? openaiEfforts(model)).map((effort) => [
             effort,
             {
               reasoningEffort: effort,
@@ -590,26 +661,30 @@ export namespace ProviderTransform {
       case "@ai-sdk/google-vertex/anthropic": {
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/google-vertex#anthropic-provider
         const cap = model.limit.output
+        const usesEffort = /^claude-opus-4[.-][78]\b/.test(id) || /^claude-(opus|sonnet|mythos)-[5-9]\b/.test(id)
+        if (exact) {
+          return Object.fromEntries(
+            exact.map((effort) => [effort, usesEffort ? { thinking: { type: "adaptive" }, effort } : { effort }]),
+          )
+        }
 
         // The newest Claudes REJECT manual extended thinking (`thinking.type:
         // "enabled"` → 400) and drive depth via `output_config.effort` instead.
         // Verified against platform.claude.com/docs/build-with-claude/effort
-        // (July 2026): Opus 4.7/4.8, Sonnet 5, Fable 5, Mythos 5 (and the 5+
+        // (July 2026): Opus 4.7/4.8, Sonnet 5, Mythos 5 (and the 5+
         // generation) all support the full low→max ladder INCLUDING xhigh. The AI
         // SDK maps our top-level `effort` → `output_config: { effort }`; the pinned
         // patch (tooling/patches/@ai-sdk%2Fanthropic@2.0.57.patch) widens its enum
-        // to include xhigh/max. Detection is by canonical id — note Fable/Mythos
-        // are NOT opus/sonnet/haiku, so they must be matched explicitly or they
-        // fall through to the classic path below and 400 (manual thinking rejected).
-        const usesEffort = /^claude-opus-4[.-][78]\b/.test(id) || /^claude-(opus|sonnet|fable|mythos)-[5-9]\b/.test(id)
-
+        // to include xhigh/max. Detection is by canonical id — note Mythos is NOT
+        // opus/sonnet/haiku, so it must be matched explicitly or it falls
+        // through to the classic path below and 400 (manual thinking rejected).
         if (usesEffort) {
           return {
-            low: { effort: "low" },
-            medium: { effort: "medium" },
-            high: { effort: "high" },
-            xhigh: { effort: "xhigh" },
-            max: { effort: "max" },
+            low: { thinking: { type: "adaptive" }, effort: "low" },
+            medium: { thinking: { type: "adaptive" }, effort: "medium" },
+            high: { thinking: { type: "adaptive" }, effort: "high" },
+            xhigh: { thinking: { type: "adaptive" }, effort: "xhigh" },
+            max: { thinking: { type: "adaptive" }, effort: "max" },
           }
         }
 
@@ -688,6 +763,19 @@ export namespace ProviderTransform {
       // https://v5.ai-sdk.dev/providers/ai-sdk-providers/google-vertex
       case "@ai-sdk/google":
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/google-generative-ai
+        if (exact) {
+          return Object.fromEntries(
+            exact.map((effort) => [
+              effort,
+              {
+                thinkingConfig: {
+                  includeThoughts: true,
+                  thinkingLevel: effort,
+                },
+              },
+            ]),
+          )
+        }
         if (id.includes("2.5")) {
           return {
             low: {
@@ -745,7 +833,7 @@ export namespace ProviderTransform {
         // https://v5.ai-sdk.dev/providers/ai-sdk-providers/groq
         // Groq uses reasoningEffort + reasoningFormat — NOT the Google
         // includeThoughts/thinkingLevel keys (which groq ignores/rejects).
-        const groqEffort = ["none", ...WIDELY_SUPPORTED_EFFORTS]
+        const groqEffort = exact ?? ["none", ...WIDELY_SUPPORTED_EFFORTS]
         return Object.fromEntries(
           groqEffort.map((effort) => [
             effort,
@@ -791,32 +879,21 @@ export namespace ProviderTransform {
       // overrides this via mergeDeep in llm.ts). This is the single normalized
       // reasoning path that all managed wallet inference now flows through.
       //
-      // EXCEPT Claude via OpenRouter: Anthropic requires the signed thinking block
-      // to be replayed unmodified on the next step of a tool-use turn, but OpenRouter
-      // strips that signature on these routes — so any multi-step turn that produced
-      // thinking is rejected with 400 "Invalid `signature`…" / "…cannot be modified",
-      // surfaced as the generic "Provider returned error" that stalls the loop. Don't
-      // request reasoning for it, so no unreplayable thinking block is ever generated
-      // (1.2.5 requested reasoning for gemini-3 only). Native-Anthropic BYOK is a
-      // different npm (@ai-sdk/anthropic) and keeps its properly-signed reasoning.
-      //
-      // This is a workaround, not the ceiling. The corruption lives in
-      // @openrouter/ai-sdk-provider@1.5.x: it emits per-`reasoning-delta`
-      // reasoning_details fragments with no signature and duplicates them across the
-      // message on replay, so the signed block can never be reconstructed intact
-      // (see Kilo-Org/kilo#303). Re-enabling Claude-OR reasoning requires the fix in
-      // @openrouter/ai-sdk-provider@2.x, which needs ai@^6 — a breaking upgrade
-      // tracked separately. When that lands, drop this guard AND the one in variants().
-      //
-      // Explicitly DISABLE rather than merely omit: adaptive-thinking Claude (Opus
-      // 4.7+/Claude 5) defaults thinking ON on the wire, and llm.ts merges
-      // model/agent `options.reasoning` AFTER this base — `{ enabled: false }` (the
-      // same shape smallOptions() uses) survives both, where an omission would not.
-      const claude = isAnthropic(input.model)
-      if (claude) result["reasoning"] = { enabled: false }
-      if (!claude && input.model.capabilities.reasoning) {
-        result["reasoning"] = { effort: input.model.api.id.includes("gemini-3") ? "high" : "medium" }
+      if (input.model.capabilities.reasoning) {
+        const id = input.model.api.id.toLowerCase()
+        // Grok 4.5's documented default is high and reasoning is mandatory.
+        // Preserve that default through OpenRouter instead of replacing it with
+        // the generic medium default used by other reasoning models.
+        const effort = id.includes("gemini-3") || /grok-4[.-]5\b/.test(id) ? "high" : "medium"
+        result["reasoning"] = { effort }
       }
+    }
+
+    if (/muse-spark-1[.-]1\b/.test(input.model.api.id.toLowerCase())) {
+      // Meta selects the default depth when effort is omitted. Stateless
+      // Responses calls must return the encrypted item so tool loops can replay
+      // the model's reasoning state on the next turn.
+      result["include"] = ["reasoning.encrypted_content"]
     }
 
     if (
@@ -857,7 +934,17 @@ export namespace ProviderTransform {
       input.model.api.npm !== "@openrouter/ai-sdk-provider"
     ) {
       if (!input.model.api.id.includes("gpt-5-pro")) {
-        result["reasoningEffort"] = "medium"
+        // Defaults differ by transport and exact model. Sol defaults to low in
+        // the live Codex OAuth catalog; the other Codex models default to
+        // medium. On the public API GPT-5.4 / 5.4-mini default to none, while
+        // GPT-5.5 and GPT-5.6 default to medium.
+        const apiID = input.model.api.id.toLowerCase()
+        result["reasoningEffort"] =
+          input.model.providerID === "openai-codex" && /^gpt-5[.-]6-sol$/.test(apiID)
+            ? "low"
+            : input.model.providerID === "openai" && /^gpt-5[.-]4(?:-mini)?$/.test(apiID)
+              ? "none"
+              : "medium"
       }
 
       if (
@@ -900,7 +987,37 @@ export namespace ProviderTransform {
     return result
   }
 
+  export function tier(model: Provider.Model, tier?: string) {
+    const mode = tier ? model.modes?.[tier] : undefined
+    const body = mode?.provider?.body ?? {}
+    const options =
+      model.api?.npm === "@ai-sdk/openai"
+        ? {
+            ...Object.fromEntries(
+              Object.entries(body).filter(([key]) => key !== "service_tier" && key !== "reasoning"),
+            ),
+            ...(typeof body.service_tier === "string" ? { serviceTier: body.service_tier } : {}),
+            ...(typeof body.reasoning?.mode === "string" ? { reasoningMode: body.reasoning.mode } : {}),
+          }
+        : body
+    return {
+      model: mode?.model,
+      options,
+      headers: mode?.provider?.headers ?? {},
+    }
+  }
+
   export function smallOptions(model: Provider.Model) {
+    const apiID = model.api.id.toLowerCase()
+    // Grok 4.5 cannot disable reasoning. Use its lowest valid effort for titles,
+    // summaries, and compaction instead of emitting an invalid/ignored off flag
+    // or falling back to the expensive high default.
+    if (/grok-4[.-]5\b/.test(apiID)) {
+      if (model.api.npm === "@openrouter/ai-sdk-provider" || model.providerID === "openrouter") {
+        return { reasoning: { effort: "low" } }
+      }
+      return { reasoningEffort: "low" }
+    }
     // OpenRouter first: an OR-routed gpt-5 / gemini model must use OR's unified
     // `reasoning` shape, not the OpenAI/Google keys the branches below emit. OR
     // silently ignores `reasoningEffort`, so without this a small OR call (title
@@ -908,10 +1025,13 @@ export namespace ProviderTransform {
     if (model.api.npm === "@openrouter/ai-sdk-provider" || model.providerID === "openrouter") {
       return { reasoning: { enabled: false } }
     }
-    if (model.providerID === "openai" || model.api.id.includes("gpt-5")) {
-      if (model.api.id.includes("5.")) {
+    if (model.providerID === "openai" || apiID.includes("gpt-5")) {
+      if (apiID.includes("5.") || /gpt-5-\d+\b/.test(apiID)) {
         return { reasoningEffort: "low" }
       }
+      return { reasoningEffort: "minimal" }
+    }
+    if (/muse-spark-1[.-]1\b/.test(model.api.id.toLowerCase())) {
       return { reasoningEffort: "minimal" }
     }
     if (model.providerID === "google") {
@@ -1027,6 +1147,15 @@ export namespace ProviderTransform {
 
   export function error(providerID: string, error: APICallError) {
     let message = error.message
+    const body = error.responseBody?.toLowerCase() ?? ""
+    if (
+      providerID === "openrouter" &&
+      error.statusCode === 403 &&
+      body.includes("this model is only available in the united states") &&
+      body.includes('"provider_name":"meta"')
+    ) {
+      return "Muse Spark 1.1 is currently restricted by Meta to requests routed from the United States. Choose another model, or retry from a supported U.S. region."
+    }
     if (providerID.includes("github-copilot") && error.statusCode === 403) {
       return "Please reauthenticate with the copilot provider to ensure your credentials work properly with OpenScience."
     }

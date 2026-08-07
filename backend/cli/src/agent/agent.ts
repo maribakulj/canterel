@@ -64,6 +64,7 @@ export namespace Agent {
       question: "deny",
       plan_enter: "deny",
       plan_exit: "deny",
+      compute_job: "ask",
       // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
       read: {
         "*": "allow",
@@ -78,8 +79,7 @@ export namespace Agent {
       // --- Research modes (top) ---
       research: {
         name: "research",
-        description:
-          "Scientific research agent — literature review, data analysis, GPU compute, and synthesis across 241 skills.",
+        description: "Primary research agent for focused questions, analysis, synthesis, and durable outputs.",
         options: {},
         color: "#06b6d4",
         permission: PermissionNext.merge(
@@ -96,8 +96,7 @@ export namespace Agent {
       // --- Domain agents ---
       biology: {
         name: "biology",
-        description:
-          "Computational biology agent — bioinformatics analysis, 30+ biological database integrations, and systematic data-to-answer workflows.",
+        description: "Biology specialist for bioinformatics, biological databases, and evidence-backed data analysis.",
         options: {},
         color: "#10b981",
         permission: PermissionNext.merge(
@@ -107,14 +106,14 @@ export namespace Agent {
           }),
           user,
         ),
-        mode: "all",
+        mode: "subagent",
         native: true,
       },
       // --- Physics ---
       physics: {
         name: "physics",
         description:
-          "Computational physics agent — simulation, PDE solving, dynamical systems, symbolic regression, data analysis, and scientific computing.",
+          "Physics specialist for simulation, numerical methods, dimensional analysis, and validated scientific computing.",
         options: {},
         color: "#8b5cf6",
         permission: PermissionNext.merge(
@@ -124,14 +123,14 @@ export namespace Agent {
           }),
           user,
         ),
-        mode: "all",
+        mode: "subagent",
         native: true,
       },
       // --- Machine learning ---
       ml: {
         name: "ml",
         description:
-          "Machine learning agent — trains, evaluates, and analyzes models end-to-end (deep learning, LLMs, classical ML, RL) with rigorous evaluation, and builds specialized models to replace frontier APIs.",
+          "Machine-learning specialist for data, training, evaluation, inference, and reproducible experiments.",
         options: {},
         color: "#6366f1",
         permission: PermissionNext.merge(
@@ -141,7 +140,7 @@ export namespace Agent {
           }),
           user,
         ),
-        mode: "all",
+        mode: "subagent",
         native: true,
       },
       // --- Utilities ---
@@ -187,7 +186,8 @@ export namespace Agent {
       // --- Subagents (not shown in picker) ---
       task: {
         name: "task",
-        description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
+        description:
+          "General-purpose child agent for one independent unit of work that can merge cleanly into the primary result.",
         permission: PermissionNext.merge(
           defaults,
           PermissionNext.fromConfig({
@@ -308,8 +308,8 @@ export namespace Agent {
             read: "allow",
             glob: "allow",
             grep: "allow",
-            bash: "allow",
-            skill: "allow",
+            provenance_query: "allow",
+            provenance_review: "allow",
           }),
           user,
         ),
@@ -318,6 +318,27 @@ export namespace Agent {
         color: "#f59e0b",
         mode: "subagent",
         native: true,
+      },
+      "artifact-reviewer": {
+        name: "artifact-reviewer",
+        steps: 60,
+        description:
+          "Read-only reviewer for one immutable artifact-store version. It can inspect only the bound snapshot and its provenance, then append review findings.",
+        permission: PermissionNext.merge(
+          defaults,
+          PermissionNext.fromConfig({
+            "*": "deny",
+            artifact_snapshot: "allow",
+            provenance_query: "allow",
+            provenance_review: "allow",
+          }),
+        ),
+        prompt: PROMPT_REVIEWER,
+        options: {},
+        color: "#f59e0b",
+        mode: "subagent",
+        native: true,
+        hidden: true,
       },
       // --- Hidden system agents ---
       compaction: {
@@ -379,6 +400,11 @@ export namespace Agent {
       item.steps = value.steps ?? item.steps
       item.options = mergeDeep(item.options, value.options ?? {})
       item.permission = PermissionNext.merge(item.permission, PermissionNext.fromConfig(value.permission ?? {}))
+      // `docs` is reserved for delegated documentation work. Older synced
+      // configs created it with mode `all`, which incorrectly exposed it as a
+      // primary session mode. Preserve the custom prompt/model while restoring
+      // the product contract that Docs is subagent-only.
+      if (key === "docs") item.mode = "subagent"
     }
 
     // Ensure Truncate.DIR is allowed unless explicitly configured
@@ -425,7 +451,9 @@ export namespace Agent {
       return agent.name
     }
 
-    const primaryVisible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
+    const primaryVisible = Object.values(agents).find(
+      (agent) => agent.mode !== "subagent" && agent.hidden !== true && agent.name !== "plan",
+    )
     if (!primaryVisible) throw new Error("no primary visible agent found")
     return primaryVisible.name
   }

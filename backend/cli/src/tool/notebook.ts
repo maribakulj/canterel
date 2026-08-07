@@ -3,19 +3,27 @@ import { Tool } from "./tool"
 import { spawn, type ChildProcess } from "child_process"
 import path from "path"
 import os from "os"
-import { unlinkSync } from "fs"
+import { mkdirSync, rmSync, unlinkSync } from "fs"
+import { Shell } from "@/shell/shell"
 import { Instance } from "@/project/instance"
 import { OpenScience } from "@/openscience"
 import { Config } from "@/config/config"
+import { SessionFilesystem } from "@/session/filesystem"
 import { Sandbox } from "@/sandbox/sandbox"
+import { KernelQueue } from "@/science/kernel/queue"
+import { KernelProcessIdentity } from "@/science/kernel/process"
+import { KernelRuntime } from "@/science/kernel/registry"
+import { AtlasEnvironment } from "@/science/kernel/types"
 import type {
   Kernel,
   KernelManager,
   KernelLanguage,
+  KernelEnvironment,
   KernelStartOptions,
   ExecuteOptions,
   ExecuteResult,
   KernelOutput,
+  KernelProcess,
 } from "@/science/kernel/types"
 
 /**
@@ -39,15 +47,19 @@ import type {
 // JSON-encoded (json.dumps escapes real newlines, so the end marker can never
 // appear inside a payload string).
 const KERNEL_SCRIPT = `
-import sys, json, io, base64, traceback
+import sys, json, io, base64, traceback, re
 
 _real_out = sys.stdout
 _real_err = sys.stderr
 
 ns = {"__name__": "__main__", "__builtins__": __builtins__}
 
-# Pre-import common scientific packages (best-effort).
-for pkg, alias in [("numpy", "np"), ("pandas", "pd"), ("scipy", "scipy")]:
+# Preserve the documented pre-imported aliases without making every fresh
+# kernel pay the several-second scientific stack import cost. A referenced
+# alias is loaded immediately before that cell executes and then persists.
+def _load(pkg, alias):
+    if alias in ns:
+        return
     try:
         mod = __import__(pkg)
         ns[alias] = mod
@@ -55,17 +67,26 @@ for pkg, alias in [("numpy", "np"), ("pandas", "pd"), ("scipy", "scipy")]:
     except ImportError:
         pass
 
-# Configure matplotlib for headless PNG capture (best-effort).
 _plt = None
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    _plt = plt
-    ns["plt"] = plt
-    ns["matplotlib"] = matplotlib
-except Exception:
-    _plt = None
+
+def _load_science(code):
+    global _plt
+    if re.search(r"\\b(np|numpy)\\b", code):
+        _load("numpy", "np")
+    if re.search(r"\\b(pd|pandas)\\b", code):
+        _load("pandas", "pd")
+    if re.search(r"\\bscipy\\b", code):
+        _load("scipy", "scipy")
+    if _plt is None and re.search(r"\\b(plt|matplotlib)\\b", code):
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            _plt = plt
+            ns["plt"] = plt
+            ns["matplotlib"] = matplotlib
+        except Exception:
+            _plt = None
 
 _exec_count = 0
 
@@ -98,6 +119,7 @@ while True:
     images = []
 
     try:
+        _load_science(code)
         # Try eval first for Jupyter-style auto-display of the final expression.
         try:
             compiled = compile(code, "<cell>", "eval")
@@ -218,40 +240,101 @@ class PythonKernel implements Kernel {
   readonly language: KernelLanguage = "python"
   proc?: ChildProcess
   scriptPath?: string
+  configPath?: string
+  cachePath?: string
   lastUsed = Date.now()
   private stderrTail = ""
+  private queue = new KernelQueue()
+  private intentional = false
+  environment?: KernelEnvironment
+  process?: KernelProcess
 
   constructor(id: string) {
     this.id = id
   }
 
   get ready(): boolean {
-    return !!this.proc && !this.proc.killed && this.proc.exitCode === null
+    return !!this.proc && KernelProcessIdentity.matches(this.proc, this.process)
+  }
+
+  get crashed() {
+    return !!this.proc && !this.ready && !this.intentional
+  }
+
+  get busy() {
+    return this.queue.depth > 0
+  }
+
+  get queueDepth() {
+    return Math.max(this.queue.depth - 1, 0)
   }
 
   async start(opts?: KernelStartOptions): Promise<void> {
     if (this.ready) return
+    this.intentional = false
+    this.stderrTail = ""
     const scriptPath = path.join(os.tmpdir(), `openscience-pykernel-${this.id.slice(0, 8)}-${Date.now()}.py`)
+    const configPath = `${scriptPath}.atlas.json`
+    const cachePath = path.join(os.tmpdir(), "openscience-kernel-cache", crypto.randomUUID())
+    mkdirSync(cachePath, { recursive: true })
     await Bun.write(scriptPath, KERNEL_SCRIPT)
+    await Bun.write(configPath, "{}\n")
     this.scriptPath = scriptPath
+    this.configPath = configPath
+    this.cachePath = cachePath
 
     const bin = await findPython(opts?.binary)
+    const workspace = opts?.sessionID
+      ? await SessionFilesystem.processWriteRoots(opts.sessionID)
+      : [Instance.directory, Instance.worktree]
     // Confine the kernel to the workspace when the execution sandbox is on: the
     // notebook runs arbitrary agent-authored code — the same threat model as the
     // bash tool — so it must not be able to escape the boundary bash respects.
+    const policy = await Config.trustedSandbox()
     const sandboxed = Sandbox.wrapArgv({
       file: bin,
       args: ["-u", scriptPath],
-      workspace: [Instance.directory, Instance.worktree],
-      extraWritable: [scriptPath],
-      options: await Config.trustedSandbox(),
+      workspace,
+      extraWritable: [scriptPath, configPath, cachePath],
+      unreadable: OpenScience.kernelSensitivePaths(),
+      options: policy,
     })
+    const cwd = opts?.cwd ?? (opts?.sessionID ? await SessionFilesystem.workspace(opts.sessionID) : Instance.directory)
+    this.environment = {
+      cwd,
+      atlas: AtlasEnvironment,
+      sandbox: {
+        ...Sandbox.describe(),
+        requested: policy?.enabled === true,
+        enforced: sandboxed.sandboxed,
+        backend: sandboxed.backend,
+        network: policy?.network ?? "allow",
+        warning: sandboxed.warning,
+      },
+    }
     const proc = spawn(sandboxed.file, sandboxed.args, {
-      cwd: opts?.cwd ?? Instance.directory,
-      env: { ...(await OpenScience.subprocessEnv(process.env)), ...(opts?.env ?? {}), PYTHONUNBUFFERED: "1" },
+      cwd,
+      env: {
+        ...OpenScience.kernelEnv(process.env),
+        ...OpenScience.pythonThreadCapEnv(process.env),
+        ...(opts?.env ?? {}),
+        ATLAS_CLI_CONFIG_PATH: configPath,
+        MPLCONFIGDIR: path.join(cachePath, "matplotlib"),
+        XDG_CACHE_HOME: path.join(cachePath, "xdg"),
+        PYTHONPYCACHEPREFIX: path.join(cachePath, "pycache"),
+        PYTHONUNBUFFERED: "1",
+      },
       stdio: ["pipe", "pipe", "pipe"],
+      // Own process group so killing the kernel reaps its children too — a scanpy
+      // run forks joblib/BLAS workers that would otherwise be orphaned and keep
+      // thrashing swap after an abort (#102).
+      detached: process.platform !== "win32",
     })
     this.proc = proc
+    this.process = KernelProcessIdentity.capture(proc)
+    proc.once("exit", () => {
+      if (!this.intentional) this.cleanupScript()
+    })
 
     proc.stderr?.on("data", (d: Buffer) => {
       this.stderrTail += d.toString()
@@ -260,9 +343,7 @@ class PythonKernel implements Kernel {
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
-        try {
-          proc.kill()
-        } catch {}
+        void this.terminate(proc)
         reject(new Error(`Python kernel startup timed out. stderr: ${this.stderrTail}`))
       }, 15_000)
       let buf = ""
@@ -287,7 +368,11 @@ class PythonKernel implements Kernel {
   }
 
   async execute(code: string, opts?: ExecuteOptions): Promise<ExecuteResult> {
-    if (!this.ready) await this.start()
+    return this.queue.run(() => this.run(code, opts), opts?.signal)
+  }
+
+  private async run(code: string, opts?: ExecuteOptions): Promise<ExecuteResult> {
+    if (!this.ready) throw new Error("Python kernel is not running")
     const proc = this.proc!
     this.lastUsed = Date.now()
     const timeout = Math.min(Math.max(opts?.timeout ?? 120_000, 5_000), 600_000)
@@ -295,17 +380,13 @@ class PythonKernel implements Kernel {
     const payload = await new Promise<RawPayload>((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup()
-        try {
-          proc.kill()
-        } catch {}
+        void this.terminate(proc)
         reject(new Error(`Cell execution timed out after ${Math.round(timeout / 1000)}s`))
       }, timeout)
 
       const onAbort = () => {
         cleanup()
-        try {
-          proc.kill()
-        } catch {}
+        void this.terminate(proc)
         reject(new Error("Execution aborted"))
       }
 
@@ -353,35 +434,69 @@ class PythonKernel implements Kernel {
     return payloadToResult(payload)
   }
 
-  async shutdown(): Promise<void> {
-    try {
-      this.proc?.kill()
-    } catch {}
-    if (this.scriptPath) {
-      try {
-        unlinkSync(this.scriptPath)
-      } catch {}
-      this.scriptPath = undefined
+  async interrupt() {
+    if (!this.proc || !this.busy || !KernelProcessIdentity.matches(this.proc, this.process)) return false
+    if (this.environment?.sandbox.backend === "bubblewrap") {
+      return Shell.interruptDescendants(this.proc, { exclude: ["bwrap"] })
     }
+    return Shell.interruptTree(this.proc, { detached: process.platform !== "win32" })
+  }
+
+  async shutdown(): Promise<void> {
+    this.intentional = true
+    const proc = this.proc
+    if (proc) await this.terminate(proc)
+    this.proc = undefined
+    this.process = undefined
+    this.cleanupScript()
+  }
+
+  /** Synchronous group kill for process-exit handlers (async shutdown can't run there). */
+  killSync(): void {
+    this.intentional = true
+    if (this.proc && KernelProcessIdentity.matches(this.proc, this.process)) {
+      Shell.killTreeSync(this.proc, { detached: process.platform !== "win32" })
+    }
+    this.proc = undefined
+    this.process = undefined
+    this.cleanupScript()
+  }
+
+  private terminate(proc: ChildProcess) {
+    if (!KernelProcessIdentity.matches(proc, this.process)) return Promise.resolve()
+    return Shell.killTree(proc, { exited: () => proc.exitCode !== null, detached: process.platform !== "win32" })
+  }
+
+  private cleanupScript(): void {
+    for (const file of [this.scriptPath, this.configPath]) {
+      if (!file) continue
+      try {
+        unlinkSync(file)
+      } catch {}
+    }
+    if (this.cachePath) rmSync(this.cachePath, { recursive: true, force: true })
+    this.scriptPath = undefined
+    this.configPath = undefined
+    this.cachePath = undefined
   }
 }
 
 class PythonKernelManager implements KernelManager {
   readonly language: KernelLanguage = "python"
   private kernels = new Map<string, PythonKernel>()
+  private starts = new Map<string, { kernel: PythonKernel; promise: Promise<PythonKernel> }>()
 
-  private reapIdle() {
+  private async reapIdle() {
     const now = Date.now()
-    for (const [id, k] of this.kernels) {
-      if (now - k.lastUsed > IDLE_MS || !k.ready) {
-        k.shutdown()
-        this.kernels.delete(id)
-      }
+    for (const [id, kernel] of this.kernels) {
+      if (now - kernel.lastUsed <= IDLE_MS) continue
+      await kernel.shutdown()
+      this.kernels.delete(id)
     }
   }
 
   async get(sessionID: string, opts?: KernelStartOptions): Promise<PythonKernel> {
-    this.reapIdle()
+    await this.reapIdle()
     const existing = this.kernels.get(sessionID)
     if (existing && existing.ready) {
       existing.lastUsed = Date.now()
@@ -391,22 +506,60 @@ class PythonKernelManager implements KernelManager {
       await existing.shutdown()
       this.kernels.delete(sessionID)
     }
+    const pending = this.starts.get(sessionID)
+    if (pending) return pending.promise
     const kernel = new PythonKernel(sessionID)
-    await kernel.start(opts)
-    this.kernels.set(sessionID, kernel)
-    return kernel
+    const start = kernel.start(opts).then(
+      () => {
+        this.starts.delete(sessionID)
+        this.kernels.set(sessionID, kernel)
+        return kernel
+      },
+      async (error) => {
+        this.starts.delete(sessionID)
+        await kernel.shutdown()
+        throw error
+      },
+    )
+    this.starts.set(sessionID, { kernel, promise: start })
+    return start
   }
 
   async release(sessionID: string): Promise<void> {
-    const k = this.kernels.get(sessionID)
-    if (!k) return
-    await k.shutdown()
+    const pending = this.starts.get(sessionID)
+    if (pending) {
+      await pending.kernel.shutdown()
+      await pending.promise.catch(() => undefined)
+      this.starts.delete(sessionID)
+    }
+    const kernel = this.kernels.get(sessionID)
+    if (kernel) await kernel.shutdown()
     this.kernels.delete(sessionID)
   }
 
+  active(sessionID: string): boolean {
+    return this.kernels.get(sessionID)?.ready ?? false
+  }
+
   async shutdownAll(): Promise<void> {
-    for (const [id, k] of this.kernels) {
-      await k.shutdown()
+    for (const [id, pending] of this.starts) {
+      await pending.kernel.shutdown()
+      this.starts.delete(id)
+    }
+    for (const [id, kernel] of this.kernels) {
+      await kernel.shutdown()
+      this.kernels.delete(id)
+    }
+  }
+
+  /** Sync variant for process-exit handlers. */
+  shutdownAllSync(): void {
+    for (const [id, pending] of this.starts) {
+      pending.kernel.killSync()
+      this.starts.delete(id)
+    }
+    for (const [id, kernel] of this.kernels) {
+      kernel.killSync()
       this.kernels.delete(id)
     }
   }
@@ -414,17 +567,8 @@ class PythonKernelManager implements KernelManager {
 
 /** Process-wide singleton manager (mirrors the biology kernel's module-level map). */
 export const pythonKernels = new PythonKernelManager()
-
-let exitHooked = false
-function hookExit() {
-  if (exitHooked) return
-  exitHooked = true
-  const cleanup = () => void pythonKernels.shutdownAll()
-  process.on("exit", cleanup)
-  process.on("SIGTERM", cleanup)
-  process.on("SIGINT", cleanup)
-}
-hookExit()
+KernelRuntime.register(pythonKernels)
+KernelProcessIdentity.onExit(() => pythonKernels.shutdownAllSync())
 
 function clip(s: string, max = 30_000): string {
   return s.length > max ? s.slice(0, max) + "\n\n... (truncated)" : s
@@ -450,8 +594,16 @@ export const NotebookTool = Tool.define("notebook", {
       metadata: {},
     })
 
-    const kernel = await pythonKernels.get(ctx.sessionID)
-    const result = await kernel.execute(params.code, { timeout: params.timeout, signal: ctx.abort })
+    const result = await KernelRuntime.execute(
+      {
+        projectID: Instance.project.id,
+        sessionID: ctx.sessionID,
+        name: "agent",
+        language: "python",
+      },
+      params.code,
+      { timeout: params.timeout, signal: ctx.abort, origin: { messageID: ctx.messageID, callID: ctx.callID } },
+    )
 
     const images = result.outputs.filter((o) => o.type === "display" && o.data?.["image/png"])
     const dataUrls = images.map((o) => `data:image/png;base64,${o.data!["image/png"]}`)
@@ -471,7 +623,7 @@ export const NotebookTool = Tool.define("notebook", {
     const output = clip(parts.join("\n"))
 
     ctx.metadata({
-      metadata: { output, ok: result.ok },
+      metadata: { output, ok: result.ok, provenanceID: result.provenanceID },
     })
 
     return {
@@ -480,6 +632,7 @@ export const NotebookTool = Tool.define("notebook", {
       metadata: {
         ok: result.ok,
         output,
+        provenanceID: result.provenanceID,
         executionCount: result.executionCount,
         hasImages: images.length,
         ...(images.length ? { artifact: { kind: "image", data: { images: dataUrls } } } : {}),

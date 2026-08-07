@@ -1,6 +1,7 @@
 import { test, expect, beforeEach, afterAll } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
+import os from "os"
 import { Global } from "../../src/global"
 import { Auth } from "../../src/auth"
 
@@ -28,6 +29,9 @@ test("concurrent set calls keep every provider", async () => {
   const all = await Auth.all()
   expect(Object.keys(all).sort()).toEqual(["provider-a", "provider-b", "provider-c"])
   expect(all["provider-a"]).toEqual({ type: "api", key: "key-a" })
+  if (process.platform !== "win32") {
+    expect((await fs.stat(filepath)).mode & 0o777).toBe(0o600)
+  }
 
   const leftover = (await fs.readdir(Global.Path.data)).filter((name) => name.endsWith(".tmp"))
   expect(leftover).toEqual([])
@@ -69,4 +73,48 @@ test("set preserves entries it does not understand", async () => {
   await Auth.set("provider-a", { type: "api", key: "key-a" })
   const raw = (await Bun.file(filepath).json()) as Record<string, unknown>
   expect(Object.keys(raw).sort()).toEqual(["future", "provider-a"])
+})
+
+test("independent CLI processes do not overwrite one another's credentials", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "openscience-auth-lock-"))
+  const runner = path.join(root, "set.ts")
+  const auth = new URL("../../src/auth/index.ts", import.meta.url).href
+  await Bun.write(
+    runner,
+    `
+import { Auth } from ${JSON.stringify(auth)}
+await Auth.set(process.argv[2], { type: "api", key: process.argv[3] })
+`,
+  )
+
+  try {
+    const processes = Array.from({ length: 12 }, (_, index) =>
+      Bun.spawn([process.execPath, runner, `provider-${index}`, `key-${index}`], {
+        env: {
+          ...process.env,
+          OPENSCIENCE_DATA_DIR: root,
+          OPENSCIENCE_CONFIG_DIR: path.join(root, "config"),
+          OPENSCIENCE_TEST_HOME: path.join(root, "home"),
+          XDG_STATE_HOME: path.join(root, "state"),
+          XDG_CACHE_HOME: path.join(root, "cache"),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    )
+    const results = await Promise.all(
+      processes.map(async (proc) => ({
+        exit: await proc.exited,
+        error: await new Response(proc.stderr).text(),
+      })),
+    )
+    expect(results.filter((result) => result.exit !== 0)).toEqual([])
+
+    const raw = (await Bun.file(path.join(root, "auth.json")).json()) as Record<string, unknown>
+    expect(Object.keys(raw).sort()).toEqual(Array.from({ length: 12 }, (_, index) => `provider-${index}`).sort())
+    const leftovers = (await fs.readdir(root)).filter((name) => name.endsWith(".lock") || name.endsWith(".tmp"))
+    expect(leftovers).toEqual([])
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
 })

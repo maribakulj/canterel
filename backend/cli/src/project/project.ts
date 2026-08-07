@@ -14,9 +14,52 @@ import { BusEvent } from "@/bus/bus-event"
 import { iife } from "@/util/iife"
 import { GlobalBus } from "@/bus/global"
 import { existsSync, realpathSync } from "fs"
+import { NamedError } from "@synsci/util/error"
+import { Lock } from "@/util/lock"
+import type { SessionFilesystem } from "@/session/filesystem"
+import type { SessionWorkspace } from "@/session/workspace"
 
 export namespace Project {
   const log = Log.create({ service: "project" })
+  const Alias = z.object({
+    id: z.string(),
+    projectID: z.string(),
+    time: z.object({
+      created: z.number(),
+    }),
+  })
+
+  export const UnknownError = NamedError.create(
+    "ProjectUnknownError",
+    z.object({
+      projectID: z.string(),
+    }),
+  )
+
+  export const StaleError = NamedError.create(
+    "ProjectStaleError",
+    z.object({
+      projectID: z.string(),
+      reason: z.enum(["missing_project", "missing_directory"]),
+      directory: z.string().optional(),
+    }),
+  )
+
+  export const MismatchError = NamedError.create(
+    "ProjectMismatchError",
+    z.object({
+      projectID: z.string(),
+      directory: z.string(),
+    }),
+  )
+
+  export const DirectoryError = NamedError.create(
+    "ProjectDirectoryError",
+    z.object({
+      directory: z.string(),
+    }),
+  )
+
   export const Info = z
     .object({
       id: z.string(),
@@ -63,8 +106,139 @@ export namespace Project {
     return real
   }
 
-  function idForPath(worktree: string) {
-    return crypto.createHash("sha256").update(worktree).digest("hex").slice(0, 40)
+  function createID() {
+    return `prj_${crypto.randomUUID().replaceAll("-", "")}`
+  }
+
+  function contains(root: string, target: string) {
+    const relative = path.relative(root, target)
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+  }
+
+  async function records(worktree: string) {
+    const keys = await Storage.list(["project"]).catch(() => [])
+    const projects = await Promise.all(
+      keys.map(async (key) => ({
+        id: key[key.length - 1],
+        project: await Storage.read<Info>(key).catch(() => undefined),
+      })),
+    )
+    return projects.filter((record): record is { id: string; project: Info } => {
+      const project = record.project
+      if (!project?.worktree) return false
+      return canonicalize(project.worktree) === worktree
+    })
+  }
+
+  async function alias(id: string, projectID: string) {
+    if (id === projectID) return
+    const existing = await Storage.read<z.infer<typeof Alias>>(["project_alias", id]).catch(() => undefined)
+    if (existing?.projectID === projectID) return
+    await Storage.write<z.infer<typeof Alias>>(["project_alias", id], {
+      id,
+      projectID,
+      time: {
+        created: existing?.time.created ?? Date.now(),
+      },
+    })
+  }
+
+  function merge(current: Info, fallback: Info): Info {
+    return {
+      ...fallback,
+      ...current,
+      name: current.name ?? fallback.name,
+      icon:
+        current.icon || fallback.icon
+          ? {
+              ...fallback.icon,
+              ...current.icon,
+            }
+          : undefined,
+      commands:
+        current.commands || fallback.commands
+          ? {
+              ...fallback.commands,
+              ...current.commands,
+            }
+          : undefined,
+      time: {
+        ...fallback.time,
+        ...current.time,
+        initialized: current.time.initialized ?? fallback.time.initialized,
+      },
+      sandboxes: [...new Set([...(current.sandboxes ?? []), ...(fallback.sandboxes ?? [])])],
+    }
+  }
+
+  /**
+   * Resolve an opaque project selector to a canonical server-owned directory.
+   * A caller may include a legacy directory while migrating, but it must remain
+   * inside the selected project's recorded roots.
+   */
+  /**
+   * Only a genuinely absent record means the project is gone. Any other read
+   * failure — a torn file from a concurrent writer, a transient fs error — must
+   * propagate, because reporting it as 410 tells the caller to stop asking
+   * about a project that is in fact fine, and the client empties the surfaces
+   * that depend on it.
+   */
+  function absent(error: unknown) {
+    if (Storage.NotFoundError.isInstance(error)) return undefined
+    throw error
+  }
+
+  export async function resolve(projectID: string, directory?: string) {
+    const direct = await Storage.read<Info>(["project", projectID]).catch(absent)
+    const link = await Storage.read<z.infer<typeof Alias>>(["project_alias", projectID]).catch(absent)
+    if (!direct && !link) throw new UnknownError({ projectID })
+
+    const linked = link ? await Storage.read<Info>(["project", link.projectID]).catch(absent) : undefined
+    const redirected = !!linked && (!direct || !projectID.startsWith("prj_"))
+    const project = redirected ? linked : (direct ?? linked)
+    if (!project) {
+      throw new StaleError({
+        projectID,
+        reason: "missing_project",
+      })
+    }
+
+    const worktree = canonicalize(project.worktree)
+    const roots = [worktree, ...(project.sandboxes ?? []).map(canonicalize)]
+    const target = directory ? canonicalize(directory) : worktree
+    if (!roots.some((root) => contains(root, target))) {
+      throw new MismatchError({
+        projectID,
+        directory: target,
+      })
+    }
+
+    const stat = await fs.stat(target).catch(() => undefined)
+    if (!stat?.isDirectory()) {
+      throw new StaleError({
+        projectID,
+        reason: "missing_directory",
+        directory: target,
+      })
+    }
+
+    return {
+      project,
+      directory: target,
+      alias: redirected ? link?.id : undefined,
+    }
+  }
+
+  /**
+   * Guard a caller-supplied root before it can mint a project. Anything that is
+   * not an absolute path gets resolved against the server's cwd, which turned
+   * junk from a stale deep link into a real-looking folder under the user's
+   * home and left a phantom project on their home list.
+   */
+  export async function assertDirectory(input: string) {
+    if (!path.isAbsolute(input)) throw new DirectoryError({ directory: input })
+    const stat = await fs.stat(input).catch(() => undefined)
+    if (!stat?.isDirectory()) throw new DirectoryError({ directory: input })
   }
 
   export async function fromDirectory(input: string) {
@@ -126,46 +300,56 @@ export namespace Project {
       }
     })
 
-    // Identity is a pure function of the canonical project-root path — never of git
-    // status. The same folder keeps one id across spelling variants and across a later
-    // `git init` (the canonical worktree is unchanged, so the id is too).
-    const id = idForPath(worktree)
+    // Identity selection and migration must be serialized for a canonical root.
+    // Otherwise two simultaneous first opens can create competing opaque ids,
+    // or one opener can observe a legacy record while another is removing it.
+    using _ = await Lock.write(`project:${worktree}`)
 
-    let existing = await Storage.read<Info>(["project", id]).catch(() => undefined)
-    if (!existing) {
-      await adoptLegacy(id, worktree)
-      existing = await Storage.read<Info>(["project", id]).catch(() => undefined)
-    }
-    if (!existing) {
-      existing = {
-        id,
-        worktree,
-        vcs: vcs as Info["vcs"],
-        sandboxes: [],
-        time: {
-          created: Date.now(),
-          updated: Date.now(),
-        },
-      }
-    }
+    const found = await records(worktree)
+    const opaque = found.find((record) => record.id.startsWith("prj_"))
+    const source = opaque ?? found[0]
+    const id = opaque?.id ?? createID()
+    const current = found
+      .filter((record) => record.id !== source?.id)
+      .reduce(
+        (result, record) => merge(result, record.project),
+        source
+          ? {
+              ...source.project,
+              id,
+              sandboxes: [...(source.project.sandboxes ?? [])],
+            }
+          : {
+              id,
+              worktree,
+              vcs: vcs as Info["vcs"],
+              sandboxes: [],
+              time: {
+                created: Date.now(),
+                updated: Date.now(),
+              },
+            },
+      )
 
-    // migrate old projects before sandboxes
-    if (!existing.sandboxes) existing.sandboxes = []
-
-    if (Flag.OPENSCIENCE_EXPERIMENTAL_ICON_DISCOVERY) discover(existing)
+    if (Flag.OPENSCIENCE_EXPERIMENTAL_ICON_DISCOVERY) discover(current)
 
     const result: Info = {
-      ...existing,
+      ...current,
       worktree,
       vcs: vcs as Info["vcs"],
       time: {
-        ...existing.time,
+        ...current.time,
         updated: Date.now(),
       },
     }
     if (sandbox !== result.worktree && !result.sandboxes.includes(sandbox)) result.sandboxes.push(sandbox)
-    result.sandboxes = result.sandboxes.filter((x) => existsSync(x))
+    result.sandboxes = [
+      ...new Set(
+        result.sandboxes.filter((directory) => canonicalize(directory) !== result.worktree && existsSync(directory)),
+      ),
+    ]
     await Storage.write<Info>(["project", id], result)
+    await adoptLegacy(id, worktree, found)
     GlobalBus.emit("event", {
       payload: {
         type: Event.Updated.type,
@@ -206,27 +390,69 @@ export namespace Project {
     return
   }
 
-  // Fold any legacy records for this folder into the canonical path id. Runs once, the
-  // first time a folder is opened under the path-identity scheme:
+  // Fold any duplicate records for this folder into the canonical opaque id. Runs once,
+  // the first time a folder is opened under the project-identity scheme:
   //   1. the shared `global` bucket — adopt only sessions whose directory matches
   //   2. legacy per-directory project records (old git-root-commit ids, `ng-…` hashes)
-  //      pointing at the same canonical worktree — adopt all their sessions, then drop
-  //      the now-duplicate project record
-  async function adoptLegacy(newProjectID: string, worktree: string) {
+  //   3. duplicate opaque records pointing at this exact canonical worktree
+  // Adopt all state before dropping a now-duplicate project record.
+  async function adoptLegacy(newProjectID: string, worktree: string, found: Awaited<ReturnType<typeof records>>) {
     await moveSessions(
       "global",
       newProjectID,
       (session) => !session.directory || canonicalize(session.directory) === worktree,
     )
+    await moveFilesystemBucket(
+      "global",
+      newProjectID,
+      (state) => !state.directory || canonicalize(state.directory) === worktree,
+    )
 
-    const keys = await Storage.list(["project"]).catch(() => [])
-    for (const key of keys) {
-      const projectID = key[key.length - 1]
-      if (projectID === newProjectID || projectID === "global") continue
-      const record = await Storage.read<Info>(key).catch(() => undefined)
-      if (!record?.worktree || canonicalize(record.worktree) !== worktree) continue
+    const legacy = (projectID: string) =>
+      projectID !== newProjectID && projectID !== "global" && !projectID.startsWith("prj_")
+    const old = new Set([
+      ...found.flatMap((record) => [record.id, record.project.id]).filter(legacy),
+      ...found
+        .map((record) => record.id)
+        .filter((projectID) => projectID !== newProjectID && projectID.startsWith("prj_")),
+    ])
+    const keys = await Storage.list(["project_alias"]).catch(() => [])
+    const links = (
+      await Promise.all(
+        keys.map(async (key) => ({
+          id: key[key.length - 1],
+          link: await Storage.read<z.infer<typeof Alias>>(key).catch(() => undefined),
+        })),
+      )
+    ).filter((record): record is { id: string; link: z.infer<typeof Alias> } => !!record.link)
+
+    // Include aliases which already point at the opaque project. This recovers
+    // users who opened the folder during a partial migration: their session
+    // may already live under the opaque id while its filesystem grants remain
+    // stranded in the removed legacy bucket.
+    const targets = new Set([newProjectID, ...old])
+    while (true) {
+      const stale = links.filter((record) => targets.has(record.link.projectID))
+      if (stale.length === 0) break
+      const size = old.size
+      for (const record of stale) {
+        for (const projectID of [record.id, record.link.id]) {
+          if (!legacy(projectID)) continue
+          old.add(projectID)
+          targets.add(projectID)
+        }
+      }
+      if (old.size === size) break
+    }
+    for (const projectID of old) {
       await moveSessions(projectID, newProjectID, () => true)
-      await Storage.remove(["project", projectID]).catch(() => undefined)
+      await moveFilesystemBucket(projectID, newProjectID, () => true)
+      await alias(projectID, newProjectID)
+    }
+
+    for (const record of found) {
+      if (record.id === newProjectID || record.id === "global") continue
+      await Storage.remove(["project", record.id])
     }
   }
 
@@ -238,14 +464,131 @@ export namespace Project {
 
     await work(10, sessions, async (key) => {
       const sessionID = key[key.length - 1]
-      const session = await Storage.read<Session.Info>(key).catch(() => undefined)
-      if (!session) return
+      const session = await Storage.read<Session.Info>(key)
       if (!keep(session)) return
-      session.projectID = newProjectID
-      await Storage.write(["session", newProjectID, sessionID], session)
+      const existing = await Storage.read<Session.Info>(["session", newProjectID, sessionID]).catch((error) => {
+        if (error instanceof Storage.NotFoundError) return
+        throw error
+      })
+      if (!existing) {
+        await Storage.write(["session", newProjectID, sessionID], {
+          ...session,
+          projectID: newProjectID,
+        })
+      }
+      await moveFilesystem(fromBucket, newProjectID, sessionID)
+      await moveWorkspace(fromBucket, newProjectID, sessionID)
+      await moveKernels(fromBucket, newProjectID, sessionID)
       await Storage.remove(key)
-    }).catch((error) => {
-      log.error("failed to migrate sessions", { error, from: fromBucket, to: newProjectID })
+    })
+  }
+
+  async function moveKernels(fromBucket: string, newProjectID: string, sessionID: string) {
+    const paths = await Storage.list(["kernel_registry", fromBucket, sessionID]).catch(() => [])
+    await work(10, paths, async (source) => {
+      const raw = await Storage.read<unknown>(source)
+      const parsed = z
+        .object({
+          identity: z.object({
+            projectID: z.string(),
+            sessionID: z.string(),
+            name: z.string(),
+            language: z.string(),
+          }),
+        })
+        .passthrough()
+        .safeParse(raw)
+      if (!parsed.success) return
+      const identity = {
+        ...parsed.data.identity,
+        projectID: newProjectID,
+        sessionID,
+      }
+      const id = `kernel-${Bun.hash(
+        `${identity.projectID}\0${identity.sessionID}\0${identity.name}\0${identity.language}`,
+      ).toString(36)}`
+      const target = ["kernel_registry", newProjectID, sessionID, id]
+      const existing = await Storage.read<unknown>(target).catch((error) => {
+        if (Storage.NotFoundError.isInstance(error)) return
+        throw error
+      })
+      if (!existing) {
+        await Storage.write(target, {
+          ...parsed.data,
+          identity,
+        })
+      }
+      await Storage.remove(source)
+    })
+  }
+
+  async function moveWorkspace(fromBucket: string, newProjectID: string, sessionID: string) {
+    const source = ["session_workspace", fromBucket, sessionID]
+    const workspace = await Storage.read<SessionWorkspace.Info>(source).catch((error) => {
+      if (Storage.NotFoundError.isInstance(error)) return
+      throw error
+    })
+    if (!workspace) return
+
+    const target = ["session_workspace", newProjectID, sessionID]
+    const existing = await Storage.read<SessionWorkspace.Info>(target).catch((error) => {
+      if (Storage.NotFoundError.isInstance(error)) return
+      throw error
+    })
+    if (!existing) {
+      await Storage.write<SessionWorkspace.Info>(target, {
+        ...workspace,
+        projectID: newProjectID,
+      })
+    }
+    await Storage.remove(source)
+  }
+
+  async function moveFilesystem(fromBucket: string, newProjectID: string, sessionID: string) {
+    const source = ["session_filesystem", fromBucket, sessionID]
+    const legacy = await Storage.read<SessionFilesystem.State>(source).catch((error) => {
+      if (Storage.NotFoundError.isInstance(error)) return
+      throw error
+    })
+    if (!legacy) return
+
+    const target = ["session_filesystem", newProjectID, sessionID]
+    const existing = await Storage.read<SessionFilesystem.State>(target).catch((error) => {
+      if (Storage.NotFoundError.isInstance(error)) return
+      throw error
+    })
+    const grants = existing
+      ? [
+          ...existing.grants,
+          ...legacy.grants.filter((grant) => !existing.grants.some((current) => current.id === grant.id)),
+        ]
+      : legacy.grants
+    const changed = !!existing && grants.length !== existing.grants.length
+    await Storage.write<SessionFilesystem.State>(target, {
+      ...(existing ?? legacy),
+      sessionID,
+      projectID: newProjectID,
+      grants,
+      revision: existing ? Math.max(existing.revision, legacy.revision) + (changed ? 1 : 0) : legacy.revision,
+    })
+    await Storage.remove(source)
+  }
+
+  async function moveFilesystemBucket(
+    fromBucket: string,
+    newProjectID: string,
+    keep: (state: SessionFilesystem.State) => boolean,
+  ) {
+    const records = await Storage.list(["session_filesystem", fromBucket]).catch(() => [])
+    await work(10, records, async (key) => {
+      const state = await Storage.read<SessionFilesystem.State>(key)
+      if (!keep(state)) return
+      const session = await Storage.read<Session.Info>(["session", newProjectID, state.sessionID]).catch((error) => {
+        if (Storage.NotFoundError.isInstance(error)) return
+        throw error
+      })
+      if (!session) return
+      await moveFilesystem(fromBucket, newProjectID, state.sessionID)
     })
   }
 

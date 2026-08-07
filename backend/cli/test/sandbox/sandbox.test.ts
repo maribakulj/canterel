@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import fs from "fs"
 import os from "os"
+import path from "path"
 import { Sandbox } from "../../src/sandbox/sandbox"
+import { tmpdir } from "../fixture/fixture"
 
 const shell = "/bin/sh"
 
@@ -34,6 +37,15 @@ describe("Sandbox.seatbeltProfile", () => {
     const profile = Sandbox.seatbeltProfile({ writable: ['/weird/pa"th'], network: true })
     expect(profile).toContain('/weird/pa\\"th')
   })
+
+  test("denies reads of host credential files", () => {
+    const profile = Sandbox.seatbeltProfile({
+      writable: ["/work/project"],
+      unreadable: ["/home/user/.config/atlas-cli/config.json"],
+      network: true,
+    })
+    expect(profile).toContain('(deny file-read* (literal "/home/user/.config/atlas-cli/config.json"))')
+  })
 })
 
 describe("Sandbox.bubblewrapArgs", () => {
@@ -65,6 +77,58 @@ describe("Sandbox.bubblewrapArgs", () => {
 
   test("unshares the PID namespace so /proc escape vectors are closed", () => {
     expect(Sandbox.bubblewrapArgs({ writable: ["/w"], network: true })).toContain("--unshare-pid")
+  })
+
+  test("masks host credential files with an empty device", () => {
+    const file = path.join(os.tmpdir(), `openscience-sandbox-secret-${process.pid}`)
+    fs.writeFileSync(file, "secret")
+    try {
+      const args = Sandbox.bubblewrapArgs({
+        writable: ["/work/project"],
+        unreadable: [file],
+        network: true,
+      })
+      const mask = args.findIndex((value, index) => value === "--ro-bind-try" && args[index + 1] === "/dev/null")
+      expect(args.slice(mask, mask + 3)).toEqual(["--ro-bind-try", "/dev/null", file])
+    } finally {
+      fs.rmSync(file, { force: true })
+    }
+  })
+
+  test("does not ask bubblewrap to create a missing credential mask under the read-only root", () => {
+    const file = path.join(os.tmpdir(), `openscience-sandbox-missing-${process.pid}`)
+    fs.rmSync(file, { force: true })
+    const args = Sandbox.bubblewrapArgs({
+      writable: ["/work/project"],
+      unreadable: [file],
+      network: true,
+    })
+    expect(args).not.toContain(file)
+  })
+
+  test.skipIf(Sandbox.backend() !== "bubblewrap")("produces an argv bwrap actually accepts", async () => {
+    await using tmp = await tmpdir()
+    const present = path.join(tmp.path, "auth.json")
+    await Bun.write(present, "{}")
+
+    // The missing mask target has to sit on the read-only bind, the way a real
+    // ~/.local/share credential file does — a path under the sandbox's own
+    // tmpfs would be creatable and hide the failure.
+    const missing = path.join(os.homedir(), `.openscience-absent-${process.pid}.json`)
+    const args = Sandbox.bubblewrapArgs({
+      writable: [tmp.path],
+      unreadable: [present, missing],
+      network: false,
+    })
+    const proc = Bun.spawn(["bwrap", ...args, "--", "/bin/echo", "ok"], { stdout: "pipe", stderr: "pipe" })
+    const [out, error, exit] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+
+    expect(exit, error).toBe(0)
+    expect(out.trim()).toBe("ok")
   })
 })
 

@@ -101,7 +101,9 @@
   }
 
   [data-component="user-message"] [data-slot="user-message-text"] {
-    max-height: var(--user-message-collapsed-height, 64px);
+    /* ~5 text lines before the collapse fade — long prompts stay skimmable
+       without shrinking to a 2-line sliver. */
+    max-height: var(--user-message-collapsed-height, 112px);
   }
 
   [data-component="user-message"][data-expanded="true"] [data-slot="user-message-text"] {
@@ -530,6 +532,9 @@
       width: 12px;
       height: 12px;
       margin-right: 4px;
+      /* Don't let a long status line ("Searching the web · 10m, 1s") squeeze the
+         SVG — without this the 15-unit grid compresses and the dots read as cut off. */
+      flex-shrink: 0;
     }
 
     [data-component="icon"] {
@@ -591,5 +596,26 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  [data-slot="session-turn-artifact-save"] {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+
+    [data-slot="session-turn-artifact-action"] {
+      color: var(--text-base-muted);
+    }
+
+    [data-slot="session-turn-artifact-action"][data-state="saved"] {
+      color: var(--text-success-base);
+    }
+
+    [data-slot="session-turn-artifact-action"][data-state="error"] {
+      color: var(--text-critical-base);
+    }
   }
 }

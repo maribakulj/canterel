@@ -23,8 +23,10 @@ export const WriteTool = Tool.define("write", {
     filePath: z.string().describe("The absolute path to the file to write (must be absolute, not relative)"),
   }),
   async execute(params, ctx) {
-    const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
-    await assertExternalDirectory(ctx, filepath)
+    const requested = path.isAbsolute(params.filePath)
+      ? params.filePath
+      : path.join(Instance.directory, params.filePath)
+    const filepath = (await assertExternalDirectory(ctx, requested, { access: "write" }))?.path ?? requested
 
     const file = Bun.file(filepath)
     const exists = await file.exists()

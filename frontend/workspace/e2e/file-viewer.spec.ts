@@ -1,35 +1,15 @@
 import { test, expect } from "./fixtures"
-import { modKey } from "./utils"
+import { openFilesSources, openWorkspaceFile } from "./utils"
 
-test("smoke file viewer renders real file content", async ({ page, gotoSession }) => {
-  await gotoSession()
+test("smoke file viewer renders real file content", async ({ page, openSession }) => {
+  await openSession()
 
-  const sep = process.platform === "win32" ? "\\" : "/"
-  const file = ["packages", "app", "package.json"].join(sep)
+  await openFilesSources(page)
+  await expect(page.getByRole("searchbox", { name: "Search Session files", exact: true })).toBeEnabled()
+  await page.locator("[data-source-button]").click()
+  await expect(page.getByRole("button", { name: "Add folder…", exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Close source menu", exact: true }).click()
 
-  await page.keyboard.press(`${modKey}+P`)
-
-  const dialog = page.getByRole("dialog")
-  await expect(dialog).toBeVisible()
-
-  const input = dialog.getByRole("textbox").first()
-  await input.fill(file)
-
-  const fileItem = dialog
-    .locator(
-      '[data-slot="list-item"][data-key^="file:"][data-key*="packages"][data-key*="app"][data-key$="package.json"]',
-    )
-    .first()
-  await expect(fileItem).toBeVisible()
-  await fileItem.click()
-
-  await expect(dialog).toHaveCount(0)
-
-  const tab = page.getByRole("tab", { name: "package.json" })
-  await expect(tab).toBeVisible()
-  await tab.click()
-
-  const code = page.locator('[data-component="code"]').first()
-  await expect(code).toBeVisible()
-  await expect(code.getByText("@synsci/app")).toBeVisible()
+  await openWorkspaceFile(page, "package.json")
+  await expect(page.getByText("@synsci/monorepo")).toBeVisible()
 })

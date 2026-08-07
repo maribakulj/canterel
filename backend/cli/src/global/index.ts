@@ -3,6 +3,7 @@ import { readFileSync, existsSync, renameSync } from "fs"
 import { xdgData, xdgCache, xdgConfig, xdgState } from "xdg-basedir"
 import path from "path"
 import os from "os"
+import { resolveDataDirectory } from "./data-dir"
 
 const app = "openscience"
 
@@ -11,6 +12,12 @@ const app = "openscience"
 // exist yet and the legacy one does, move it into place; if the move fails
 // (permissions, cross-device), keep reading the legacy dir so nothing is lost.
 const legacy = "synsc"
+const detectedLegacyConflicts: Array<{ legacy: string; current: string }> = []
+
+function override(key: string): string | undefined {
+  const value = process.env[key]?.trim()
+  return value ? path.resolve(value) : undefined
+}
 
 function migrateDir(base: string): string {
   const next = path.join(base, app)
@@ -23,10 +30,10 @@ function migrateDir(base: string): string {
     }
   }
   // Both dirs existing means the legacy one was restored (backup, dotfiles)
-  // after the new dir was created. It will never be read or migrated — say
-  // so instead of silently stranding whatever auth/config lives in it.
+  // after the new dir was created. Record the conflict for `openscience
+  // doctor`; printing here spammed every command, including `--version`.
   if (existsSync(next) && existsSync(old)) {
-    console.error(`openscience: ignoring legacy config at ${old} (${next} already exists) — merge or remove it`)
+    detectedLegacyConflicts.push({ legacy: old, current: next })
   }
   return next
 }
@@ -43,23 +50,28 @@ function migrateFile(dir: string, oldName: string, newName: string) {
 }
 
 const cache = migrateDir(xdgCache!)
-const config = migrateDir(xdgConfig!)
+const config = override("OPENSCIENCE_CONFIG_DIR") ?? migrateDir(xdgConfig!)
 const state = migrateDir(xdgState!)
 
 // The data directory can be relocated from settings ▸ Storage. When a pointer
-// file exists (config/data-location) we honour it; otherwise the XDG default.
-// Read synchronously at boot so every Global.Path.data consumer sees one value.
-function resolveDataDir(): string {
-  const fallback = migrateDir(xdgData!)
+// file exists (config/data-location) we honour it; otherwise ~/.openscience.
+// Resolve once at boot so every Global.Path.data consumer sees one value.
+const explicit = override("OPENSCIENCE_DATA_DIR")
+const pointer = (() => {
   try {
-    const pointer = readFileSync(path.join(config, "data-location"), "utf8").trim()
-    return pointer ? path.resolve(pointer) : fallback
+    return readFileSync(path.join(config, "data-location"), "utf8").trim() || undefined
   } catch {
-    return fallback
+    return
   }
-}
-
-const data = resolveDataDir()
+})()
+const previous = migrateDir(xdgData!)
+const resolved = await resolveDataDirectory({
+  home: process.env.OPENSCIENCE_TEST_HOME || os.homedir(),
+  legacy: previous,
+  explicit,
+  pointer,
+})
+const data = resolved.path
 
 // Legacy file names inside the migrated dirs (pre-rename releases).
 migrateFile(data, "synsci-session.json", "openscience-session.json")
@@ -68,6 +80,14 @@ migrateFile(config, "synsc.jsonc", "openscience.jsonc")
 migrateFile(config, "synsc.json", "openscience.json")
 
 export namespace Global {
+  export const LegacyConflicts = detectedLegacyConflicts as readonly { legacy: string; current: string }[]
+  export const DataMigration = resolved
+  /** The XDG data directory earlier releases used. The import copies out of it
+   *  rather than moving, so it survives as a safety copy — and, left alone,
+   *  as a permanent duplicate nothing ever tells the user they can delete.
+   *  `openscience doctor` reports it and can remove it. Undefined once the
+   *  data root is the same directory or the user has cleaned it up. */
+  export const LegacyData = previous === data ? undefined : previous
   export const Path = {
     // Allow override via OPENSCIENCE_TEST_HOME for test isolation
     get home() {

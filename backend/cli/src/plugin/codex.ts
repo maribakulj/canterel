@@ -1,7 +1,8 @@
 import type { Hooks, PluginInput } from "@synsci/plugin"
 import { Log } from "../util/log"
+import { escapeHtml, htmlResponse } from "../util/html"
 import { Installation } from "../installation"
-import { Auth, OAUTH_DUMMY_KEY } from "../auth"
+import { OAUTH_DUMMY_KEY } from "../auth"
 import { OpenScience } from "../openscience"
 import { managedApiBase } from "../endpoints"
 import os from "os"
@@ -9,7 +10,7 @@ import os from "os"
 const log = Log.create({ service: "plugin.codex" })
 
 export async function pushTokensToBackend(
-  thesisBaseUrl: string,
+  atlasBaseUrl: string,
   thkToken: string,
   payload: {
     access_token: string
@@ -20,7 +21,7 @@ export async function pushTokensToBackend(
   },
 ): Promise<void> {
   try {
-    const res = await fetch(`${thesisBaseUrl}/api/keys/openai-codex`, {
+    const res = await fetch(`${atlasBaseUrl}/api/keys/openai-codex`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${thkToken}`,
@@ -28,7 +29,7 @@ export async function pushTokensToBackend(
       },
       body: JSON.stringify(payload),
       // Bound the push: the browser OAuth has already succeeded and the login
-      // callback awaits this, so a hung thesis backend would otherwise leave
+      // callback awaits this, so a hung atlas backend would otherwise leave
       // `keys signin` spinning on "Waiting for authorization…" indefinitely.
       signal: AbortSignal.timeout(OAUTH_HTTP_TIMEOUT_MS),
     })
@@ -36,7 +37,7 @@ export async function pushTokensToBackend(
       log.warn("codex backend push failed", { status: res.status })
       return
     }
-    log.info("codex tokens pushed to thesis backend")
+    log.info("codex tokens pushed to atlas backend")
   } catch (e) {
     log.warn("codex backend push errored", { error: String(e) })
   }
@@ -293,9 +294,6 @@ const HTML_SUCCESS = `<!doctype html>
       <h1>Authorization Successful</h1>
       <p>You can close this window and return to OpenScience.</p>
     </div>
-    <script>
-      setTimeout(() => window.close(), 2000)
-    </script>
   </body>
 </html>`
 
@@ -342,7 +340,7 @@ const HTML_ERROR = (error: string) => `<!doctype html>
     <div class="container">
       <h1>Authorization Failed</h1>
       <p>An error occurred during authorization.</p>
-      <div class="error">${error}</div>
+      <div class="error">${escapeHtml(error)}</div>
     </div>
   </body>
 </html>`
@@ -378,6 +376,7 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
 
   oauthServer = Bun.serve({
     port: OAUTH_PORT,
+    hostname: "127.0.0.1",
     fetch(req) {
       const url = new URL(req.url)
 
@@ -391,18 +390,15 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
           const errorMsg = errorDescription || error
           pendingOAuth?.reject(new Error(errorMsg))
           pendingOAuth = undefined
-          return new Response(HTML_ERROR(errorMsg), {
-            headers: { "Content-Type": "text/html" },
-          })
+          return htmlResponse(HTML_ERROR(errorMsg))
         }
 
         if (!code) {
           const errorMsg = "Missing authorization code"
           pendingOAuth?.reject(new Error(errorMsg))
           pendingOAuth = undefined
-          return new Response(HTML_ERROR(errorMsg), {
+          return htmlResponse(HTML_ERROR(errorMsg), {
             status: 400,
-            headers: { "Content-Type": "text/html" },
           })
         }
 
@@ -410,9 +406,8 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
           const errorMsg = "Invalid state - potential CSRF attack"
           pendingOAuth?.reject(new Error(errorMsg))
           pendingOAuth = undefined
-          return new Response(HTML_ERROR(errorMsg), {
+          return htmlResponse(HTML_ERROR(errorMsg), {
             status: 400,
-            headers: { "Content-Type": "text/html" },
           })
         }
 
@@ -423,9 +418,7 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
           .then((tokens) => current.resolve(tokens))
           .catch((err) => current.reject(err))
 
-        return new Response(HTML_SUCCESS, {
-          headers: { "Content-Type": "text/html" },
-        })
+        return htmlResponse(HTML_SUCCESS)
       }
 
       if (url.pathname === "/cancel") {
@@ -488,7 +481,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         // Provider models + cost-zeroing are handled at database
         // synthesis time in provider/provider.ts. By the time the
         // loader runs, database["openai-codex"] already has the
-        // 5 Codex-routable models with zero cost.
+        // Curated Codex-routable models with zero cost.
 
         return {
           apiKey: OAUTH_DUMMY_KEY,
@@ -726,12 +719,12 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                   const tokens = await callbackPromise
                   const accountId = extractAccountId(tokens)
 
-                  // Fire-and-forget: push tokens to thesis backend so the
+                  // Fire-and-forget: push tokens to atlas backend so the
                   // dashboard + managed-mode proxy can use them. Local login
                   // succeeds regardless of whether this call succeeds.
-                  const thesisBase = managedApiBase()
+                  const atlasBase = managedApiBase()
                   if (thkToken) {
-                    await pushTokensToBackend(thesisBase, thkToken, {
+                    await pushTokensToBackend(atlasBase, thkToken, {
                       access_token: tokens.access_token,
                       refresh_token: tokens.refresh_token,
                       expires_in: tokens.expires_in ?? 3600,
@@ -847,10 +840,10 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                     const tokens: TokenResponse = await tokenResponse.json()
                     const accountId = extractAccountId(tokens)
 
-                    // Fire-and-forget: push tokens to thesis backend.
-                    const thesisBase = managedApiBase()
+                    // Fire-and-forget: push tokens to atlas backend.
+                    const atlasBase = managedApiBase()
                     if (thkToken) {
-                      await pushTokensToBackend(thesisBase, thkToken, {
+                      await pushTokensToBackend(atlasBase, thkToken, {
                         access_token: tokens.access_token,
                         refresh_token: tokens.refresh_token,
                         expires_in: tokens.expires_in ?? 3600,

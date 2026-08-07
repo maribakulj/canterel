@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
+import fs from "fs/promises"
 import { ReadTool } from "../../src/tool/read"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
@@ -120,6 +121,37 @@ describe("tool.read external_directory permission", () => {
         await read.execute({ filePath: path.join(tmp.path, "internal.txt") }, testCtx)
         const extDirReq = requests.find((r) => r.permission === "external_directory")
         expect(extDirReq).toBeUndefined()
+      },
+    })
+  })
+
+  test("asks for external_directory permission when an internal symlink resolves outside the project", async () => {
+    await using outside = await tmpdir({
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "secret.txt"), "external secret")
+      },
+    })
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await fs.symlink(outside.path, path.join(dir, "escape"))
+      },
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const requests: Array<Omit<PermissionNext.Request, "id" | "sessionID" | "tool">> = []
+        const testCtx = {
+          ...ctx,
+          ask: async (req: Omit<PermissionNext.Request, "id" | "sessionID" | "tool">) => {
+            requests.push(req)
+          },
+        }
+        const read = await ReadTool.init()
+        const result = await read.execute({ filePath: path.join(tmp.path, "escape", "secret.txt") }, testCtx)
+        expect(result.output).toContain("external secret")
+        expect(requests.some((request) => request.permission === "external_directory")).toBe(true)
       },
     })
   })

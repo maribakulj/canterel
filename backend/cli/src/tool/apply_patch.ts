@@ -58,8 +58,8 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
     let totalDiff = ""
 
     for (const hunk of hunks) {
-      const filePath = path.resolve(Instance.directory, hunk.path)
-      await assertExternalDirectory(ctx, filePath)
+      const requested = path.resolve(Instance.directory, hunk.path)
+      const filePath = (await assertExternalDirectory(ctx, requested, { access: "write" }))?.path ?? requested
 
       switch (hunk.type) {
         case "add": {
@@ -116,8 +116,10 @@ export const ApplyPatchTool = Tool.define("apply_patch", {
             if (change.removed) deletions += change.count || 0
           }
 
-          const movePath = hunk.move_path ? path.resolve(Instance.directory, hunk.move_path) : undefined
-          await assertExternalDirectory(ctx, movePath)
+          const requestedMove = hunk.move_path ? path.resolve(Instance.directory, hunk.move_path) : undefined
+          const movePath = requestedMove
+            ? ((await assertExternalDirectory(ctx, requestedMove, { access: "write" }))?.path ?? requestedMove)
+            : undefined
 
           fileChanges.push({
             filePath,

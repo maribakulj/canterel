@@ -7,6 +7,7 @@ import z from "zod"
 import { Config } from "../config/config"
 import { Instance } from "../project/instance"
 import { Scheduler } from "../scheduler"
+import { Filesystem } from "../util/filesystem"
 
 export namespace Snapshot {
   const log = Log.create({ service: "snapshot" })
@@ -157,6 +158,7 @@ export namespace Snapshot {
   export async function revert(patches: Patch[]) {
     const files = new Set<string>()
     const git = gitdir()
+    const root = await fs.realpath(Instance.worktree).catch(() => path.resolve(Instance.worktree))
     for (const item of patches) {
       // Restore never builds a per-file git pathspec: `git checkout <tree> --
       // <path>` proved unreliable for unusual filenames depending on platform.
@@ -186,42 +188,60 @@ export namespace Snapshot {
         entries.set(path.join(Instance.worktree, line.slice(tab + 1)), { mode, sha })
       }
       for (const file of item.files) {
-        if (files.has(file)) continue
-        files.add(file)
-        log.info("reverting", { file, hash: item.hash })
-        const entry = entries.get(file)
+        const target = path.resolve(file)
+        if (files.has(target)) continue
+        files.add(target)
+        if (!Filesystem.contains(Instance.worktree, target)) {
+          log.warn("skipping snapshot revert outside worktree", { file, hash: item.hash })
+          continue
+        }
+        const parent = await realExistingParent(path.dirname(target))
+        if (!parent || !Filesystem.contains(root, parent)) {
+          log.warn("skipping snapshot revert through external parent", { file, parent, hash: item.hash })
+          continue
+        }
+        log.info("reverting", { file: target, hash: item.hash })
+        const entry = entries.get(target)
         if (!entry) {
-          log.info("file did not exist in snapshot, deleting", { file })
-          await fs.rm(file, { force: true }).catch(() => {})
+          log.info("file did not exist in snapshot, deleting", { file: target })
+          await fs.rm(target, { force: true }).catch(() => {})
           continue
         }
         if (entry.mode === "160000") {
-          log.info("skipping submodule entry", { file })
+          log.info("skipping submodule entry", { file: target })
           continue
         }
         const blob = await $`git --git-dir ${git} cat-file blob ${entry.sha}`.quiet().cwd(Instance.worktree).nothrow()
         if (blob.exitCode !== 0) {
           log.warn("could not read blob, keeping file", {
-            file,
+            file: target,
             sha: entry.sha,
             stderr: blob.stderr.toString(),
           })
           continue
         }
-        await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => {})
+        await fs.mkdir(path.dirname(target), { recursive: true }).catch(() => {})
         // remove the current entry first: it may be a symlink (writing through
         // it would clobber the target) or have the wrong file type
-        await fs.rm(file, { force: true }).catch(() => {})
+        await fs.rm(target, { force: true }).catch(() => {})
         if (entry.mode === "120000") {
           await fs
-            .symlink(blob.text(), file)
-            .catch((e) => log.warn("could not restore symlink", { file, error: String(e) }))
+            .symlink(blob.text(), target)
+            .catch((e) => log.warn("could not restore symlink", { file: target, error: String(e) }))
           continue
         }
-        await fs.writeFile(file, blob.bytes())
-        await fs.chmod(file, entry.mode === "100755" ? 0o755 : 0o644).catch(() => {})
+        await fs.writeFile(target, blob.bytes())
+        await fs.chmod(target, entry.mode === "100755" ? 0o755 : 0o644).catch(() => {})
       }
     }
+  }
+
+  async function realExistingParent(dir: string): Promise<string | undefined> {
+    const real = await fs.realpath(dir).catch(() => undefined)
+    if (real) return real
+    const parent = path.dirname(dir)
+    if (parent === dir) return
+    return realExistingParent(parent)
   }
 
   export async function diff(hash: string) {

@@ -5,8 +5,6 @@ import { Bus } from "@/bus"
 import { Decimal } from "decimal.js"
 import z from "zod"
 import { type LanguageModelUsage, type ProviderMetadata } from "ai"
-import { Config } from "../config/config"
-import { Flag } from "../flag/flag"
 import { Identifier } from "../id/id"
 import { Installation } from "../installation"
 
@@ -23,6 +21,11 @@ import { Snapshot } from "@/snapshot"
 import type { Provider } from "@/provider/provider"
 import { PermissionNext } from "@/permission/next"
 import { Global } from "@/global"
+import { KernelRuntime } from "@/science/kernel/registry"
+import { Project } from "@/project/project"
+import { NamedError } from "@synsci/util/error"
+import { SessionFilesystem } from "./filesystem"
+import { SessionTraceStore } from "./trace-store"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
@@ -31,10 +34,12 @@ export namespace Session {
   const childTitlePrefix = "Child session - "
 
   function createDefaultTitle(isChild = false) {
-    return (isChild ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString()
+    if (!isChild) return "New session"
+    return childTitlePrefix + new Date().toISOString()
   }
 
   export function isDefaultTitle(title: string) {
+    if (title === "New session") return true
     return new RegExp(
       `^(${parentTitlePrefix}|${childTitlePrefix})\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$`,
     ).test(title)
@@ -77,6 +82,7 @@ export namespace Session {
         updated: z.number(),
         compacting: z.number().optional(),
         archived: z.number().optional(),
+        pinned: z.number().optional(),
       }),
       permission: PermissionNext.Ruleset.optional(),
       revert: z
@@ -92,6 +98,50 @@ export namespace Session {
       ref: "Session",
     })
   export type Info = z.output<typeof Info>
+
+  export const DirectoryMismatchError = NamedError.create(
+    "SessionDirectoryMismatchError",
+    z.object({
+      sessionID: Identifier.schema("session"),
+      sessionDirectory: z.string(),
+      instanceDirectory: z.string(),
+    }),
+  )
+
+  export const DirectoryImmutableError = NamedError.create(
+    "SessionDirectoryImmutableError",
+    z.object({
+      sessionID: Identifier.schema("session"),
+      directory: z.string(),
+    }),
+  )
+
+  const validated = Instance.state(() => new Set<string>())
+
+  function current(session: Info) {
+    return Project.canonicalize(session.directory) === Project.canonicalize(Instance.directory)
+  }
+
+  function bind(session: Info) {
+    if (!current(session)) {
+      throw new DirectoryMismatchError({
+        sessionID: session.id,
+        sessionDirectory: Project.canonicalize(session.directory),
+        instanceDirectory: Project.canonicalize(Instance.directory),
+      })
+    }
+    validated().add(session.id)
+    return session
+  }
+
+  async function load(id: string) {
+    return (await Storage.read<Info>(["session", Instance.project.id, id])) as Info
+  }
+
+  export async function assertDirectory(id: string) {
+    if (validated().has(id)) return
+    bind(await load(id))
+  }
 
   export const ShareInfo = z
     .object({
@@ -211,12 +261,29 @@ export namespace Session {
     directory: string
     permission?: PermissionNext.Ruleset
   }) {
+    const id = Identifier.descending("session", input.id)
+    const directory = Project.canonicalize(input.directory)
+    const existing = input.id
+      ? await load(id).catch((error) => {
+          if (Storage.NotFoundError.isInstance(error)) return
+          throw error
+        })
+      : undefined
+    if (existing) bind(existing)
+    if (input.parentID) await assertDirectory(input.parentID)
+    if (directory !== Project.canonicalize(Instance.directory)) {
+      throw new DirectoryMismatchError({
+        sessionID: id,
+        sessionDirectory: directory,
+        instanceDirectory: Project.canonicalize(Instance.directory),
+      })
+    }
     const result: Info = {
-      id: Identifier.descending("session", input.id),
+      id,
       slug: Slug.create(),
       version: Installation.VERSION,
       projectID: Instance.project.id,
-      directory: input.directory,
+      directory,
       parentID: input.parentID,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       permission: input.permission,
@@ -227,6 +294,8 @@ export namespace Session {
     }
     log.info("created", result)
     await Storage.write(["session", Instance.project.id, result.id], result)
+    await SessionFilesystem.initialize(result.id, directory)
+    validated().add(result.id)
     Bus.publish(Event.Created, {
       info: result,
     })
@@ -244,8 +313,7 @@ export namespace Session {
   }
 
   export const get = fn(Identifier.schema("session"), async (id) => {
-    const read = await Storage.read<Info>(["session", Instance.project.id, id])
-    return read as Info
+    return bind(await load(id))
   })
 
   export const getShare = fn(Identifier.schema("session"), async (id) => {
@@ -260,8 +328,15 @@ export namespace Session {
 
   export async function update(id: string, editor: (session: Info) => void, options?: { touch?: boolean }) {
     const project = Instance.project
+    const session = await get(id)
     const result = await Storage.update<Info>(["session", project.id, id], (draft) => {
       editor(draft)
+      if (draft.directory !== session.directory) {
+        throw new DirectoryImmutableError({
+          sessionID: id,
+          directory: session.directory,
+        })
+      }
       if (options?.touch !== false) {
         draft.time.updated = Date.now()
       }
@@ -273,6 +348,7 @@ export namespace Session {
   }
 
   export const diff = fn(Identifier.schema("session"), async (sessionID) => {
+    await assertDirectory(sessionID)
     const diffs = await Storage.read<Snapshot.FileDiff[]>(["session_diff", sessionID])
     return diffs ?? []
   })
@@ -283,6 +359,7 @@ export namespace Session {
       limit: z.number().optional(),
     }),
     async (input) => {
+      await assertDirectory(input.sessionID)
       const result = [] as MessageV2.WithParts[]
       for await (const msg of MessageV2.stream(input.sessionID)) {
         if (input.limit && result.length >= input.limit) break
@@ -296,15 +373,19 @@ export namespace Session {
   export async function* list() {
     const project = Instance.project
     for (const item of await Storage.list(["session", project.id])) {
-      yield Storage.read<Info>(item)
+      const session = await Storage.read<Info>(item)
+      if (!current(session)) continue
+      yield session
     }
   }
 
   export const children = fn(Identifier.schema("session"), async (parentID) => {
+    await assertDirectory(parentID)
     const project = Instance.project
     const result = [] as Session.Info[]
     for (const item of await Storage.list(["session", project.id])) {
       const session = await Storage.read<Info>(item)
+      if (!current(session)) continue
       if (session.parentID !== parentID) continue
       result.push(session)
     }
@@ -313,8 +394,8 @@ export namespace Session {
 
   export const remove = fn(Identifier.schema("session"), async (sessionID) => {
     const project = Instance.project
+    const session = await get(sessionID)
     try {
-      const session = await get(sessionID)
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
@@ -325,7 +406,11 @@ export namespace Session {
         }
         await Storage.remove(msg)
       }
+      await KernelRuntime.removeSession(project.id, sessionID)
+      await SessionFilesystem.remove(sessionID)
+      await SessionTraceStore.remove(sessionID)
       await Storage.remove(["session", project.id, sessionID])
+      validated().delete(sessionID)
       Bus.publish(Event.Deleted, {
         info: session,
       })
@@ -335,6 +420,7 @@ export namespace Session {
   })
 
   export const updateMessage = fn(MessageV2.Info, async (msg) => {
+    await assertDirectory(msg.sessionID)
     await Storage.write(["message", msg.sessionID, msg.id], msg)
     Bus.publish(MessageV2.Event.Updated, {
       info: msg,
@@ -348,6 +434,7 @@ export namespace Session {
       messageID: Identifier.schema("message"),
     }),
     async (input) => {
+      await assertDirectory(input.sessionID)
       await Storage.remove(["message", input.sessionID, input.messageID])
       MessageV2.invalidateLastID(input.sessionID)
       Bus.publish(MessageV2.Event.Removed, {
@@ -365,6 +452,7 @@ export namespace Session {
       partID: Identifier.schema("part"),
     }),
     async (input) => {
+      await assertDirectory(input.sessionID)
       await Storage.remove(["part", input.messageID, input.partID])
       Bus.publish(MessageV2.Event.PartRemoved, {
         sessionID: input.sessionID,
@@ -395,6 +483,7 @@ export namespace Session {
   export const updatePart = fn(UpdatePartInput, async (input) => {
     const part = "delta" in input ? input.part : input
     const delta = "delta" in input ? input.delta : undefined
+    await assertDirectory(part.sessionID)
     // Publish immediately so the SSE stream is not gated on the disk write.
     Bus.publish(MessageV2.Event.PartUpdated, { part, delta })
     const key = part.sessionID + "/" + part.messageID + "/" + part.id
@@ -411,6 +500,7 @@ export namespace Session {
   export const getUsage = fn(
     z.object({
       model: z.custom<Provider.Model>(),
+      tier: z.string().optional(),
       usage: z.custom<LanguageModelUsage>(),
       metadata: z.custom<ProviderMetadata>().optional(),
     }),
@@ -450,10 +540,12 @@ export namespace Session {
       // cache-CREATION tokens too. Omitting cache.write meant a mostly-cache-write
       // request that really exceeded 200k was billed at the base tier (cost
       // under-report).
+      const modeCost = input.tier ? input.model.modes?.[input.tier]?.cost : undefined
       const costInfo =
-        input.model.cost?.experimentalOver200K && tokens.input + tokens.cache.read + tokens.cache.write > 200_000
+        modeCost ??
+        (input.model.cost?.experimentalOver200K && tokens.input + tokens.cache.read + tokens.cache.write > 200_000
           ? input.model.cost.experimentalOver200K
-          : input.model.cost
+          : input.model.cost)
       return {
         cost: safe(
           new Decimal(0)

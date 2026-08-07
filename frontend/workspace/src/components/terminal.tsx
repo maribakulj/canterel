@@ -11,6 +11,7 @@ import { showToast } from "@synsci/ui/toast"
 
 export interface TerminalProps extends ComponentProps<"div"> {
   pty: LocalPTY
+  active?: boolean
   onSubmit?: () => void
   onCleanup?: (pty: LocalPTY) => void
   onConnect?: () => void
@@ -58,10 +59,8 @@ export const Terminal = (props: TerminalProps) => {
   const theme = useTheme()
   const language = useLanguage()
   let container!: HTMLDivElement
-  const [local, others] = splitProps(props, ["pty", "class", "classList", "onConnect", "onConnectError"])
-  let ws: WebSocket | undefined
+  const [local, others] = splitProps(props, ["pty", "active", "class", "classList", "onConnect", "onConnectError"])
   let term: Term | undefined
-  let ghostty: Ghostty
   let serializeAddon: SerializeAddon
   let fitAddon: FitAddon
   let handleResize: () => void
@@ -136,6 +135,11 @@ export const Terminal = (props: TerminalProps) => {
     focusTerminal()
   }
 
+  createEffect(() => {
+    if (!local.active || !term) return
+    queueMicrotask(focusTerminal)
+  })
+
   onMount(() => {
     const run = async () => {
       const loaded = await loadGhostty()
@@ -146,7 +150,7 @@ export const Terminal = (props: TerminalProps) => {
 
       const once = { value: false }
 
-      const url = new URL(sdk.url + `/pty/${local.pty.id}/connect?directory=${encodeURIComponent(sdk.directory)}`)
+      const url = new URL(sdk.request.url(`/pty/${local.pty.id}/connect`))
       const socket = new WebSocket(url)
       cleanups.push(() => {
         if (socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) socket.close()
@@ -155,8 +159,6 @@ export const Terminal = (props: TerminalProps) => {
         cleanup()
         return
       }
-      ws = socket
-
       const t = new mod.Terminal({
         cursorBlink: true,
         cursorStyle: "bar",
@@ -172,7 +174,6 @@ export const Terminal = (props: TerminalProps) => {
         cleanup()
         return
       }
-      ghostty = g
       term = t
 
       const copy = () => {
@@ -248,7 +249,7 @@ export const Terminal = (props: TerminalProps) => {
       cleanups.push(() => t.textarea?.removeEventListener("focus", handleTextareaFocus))
       cleanups.push(() => t.textarea?.removeEventListener("blur", handleTextareaBlur))
 
-      focusTerminal()
+      if (local.active !== false) focusTerminal()
 
       if (local.pty.buffer) {
         if (local.pty.rows && local.pty.cols) {

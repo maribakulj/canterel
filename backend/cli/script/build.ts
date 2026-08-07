@@ -14,6 +14,8 @@ process.chdir(dir)
 
 import pkg from "../package.json"
 import { Script } from "@synsci/script"
+import { assertLinuxArm64PageSize } from "./linux-arm64-page-size"
+import { NativeTargets, nativePackageName } from "./native-targets"
 
 // Fetch and generate models.dev snapshot. Runtime refreshes stale snapshots
 // when current frontier IDs are missing, so avoid inventing model aliases here.
@@ -32,67 +34,8 @@ const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 
-const allTargets: {
-  os: string
-  arch: "arm64" | "x64"
-  abi?: "musl"
-  avx2?: false
-}[] = [
-  {
-    os: "linux",
-    arch: "arm64",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    avx2: false,
-  },
-  {
-    os: "linux",
-    arch: "arm64",
-    abi: "musl",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    abi: "musl",
-  },
-  {
-    os: "linux",
-    arch: "x64",
-    abi: "musl",
-    avx2: false,
-  },
-  {
-    os: "darwin",
-    arch: "arm64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-  },
-  {
-    os: "darwin",
-    arch: "x64",
-    avx2: false,
-  },
-  {
-    os: "win32",
-    arch: "x64",
-  },
-  {
-    os: "win32",
-    arch: "x64",
-    avx2: false,
-  },
-]
-
 const targets = singleFlag
-  ? allTargets.filter((item) => {
+  ? NativeTargets.filter((item) => {
       if (item.os !== process.platform || item.arch !== process.arch) {
         return false
       }
@@ -110,9 +53,10 @@ const targets = singleFlag
 
       return true
     })
-  : allTargets
+  : NativeTargets
 
 await $`rm -rf dist`
+await $`bun run script/generate-skill-bundle.ts`
 
 // Build the openscience web UI (frontend/workspace) and regenerate the embedded asset
 // manifest so the catch-all route in server.ts can serve it locally instead
@@ -130,7 +74,10 @@ if (!fs.existsSync(path.join(repoRoot, "node_modules")) || !fs.existsSync(path.j
   await $`bun install`.cwd(repoRoot)
 }
 console.log("building frontend/workspace (openscience web)")
-await $`bun run build`.cwd(webAppDir)
+await $`VITE_OPENSCIENCE_VERSION=${Script.version} bun run build`.cwd(webAppDir)
+await Bun.file(path.join(webAppDir, "dist", "version.json")).write(
+  JSON.stringify({ version: Script.version, channel: Script.channel }, null, 2) + "\n",
+)
 await $`bun run script/generate-web-assets.ts`
 
 // Generate encryption key for prompt files (unique per build)
@@ -142,16 +89,7 @@ if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
 }
 for (const item of targets) {
-  const name = [
-    pkg.name,
-    // changing to win32 flags npm for some reason
-    item.os === "win32" ? "windows" : item.os,
-    item.arch,
-    item.avx2 === false ? "baseline" : undefined,
-    item.abi === undefined ? undefined : item.abi,
-  ]
-    .filter(Boolean)
-    .join("-")
+  const name = nativePackageName(pkg.name, item)
   console.log(`building ${name}`)
   await $`mkdir -p dist/${name}/bin`
 
@@ -177,10 +115,14 @@ for (const item of targets) {
       OPENSCIENCE_VERSION: `'${Script.version}'`,
       OPENSCIENCE_CHANNEL: `'${Script.channel}'`,
       OPENSCIENCE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
+      OPENSCIENCE_PLATFORM_PACKAGE: `'${name}'`,
     },
   })
 
-  // Skills are served via API — no longer copied into dist
+  if (item.os === "linux" && item.arch === "arm64") {
+    const report = await assertLinuxArm64PageSize(`dist/${name}/bin/openscience`)
+    console.log(`verified ${name} has ${report.loads} ELF load segments compatible with 64KB-page kernels`)
+  }
 
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(

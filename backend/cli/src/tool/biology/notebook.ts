@@ -3,27 +3,38 @@ import { Tool } from "../tool"
 import { spawn, type ChildProcess } from "child_process"
 import path from "path"
 import os from "os"
+import { mkdirSync, rmSync } from "fs"
+import { Shell } from "@/shell/shell"
 import { Instance } from "@/project/instance"
 import { OpenScience } from "@/openscience"
-import { Config } from "@/config/config"
 import { Sandbox } from "@/sandbox/sandbox"
+import { ExecutionAuthority } from "@/project/execution"
 
 const KERNEL_SCRIPT = `
-import sys, json, io, traceback, os
+import sys, json, io, traceback, os, re
 
 _out = sys.stdout
 _err = sys.stderr
 
 ns = {"__name__": "__main__", "__builtins__": __builtins__}
 
-# Pre-import common scientific packages
-for pkg, alias in [("numpy", "np"), ("pandas", "pd"), ("scipy", "scipy")]:
+def _load(pkg, alias):
+    if alias in ns:
+        return
     try:
         mod = __import__(pkg)
         ns[alias] = mod
         ns[pkg] = mod
     except ImportError:
         pass
+
+def _load_science(code):
+    if re.search(r"\\b(np|numpy)\\b", code):
+        _load("numpy", "np")
+    if re.search(r"\\b(pd|pandas)\\b", code):
+        _load("pandas", "pd")
+    if re.search(r"\\bscipy\\b", code):
+        _load("scipy", "scipy")
 
 _out.write("__OPENSCIENCE_KERNEL_READY__\\n")
 _out.flush()
@@ -49,6 +60,7 @@ while True:
 
     ok = True
     try:
+        _load_science(code)
         # Try eval first for expression auto-display (like Jupyter)
         try:
             compiled = compile(code, "<cell>", "eval")
@@ -75,7 +87,10 @@ while True:
 interface Kernel {
   process: ChildProcess
   scriptPath: string
+  configPath: string
+  cachePath: string
   lastUsed: number
+  generation: string
 }
 
 const kernels = new Map<string, Kernel>()
@@ -83,14 +98,20 @@ const kernels = new Map<string, Kernel>()
 // Clean up all kernels on process exit
 function cleanupAll() {
   for (const [id, kernel] of kernels) {
-    try {
-      kernel.process.kill()
-    } catch {}
+    Shell.killTreeSync(kernel.process, { detached: process.platform !== "win32" })
     try {
       require("fs").unlinkSync(kernel.scriptPath)
     } catch {}
+    try {
+      require("fs").unlinkSync(kernel.configPath)
+    } catch {}
+    rmSync(kernel.cachePath, { recursive: true, force: true })
     kernels.delete(id)
   }
+}
+
+export function shutdownBiologyKernels() {
+  cleanupAll()
 }
 
 process.on("exit", cleanupAll)
@@ -102,38 +123,65 @@ function cleanupIdle() {
   const idle = 30 * 60 * 1000 // 30 min
   for (const [id, kernel] of kernels) {
     if (now - kernel.lastUsed > idle) {
-      try {
-        kernel.process.kill()
-      } catch {}
+      void Shell.killTree(kernel.process, {
+        exited: () => kernel.process.exitCode !== null,
+        detached: process.platform !== "win32",
+      })
       try {
         require("fs").unlinkSync(kernel.scriptPath)
       } catch {}
+      try {
+        require("fs").unlinkSync(kernel.configPath)
+      } catch {}
+      rmSync(kernel.cachePath, { recursive: true, force: true })
       kernels.delete(id)
     }
   }
 }
 
 async function getKernel(sessionID: string): Promise<Kernel> {
+  const authority = await ExecutionAuthority.require({
+    projectID: Instance.project.id,
+    sessionID,
+    capability: "kernel",
+  })
   // Clean up idle kernels while we're here
   cleanupIdle()
 
   const existing = kernels.get(sessionID)
-  if (existing && !existing.process.killed && existing.process.exitCode === null) {
+  if (
+    existing &&
+    existing.generation === authority.generation &&
+    !existing.process.killed &&
+    existing.process.exitCode === null
+  ) {
     existing.lastUsed = Date.now()
     return existing
   }
 
   // Dead kernel — clean up
   if (existing) {
+    await Shell.killTree(existing.process, {
+      exited: () => existing.process.exitCode !== null,
+      detached: process.platform !== "win32",
+    })
     try {
       require("fs").unlinkSync(existing.scriptPath)
     } catch {}
+    try {
+      require("fs").unlinkSync(existing.configPath)
+    } catch {}
+    rmSync(existing.cachePath, { recursive: true, force: true })
     kernels.delete(sessionID)
   }
 
   // Start new kernel
   const scriptPath = path.join(os.tmpdir(), `openscience-kernel-${sessionID.slice(0, 8)}-${Date.now()}.py`)
+  const configPath = `${scriptPath}.atlas.json`
+  const cachePath = path.join(os.tmpdir(), "openscience-kernel-cache", crypto.randomUUID())
+  mkdirSync(cachePath, { recursive: true })
   await Bun.write(scriptPath, KERNEL_SCRIPT)
+  await Bun.write(configPath, "{}\n")
 
   const pythonBin = await findPython()
   // Confine the kernel to the workspace when the execution sandbox is on: it runs
@@ -141,14 +189,25 @@ async function getKernel(sessionID: string): Promise<Kernel> {
   const sandboxed = Sandbox.wrapArgv({
     file: pythonBin,
     args: ["-u", scriptPath],
-    workspace: [Instance.directory, Instance.worktree],
-    extraWritable: [scriptPath],
-    options: await Config.trustedSandbox(),
+    workspace: authority.writable,
+    extraWritable: [scriptPath, configPath, cachePath],
+    unreadable: OpenScience.kernelSensitivePaths(),
+    options: authority.sandbox,
   })
   const proc = spawn(sandboxed.file, sandboxed.args, {
-    cwd: Instance.directory,
-    env: { ...(await OpenScience.subprocessEnv(process.env)), PYTHONUNBUFFERED: "1" },
+    cwd: authority.workspace,
+    env: {
+      ...OpenScience.kernelEnv(process.env),
+      ...OpenScience.pythonThreadCapEnv(process.env),
+      ATLAS_CLI_CONFIG_PATH: configPath,
+      MPLCONFIGDIR: path.join(cachePath, "matplotlib"),
+      XDG_CACHE_HOME: path.join(cachePath, "xdg"),
+      PYTHONPYCACHEPREFIX: path.join(cachePath, "pycache"),
+      PYTHONUNBUFFERED: "1",
+    },
     stdio: ["pipe", "pipe", "pipe"],
+    // Own process group so killing the kernel reaps its joblib/BLAS children (#102).
+    detached: process.platform !== "win32",
   })
 
   // Collect kernel stderr (startup warnings, etc.)
@@ -162,7 +221,7 @@ async function getKernel(sessionID: string): Promise<Kernel> {
   // Wait for ready signal
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      proc.kill()
+      void Shell.killTree(proc, { exited: () => proc.exitCode !== null, detached: process.platform !== "win32" })
       reject(new Error(`Kernel startup timed out. stderr: ${kernelStderr}`))
     }, 15_000)
 
@@ -186,7 +245,14 @@ async function getKernel(sessionID: string): Promise<Kernel> {
     })
   })
 
-  const kernel: Kernel = { process: proc, scriptPath, lastUsed: Date.now() }
+  const kernel: Kernel = {
+    process: proc,
+    scriptPath,
+    configPath,
+    cachePath,
+    lastUsed: Date.now(),
+    generation: authority.generation,
+  }
   kernels.set(sessionID, kernel)
   return kernel
 }
@@ -198,10 +264,11 @@ function executeInKernel(
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      // Kill the timed-out kernel — it will be restarted on next call
-      try {
-        kernel.process.kill()
-      } catch {}
+      // Kill the timed-out kernel and any joblib/BLAS workers it started.
+      void Shell.killTree(kernel.process, {
+        exited: () => kernel.process.exitCode !== null,
+        detached: process.platform !== "win32",
+      })
       reject(new Error(`Cell execution timed out after ${Math.round(timeout / 1000)}s`))
     }, timeout)
 

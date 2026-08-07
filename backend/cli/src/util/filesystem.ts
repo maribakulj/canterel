@@ -1,5 +1,6 @@
 import { realpathSync } from "fs"
-import { dirname, join, relative } from "path"
+import { lstat, realpath, stat } from "fs/promises"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path"
 
 export namespace Filesystem {
   export const exists = (p: string) =>
@@ -33,7 +34,43 @@ export namespace Filesystem {
   }
 
   export function contains(parent: string, child: string) {
-    return !relative(parent, child).startsWith("..")
+    const rel = relative(parent, child)
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
+  }
+
+  async function canonicalize(cursor: string, tail: string[]): Promise<string | undefined> {
+    const result = await realpath(cursor).then(
+      (value) => ({ value }),
+      (error: NodeJS.ErrnoException) => ({ error }),
+    )
+    if ("error" in result) {
+      if (result.error.code !== "ENOENT" && result.error.code !== "ENOTDIR") return
+      const info = await lstat(cursor).catch(() => undefined)
+      if (info?.isSymbolicLink()) return
+      const parent = dirname(cursor)
+      if (parent === cursor) return
+      return canonicalize(parent, [basename(cursor), ...tail])
+    }
+    const base = result.value
+    if (!tail.length) return base
+    const info = await stat(base).catch(() => undefined)
+    if (!info?.isDirectory()) return
+    return resolve(base, ...tail)
+  }
+
+  /**
+   * Resolve a path by filesystem identity, including a target that does not
+   * exist yet. Existing symlinks are followed; a broken symlink is rejected
+   * instead of being reconstructed as if it were an ordinary path segment.
+   */
+  export function canonical(p: string): Promise<string | undefined> {
+    return canonicalize(resolve(p), [])
+  }
+
+  export async function containsCanonical(parent: string, child: string): Promise<boolean> {
+    const [root, target] = await Promise.all([canonical(parent), canonical(child)])
+    if (!root || !target) return false
+    return contains(root, target)
   }
 
   export async function findUp(target: string, start: string, stop?: string) {

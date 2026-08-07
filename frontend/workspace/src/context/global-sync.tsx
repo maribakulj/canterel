@@ -23,9 +23,11 @@ import { createStore, produce, reconcile, type SetStoreFunction, type Store } fr
 import { Binary } from "@synsci/util/binary"
 import { retry } from "@synsci/util/retry"
 import { useGlobalSDK } from "./global-sdk"
+import { createInflightCache } from "./inflight-cache"
+import { createListeners } from "./listeners"
 // InitError used to live in pages/error.tsx (now deleted with the legacy
 // openscience shell). Inline the shape so the openscience context layer keeps
-// compiling — it's dead code under the new ThesisApp entry but is still
+// compiling — it's dead code under the new AtlasApp entry but is still
 // imported transitively from app.tsx tooling.
 type InitError = { code: string; message?: string; cause?: unknown }
 import {
@@ -46,6 +48,8 @@ import { getFilename } from "@synsci/util/path"
 import { usePlatform } from "./platform"
 import { useLanguage } from "@/context/language"
 import { Persist, persisted } from "@/utils/persist"
+import { projectScope } from "@/utils/project-route"
+import { checksum } from "@synsci/util/encode"
 
 type ProjectMeta = {
   name?: string
@@ -62,6 +66,7 @@ export interface Skill {
   name: string
   description: string
   location: string
+  origin: "default" | "installed" | "learned" | "user" | "project"
   category?: string
   tags?: string[]
   entry?: boolean
@@ -129,6 +134,7 @@ type IconCache = {
 
 type ChildOptions = {
   bootstrap?: boolean
+  projectID?: string
 }
 
 function normalizeProviderList(input: ProviderListResponse): ProviderListResponse {
@@ -152,18 +158,64 @@ function createGlobalSync() {
   const iconCache = new Map<string, IconCache>()
 
   const sdkCache = new Map<string, ReturnType<typeof createOpenScienceClient>>()
-  const sdkFor = (directory: string) => {
-    const cached = sdkCache.get(directory)
+  const projectFor = (directory: string, projectID?: string) => {
+    if (projectID) return projectID
+    return globalStore.project.find(
+      (project) => project.worktree === directory || (project.sandboxes ?? []).includes(directory),
+    )?.id
+  }
+  const scopeFor = (directory: string, projectID?: string) =>
+    `${projectFor(directory, projectID) ?? directory}\n${directory}`
+  const persistenceFor = (directory: string, projectID?: string) => {
+    const scope = projectScope(globalStore.project, directory)
+    if (scope !== directory) return scope
+    if (projectID) return `${projectID}~${checksum(directory) ?? "worktree"}`
+    return directory
+  }
+  const sdkFor = (directory: string, projectID?: string) => {
+    const project = projectFor(directory, projectID)
+    const key = scopeFor(directory, projectID)
+    const cached = sdkCache.get(key)
     if (cached) return cached
 
     const sdk = createOpenScienceClient({
       baseUrl: globalSDK.url,
       fetch: platform.fetch,
       directory,
+      projectID: project,
       throwOnError: true,
     })
-    sdkCache.set(directory, sdk)
+    sdkCache.set(key, sdk)
     return sdk
+  }
+
+  // Global and project bootstrap can ask for the same 4 MB provider catalog a
+  // few milliseconds apart. Share only that bootstrap burst; expire entries
+  // promptly so project config/provider changes are never held stale here, and
+  // bound the wait so a request that never returns cannot pin the key and
+  // silently stop every later refresh (see inflight-cache.ts).
+  // scopeFor() folds the project id into the key, so the id itself is kept
+  // alongside it — the loader needs the pair the caller actually asked with.
+  const providerScopes = new Map<string, string | undefined>()
+  const providerLoads = createInflightCache<ProviderListResponse>(async (key) => {
+    const [, directory = ""] = key.split("\n")
+    try {
+      const scoped = await sdkFor(directory, providerScopes.get(key)).provider.list()
+      return normalizeProviderList(scoped.data!)
+    } catch (error) {
+      // The catalog is a property of the install, not of one project, so a
+      // project that has gone stale (its folder deleted — the server answers
+      // 410) must not be able to empty it. Every model surface reads this
+      // store, so failing here looked like "my API key vanished".
+      console.warn("Provider catalog unavailable for this project; using the install catalog", { directory, error })
+      const global = await globalSDK.client.provider.list()
+      return normalizeProviderList(global.data!)
+    }
+  })
+  const loadProvider = (directory: string, projectID?: string) => {
+    const key = scopeFor(directory, projectID)
+    providerScopes.set(key, projectID)
+    return providerLoads.get(key)
   }
 
   const [projectCache, setProjectCache, , projectCacheReady] = persisted(
@@ -294,6 +346,49 @@ function createGlobalSync() {
   })
 
   const children: Record<string, [Store<State>, SetStoreFunction<State>]> = {}
+
+  /**
+   * Fired after every `refreshProviders`. That call is the shared choke point
+   * for "a credential just changed" — a key added or removed, an OAuth sign-in
+   * finished, the spend toggle switched — and some of those change server state
+   * that is NOT in the provider catalog. Adding an own OpenRouter key makes
+   * Auth.set flip `billing.llm` from managed to byok, which the Settings mode
+   * toggle has no other way to learn about while the page stays open: it reads
+   * billing into its own signal and only re-read on mount and on `window
+   * focus`, and no focus event fires when the key was pasted into the same
+   * window. Subscribers re-read what they own.
+   */
+  const providerRefresh = createListeners()
+
+  /**
+   * Re-read the provider catalog into every store that shows it. Bootstrap
+   * alone is not enough: adding a key or finishing an OAuth sign-in changes the
+   * catalog while the page is already running, and the settings panel, the
+   * model picker and the composer all read it from here. Errors surface — a
+   * silent failure here looks exactly like "the key was never saved".
+   */
+  async function refreshProviders() {
+    providerLoads.invalidate()
+    const reload = async (
+      directory: string,
+      projectID: string | undefined,
+      apply: (value: ProviderListResponse) => void,
+    ) => {
+      if (!directory) return
+      apply(await loadProvider(directory, projectID))
+    }
+    await providerRefresh.notifyAfter(async () => {
+      await Promise.all([
+        reload(globalStore.path.worktree || globalStore.path.directory, undefined, (value) =>
+          setGlobalStore("provider", reconcile(value)),
+        ),
+        ...Object.entries(children).map(([directory, [store, setStore]]) =>
+          reload(directory, store.project || undefined, (value) => setStore("provider", reconcile(value))),
+        ),
+      ])
+    })
+  }
+
   const booting = new Map<string, Promise<void>>()
   const sessionLoads = new Map<string, Promise<void>>()
   const sessionMeta = new Map<string, { limit: number }>()
@@ -357,12 +452,13 @@ function createGlobalSync() {
     return [...keepRoots, ...keepChildren].sort((a, b) => a.id.localeCompare(b.id))
   }
 
-  function ensureChild(directory: string) {
+  function ensureChild(directory: string, projectID?: string) {
     if (!directory) console.error("No directory provided")
     if (!children[directory]) {
+      const scope = persistenceFor(directory, projectID)
       const vcs = runWithOwner(owner, () =>
         persisted(
-          Persist.workspace(directory, "vcs", ["vcs.v1"]),
+          Persist.workspace(scope, "vcs", ["vcs.v1"]),
           createStore({ value: undefined as VcsInfo | undefined }),
         ),
       )
@@ -373,7 +469,7 @@ function createGlobalSync() {
 
       const meta = runWithOwner(owner, () =>
         persisted(
-          Persist.workspace(directory, "project", ["project.v1"]),
+          Persist.workspace(scope, "project", ["project.v1"]),
           createStore({ value: undefined as ProjectMeta | undefined }),
         ),
       )
@@ -382,7 +478,7 @@ function createGlobalSync() {
 
       const icon = runWithOwner(owner, () =>
         persisted(
-          Persist.workspace(directory, "icon", ["icon.v1"]),
+          Persist.workspace(scope, "icon", ["icon.v1"]),
           createStore({ value: undefined as string | undefined }),
         ),
       )
@@ -442,20 +538,21 @@ function createGlobalSync() {
   }
 
   function child(directory: string, options: ChildOptions = {}) {
-    const childStore = ensureChild(directory)
+    const childStore = ensureChild(directory, options.projectID)
     const shouldBootstrap = options.bootstrap ?? true
     if (shouldBootstrap && childStore[0].status === "loading") {
-      void bootstrapInstance(directory)
+      void bootstrapInstance(directory, options.projectID)
     }
     return childStore
   }
 
-  async function loadSessions(directory: string) {
-    const pending = sessionLoads.get(directory)
+  async function loadSessions(directory: string, projectID?: string) {
+    const key = scopeFor(directory, projectID)
+    const pending = sessionLoads.get(key)
     if (pending) return pending
 
-    const [store, setStore] = child(directory, { bootstrap: false })
-    const meta = sessionMeta.get(directory)
+    const [store, setStore] = child(directory, { bootstrap: false, projectID })
+    const meta = sessionMeta.get(key)
     if (meta && meta.limit >= store.limit) {
       const next = trimSessions(store.session, { limit: store.limit, permission: store.permission })
       if (next.length !== store.session.length) {
@@ -464,8 +561,8 @@ function createGlobalSync() {
       return
     }
 
-    const promise = globalSDK.client.session
-      .list({ directory })
+    const promise = sdkFor(directory, projectID)
+      .session.list()
       .then((x) => {
         const nonArchived = (x.data ?? [])
           .filter((s) => !!s?.id)
@@ -482,7 +579,7 @@ function createGlobalSync() {
         // Store total session count (used for "load more" pagination)
         setStore("sessionTotal", nonArchived.length)
         setStore("session", reconcile(sessions, { key: "id" }))
-        sessionMeta.set(directory, { limit })
+        sessionMeta.set(key, { limit })
       })
       .catch((err) => {
         console.error("Failed to load sessions", err)
@@ -495,25 +592,26 @@ function createGlobalSync() {
         showToast({ title: language.t("toast.session.listFailed.title", { project }), description: err.message })
       })
 
-    sessionLoads.set(directory, promise)
+    sessionLoads.set(key, promise)
     promise.finally(() => {
-      sessionLoads.delete(directory)
+      sessionLoads.delete(key)
     })
     return promise
   }
 
-  async function bootstrapInstance(directory: string) {
+  async function bootstrapInstance(directory: string, projectID?: string) {
     if (!directory) return
-    const pending = booting.get(directory)
+    const key = scopeFor(directory, projectID)
+    const pending = booting.get(key)
     if (pending) return pending
 
     const promise = (async () => {
-      const [store, setStore] = ensureChild(directory)
+      const [store, setStore] = ensureChild(directory, projectID)
       const cache = vcsCache.get(directory)
       if (!cache) return
       const meta = metaCache.get(directory)
       if (!meta) return
-      const sdk = sdkFor(directory)
+      const sdk = sdkFor(directory, projectID)
 
       setStore("status", "loading")
 
@@ -522,10 +620,7 @@ function createGlobalSync() {
 
       const blockingRequests = {
         project: () => sdk.project.current().then((x) => setStore("project", x.data!.id)),
-        provider: () =>
-          sdk.provider.list().then((x) => {
-            setStore("provider", normalizeProviderList(x.data!))
-          }),
+        provider: () => loadProvider(directory, projectID).then((value) => setStore("provider", reconcile(value))),
         agent: () => sdk.app.agents().then((x) => setStore("agent", x.data ?? [])),
         config: () => sdk.config.get().then((x) => setStore("config", x.data!)),
       }
@@ -551,7 +646,7 @@ function createGlobalSync() {
           .then((x) => setStore("skill", x.data ?? []))
           .catch(() => {}),
         sdk.session.status().then((x) => setStore("session_status", x.data!)),
-        loadSessions(directory),
+        loadSessions(directory, projectID),
         sdk.mcp.status().then((x) => setStore("mcp", x.data!)),
         sdk.lsp.status().then((x) => setStore("lsp", x.data!)),
         sdk.vcs.get().then((x) => {
@@ -622,42 +717,11 @@ function createGlobalSync() {
       })
     })()
 
-    booting.set(directory, promise)
+    booting.set(key, promise)
     promise.finally(() => {
-      booting.delete(directory)
+      booting.delete(key)
     })
     return promise
-  }
-
-  function purgeMessageParts(setStore: SetStoreFunction<State>, messageID: string | undefined) {
-    if (!messageID) return
-    setStore(
-      produce((draft) => {
-        delete draft.part[messageID]
-      }),
-    )
-  }
-
-  function purgeSessionData(store: Store<State>, setStore: SetStoreFunction<State>, sessionID: string | undefined) {
-    if (!sessionID) return
-
-    const messages = store.message[sessionID]
-    const messageIDs = (messages ?? []).map((m) => m.id).filter((id): id is string => !!id)
-
-    setStore(
-      produce((draft) => {
-        delete draft.message[sessionID]
-        delete draft.session_diff[sessionID]
-        delete draft.todo[sessionID]
-        delete draft.permission[sessionID]
-        delete draft.question[sessionID]
-        delete draft.session_status[sessionID]
-
-        for (const messageID of messageIDs) {
-          delete draft.part[messageID]
-        }
-      }),
-    )
   }
 
   const unsub = globalSDK.event.listen((e) => {
@@ -667,7 +731,10 @@ function createGlobalSync() {
     if (directory === "global") {
       switch (event?.type) {
         case "global.disposed": {
-          refresh()
+          // Nobody is waiting on this one, so it has no error UI to surface
+          // into — unlike the settings panels, which await their own call and
+          // report the failure there.
+          void refreshProviders().catch((error) => console.error("Failed to refresh providers", { error }))
           return
         }
         case "project.updated": {
@@ -1019,11 +1086,16 @@ function createGlobalSync() {
           setGlobalStore("project", projects)
         }),
       ),
-      retry(() =>
-        globalSDK.client.provider.list().then((x) => {
-          setGlobalStore("provider", normalizeProviderList(x.data!))
-        }),
-      ),
+      retry(async () => {
+        // The root catalog belongs to the server worktree. Loading it through
+        // the same directory-keyed helper lets a direct project route share the
+        // in-flight response instead of parsing the catalog twice.
+        const path = globalStore.path.worktree
+          ? globalStore.path
+          : await globalSDK.client.path.get().then((x) => x.data!)
+        const directory = path.worktree || path.directory
+        setGlobalStore("provider", reconcile(await loadProvider(directory)))
+      }),
       retry(() =>
         globalSDK.client.provider.auth().then((x) => {
           setGlobalStore("provider_auth", x.data ?? {})
@@ -1035,6 +1107,10 @@ function createGlobalSync() {
     const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason)
 
     if (errors.length) {
+      // The toast only carries the first message and never says which task
+      // failed, so a bootstrap step can drop out (leaving its store empty and
+      // the UI apparently stale) with nothing to point at. Keep the full set.
+      console.error("Global bootstrap tasks failed", errors)
       const message = errors[0] instanceof Error ? errors[0].message : String(errors[0])
       const more = errors.length > 1 ? ` (+${errors.length - 1} more)` : ""
       showToast({
@@ -1077,6 +1153,35 @@ function createGlobalSync() {
     setStore("icon", value)
   }
 
+  function rememberProject(project: Project) {
+    const result = Binary.search(globalStore.project, project.id, (item) => item.id)
+    if (result.found) {
+      setGlobalStore("project", result.index, reconcile(project))
+      return project
+    }
+    setGlobalStore(
+      "project",
+      produce((draft) => {
+        draft.splice(result.index, 0, project)
+      }),
+    )
+    return project
+  }
+
+  async function resolveProject(directory: string) {
+    const response = await sdkFor(directory).project.current()
+    const project = response.data
+    if (!project) throw new Error(`No project found for ${getFilename(directory)}`)
+    return rememberProject(project)
+  }
+
+  async function resolveProjectID(projectID: string) {
+    const response = await sdkFor("", projectID).project.current()
+    const project = response.data
+    if (!project) throw new Error(`No project found for ${projectID}`)
+    return rememberProject(project)
+  }
+
   return {
     data: globalStore,
     set: setGlobalStore,
@@ -1096,8 +1201,12 @@ function createGlobalSync() {
         }, 1000)
       })
     },
+    refreshProviders,
+    onProvidersRefreshed: providerRefresh.add,
     project: {
       loadSessions,
+      resolve: resolveProject,
+      resolveID: resolveProjectID,
       meta: projectMeta,
       icon: projectIcon,
     },

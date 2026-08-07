@@ -12,10 +12,31 @@ import { Config } from "../../config/config"
 import { errors } from "../error"
 import { OpenScience } from "@/openscience"
 import { Provider } from "@/provider/provider"
+import { Project } from "@/project/project"
+import { ManagedProject } from "@/project/managed"
+import { SessionFilesystem } from "@/session/filesystem"
 
 const log = Log.create({ service: "server" })
 
 export const GlobalDisposedEvent = BusEvent.define("global.disposed", z.object({}))
+
+const ProjectName = z
+  .string()
+  .transform((name) => name.normalize("NFC").trim())
+  .pipe(
+    z
+      .string()
+      .min(1, "Project name is required")
+      .max(100, "Project name must be 100 characters or fewer")
+      .refine((name) => !/[\u0000-\u001f\u007f]/u.test(name), "Project name cannot contain control characters")
+      .refine((name) => !name.includes("/") && !name.includes("\\"), "Project name cannot contain path separators")
+      .transform((name) => name.replace(/[ \t]+/gu, " ")),
+  )
+
+const ProjectSource = z.object({
+  path: z.string().trim().min(1),
+  access: SessionFilesystem.Access.default("write"),
+})
 
 export const GlobalRoutes = lazy(() =>
   new Hono()
@@ -38,6 +59,42 @@ export const GlobalRoutes = lazy(() =>
       }),
       async (c) => {
         return c.json({ healthy: true, version: Installation.VERSION })
+      },
+    )
+    .post(
+      "/project",
+      describeRoute({
+        summary: "Create project",
+        description:
+          "Create an app-managed project with an opaque identity and optional project-scoped access to source locations explicitly selected by the user. Source paths never become the project identity.",
+        operationId: "global.project.create",
+        responses: {
+          201: {
+            description: "Created project information",
+            content: {
+              "application/json": {
+                schema: resolver(Project.Info),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z
+          .object({
+            name: ProjectName,
+            sources: ProjectSource.array().max(10).default([]),
+          })
+          .strict(),
+      ),
+      async (c) => {
+        const input = c.req.valid("json")
+        const project = await ManagedProject.create(input.name, (created) =>
+          SessionFilesystem.seedProject({ projectID: created.id, grants: input.sources }),
+        )
+        return c.json(project, 201)
       },
     )
     .get(
@@ -125,7 +182,7 @@ export const GlobalRoutes = lazy(() =>
         },
       }),
       async (c) => {
-        return c.json(await Config.getGlobal())
+        return c.json(Config.redact(await Config.getGlobal()))
       },
     )
     .patch(
@@ -149,8 +206,9 @@ export const GlobalRoutes = lazy(() =>
       validator("json", Config.Info),
       async (c) => {
         const config = c.req.valid("json")
-        const next = await Config.updateGlobal(config)
-        return c.json(next)
+        const restored = Config.restore(config, await Config.getGlobal())
+        const next = await Config.updateGlobal(restored)
+        return c.json(Config.redact(next))
       },
     )
     .get(
@@ -195,7 +253,7 @@ export const GlobalRoutes = lazy(() =>
       validator("json", z.object({ content: z.string() })),
       async (c) => {
         const next = await Config.replaceGlobal(c.req.valid("json").content)
-        return c.json(next)
+        return c.json(Config.redact(next))
       },
     )
     .post(

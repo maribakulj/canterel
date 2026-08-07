@@ -88,6 +88,12 @@ export const dict = {
   "ui.permission.deny": "Negar",
   "ui.permission.allowAlways": "Permitir sempre",
   "ui.permission.allowOnce": "Permitir uma vez",
+  "ui.permission.allow": "Permitir para…",
+  "ui.permission.allowSession": "Esta conversa",
+  "ui.permission.allowProject": "Este projeto",
+  "ui.permission.grantRead": "Conceder acesso somente leitura a {path}",
+  "ui.permission.grantWrite": "Conceder acesso de leitura e escrita a {path}",
+  "ui.permission.allowHost": "Permitir acesso de rede a {host}",
 
   "ui.message.expand": "Expandir mensagem",
   "ui.message.collapse": "Recolher mensagem",

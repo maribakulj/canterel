@@ -1,5 +1,6 @@
 import { createSignal, For, Show, type JSX } from "solid-js"
 import { Icon } from "./icon"
+import { sanitize } from "./markdown"
 
 export interface NotebookCellProps {
   cellType: "code" | "markdown"
@@ -76,7 +77,7 @@ function NotebookOutputView(props: { output: NotebookOutput }): JSX.Element {
             />
           </Show>
           <Show when={output().data?.["text/html"]}>
-            <div data-slot="notebook-output-html" innerHTML={output().data!["text/html"]} />
+            <div data-slot="notebook-output-html" innerHTML={sanitizeNotebookHtml(output().data!["text/html"])} />
           </Show>
           <Show when={output().data?.["text/plain"] && !output().data?.["image/png"] && !output().data?.["text/html"]}>
             <pre data-slot="notebook-output-text">{output().data!["text/plain"]}</pre>
@@ -120,4 +121,8 @@ export function NotebookView(props: { cells: NotebookCellProps[]; title?: string
       </For>
     </div>
   )
+}
+
+export function sanitizeNotebookHtml(value: string) {
+  return sanitize(value)
 }

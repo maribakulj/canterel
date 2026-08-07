@@ -1,6 +1,6 @@
 {
   "name": "@synsci/ui",
-  "version": "1.2.2",
+  "version": "2.0.2",
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
@@ -30,8 +30,11 @@
     "@tailwindcss/vite": "catalog:",
     "@tsconfig/node22": "catalog:",
     "@types/bun": "catalog:",
+    "@types/jsdom": "28.0.3",
     "@types/katex": "0.16.7",
     "@types/luxon": "catalog:",
+    "global-jsdom": "29.0.0",
+    "jsdom": "29.1.1",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",

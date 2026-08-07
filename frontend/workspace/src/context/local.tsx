@@ -3,9 +3,11 @@ import { batch, createMemo } from "solid-js"
 import { createSimpleContext } from "@synsci/ui/context"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
-import { base64Encode } from "@synsci/util/encode"
 import { useProviders } from "@/hooks/use-providers"
 import { useModels } from "@/context/models"
+import { foldedRouteMode, routableModelKey } from "@/context/model-catalog"
+import { modelTierOptions, normalizedTier, promptTier, resolvedTier } from "@/context/model-tier"
+import { modelVariantOptions, normalizedVariant, promptVariant } from "@/context/model-variant"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -15,8 +17,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sdk = useSDK()
     const sync = useSync()
     const providers = useProviders()
+    const models = useModels()
 
-    function isModelValid(model: ModelKey) {
+    function isExactModelValid(model: ModelKey) {
       const provider = providers.all().find((x) => x.id === model.providerID)
       return (
         !!provider?.models[model.modelID] &&
@@ -27,11 +30,21 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       )
     }
 
+    function resolveModel(model: ModelKey) {
+      const routed = routableModelKey(model, isExactModelValid)
+      if (isExactModelValid(routed)) return routed
+    }
+
+    function isModelValid(model: ModelKey) {
+      return !!resolveModel(model)
+    }
+
     function getFirstValidModel(...modelFns: (() => ModelKey | undefined)[]) {
       for (const modelFn of modelFns) {
         const model = modelFn()
         if (!model) continue
-        if (isModelValid(model)) return model
+        const resolved = resolveModel(model)
+        if (resolved) return resolved
       }
     }
 
@@ -40,8 +53,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const ALL_CYCLABLE = ["research", "biology", "physics", "ml"] as const
 
     const agent = (() => {
-      const list = createMemo(() => sync.data.agent.filter((x) => x.mode !== "subagent" && !x.hidden))
-      const all = createMemo(() => sync.data.agent.filter((x) => x.mode !== "subagent"))
+      // Planning is adaptive in the research agent, so the legacy read-only
+      // plan agent is not exposed as a picker entry.
+      const agents = () => (Array.isArray(sync.data.agent) ? sync.data.agent : [])
+      const list = createMemo(() => agents().filter((x) => x.mode !== "subagent" && !x.hidden && x.name !== "plan"), [])
+      const all = createMemo(() => agents().filter((x) => x.mode !== "subagent"), [])
       const [store, setStore] = createStore<{
         current?: string
       }>({
@@ -159,8 +175,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     })()
 
     const model = (() => {
-      const models = useModels()
-
       const [ephemeral, setEphemeral] = createStore<{
         model: Record<string, ModelKey | undefined>
       }>({
@@ -169,19 +183,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const fallbackModel = createMemo<ModelKey | undefined>(() => {
         if (sync.data.config.model) {
-          const [providerID, modelID] = sync.data.config.model.split("/")
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
+          const [providerID, ...parts] = sync.data.config.model.split("/")
+          const modelID = parts.join("/")
+          const resolved = resolveModel({ providerID, modelID })
+          if (resolved) return resolved
         }
 
         for (const item of models.recent.list()) {
-          if (isModelValid(item)) {
-            return item
-          }
+          const resolved = resolveModel(item)
+          if (resolved) return resolved
         }
 
         const defaults = providers.default()
@@ -201,19 +211,35 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return undefined
       })
 
-      const current = createMemo(() => {
+      const selected = createMemo(() => {
         const a = agent.current()
         if (!a) return undefined
-        const key = getFirstValidModel(
+        return getFirstValidModel(
           () => ephemeral.model[a.name],
           () => a.model,
           fallbackModel,
         )
+      })
+
+      const current = createMemo(() => {
+        const key = selected()
         if (!key) return undefined
         return models.find(key)
       })
 
-      const recent = createMemo(() => models.recent.list().map(models.find).filter(Boolean))
+      const recent = createMemo(() =>
+        models.recent
+          .list()
+          .map((item) => models.find(resolveModel(item) ?? item))
+          .filter(Boolean),
+      )
+
+      const pinned = createMemo(() =>
+        models.pinned
+          .list()
+          .map((item) => models.find(resolveModel(item) ?? item))
+          .filter(Boolean),
+      )
 
       const cycle = (direction: 1 | -1) => {
         const recentList = recent()
@@ -242,15 +268,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         ready: models.ready,
         current,
         recent,
+        pinned,
         list: models.list,
         cycle,
         set(model: ModelKey | undefined, options?: { recent?: boolean }) {
           batch(() => {
             const currentAgent = agent.current()
-            const next = model ?? fallbackModel()
+            const selected = model ? (resolveModel(model) ?? model) : undefined
+            const next = selected ?? fallbackModel()
             if (currentAgent) setEphemeral("model", currentAgent.name, next)
-            if (model) models.setVisibility(model, true)
-            if (options?.recent && model) models.recent.push(model)
+            if (selected) models.setVisibility(selected, true)
+            if (options?.recent && selected) models.recent.push(selected)
           })
         },
         visible(model: ModelKey) {
@@ -259,44 +287,85 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         setVisibility(model: ModelKey, visible: boolean) {
           models.setVisibility(model, visible)
         },
+        pin: {
+          has(model: ModelKey) {
+            return models.pinned.has(resolveModel(model) ?? model)
+          },
+          toggle(model: ModelKey) {
+            const selected = resolveModel(model) ?? model
+            models.setVisibility(selected, true)
+            return models.pinned.toggle(selected)
+          },
+        },
         variant: {
           current() {
             const m = current()
-            if (!m) return undefined
-            return models.variant.get({ providerID: m.provider.id, modelID: m.id })
+            if (!m) return "standard"
+            return normalizedVariant(
+              models.variant.get({ providerID: m.provider.id, modelID: m.id }),
+              Object.keys(m.variants ?? {}),
+            )
           },
           list() {
             const m = current()
             if (!m) return []
-            if (!m.variants) return []
-            return Object.keys(m.variants)
+            return modelVariantOptions(Object.keys(m.variants ?? {}))
           },
           set(value: string | undefined) {
             const m = current()
             if (!m) return
-            models.variant.set({ providerID: m.provider.id, modelID: m.id }, value)
+            const variants = Object.keys(m.variants ?? {})
+            models.variant.set({ providerID: m.provider.id, modelID: m.id }, promptVariant(value, variants))
           },
           cycle() {
             const variants = this.list()
             if (variants.length === 0) return
-            const currentVariant = this.current()
-            if (!currentVariant) {
-              this.set(variants[0])
-              return
-            }
-            const index = variants.indexOf(currentVariant)
-            if (index === -1 || index === variants.length - 1) {
-              this.set(undefined)
-              return
-            }
-            this.set(variants[index + 1])
+            const index = variants.indexOf(this.current())
+            this.set(variants[index === -1 || index === variants.length - 1 ? 0 : index + 1])
+          },
+          prompt() {
+            const m = current()
+            if (!m) return undefined
+            return promptVariant(this.current(), Object.keys(m.variants ?? {}))
+          },
+        },
+        tier: {
+          current() {
+            const m = current()
+            if (!m) return "standard"
+            const saved = models.tier.get({ providerID: m.provider.id, modelID: m.id })
+            const legacy = selected()
+            const migrated = legacy ? foldedRouteMode(legacy, m) : undefined
+            return resolvedTier(saved, Object.keys(m.modes ?? {}), migrated)
+          },
+          list() {
+            const m = current()
+            if (!m) return []
+            return modelTierOptions(Object.keys(m.modes ?? {})).map((option) => option.id)
+          },
+          set(value: string | undefined) {
+            const m = current()
+            if (!m) return
+            const modes = Object.keys(m.modes ?? {})
+            models.tier.set({ providerID: m.provider.id, modelID: m.id }, normalizedTier(value, modes))
+          },
+          cycle() {
+            const tiers = this.list()
+            if (tiers.length <= 1) return
+            const index = tiers.indexOf(this.current())
+            this.set(tiers[index === -1 || index === tiers.length - 1 ? 0 : index + 1])
+          },
+          prompt() {
+            const m = current()
+            if (!m) return undefined
+            return promptTier(this.current(), Object.keys(m.modes ?? {}))
           },
         },
       }
     })()
 
     const result = {
-      slug: createMemo(() => base64Encode(sdk.directory)),
+      slug: createMemo(() => sdk.scope),
       model,
       agent,
       research,

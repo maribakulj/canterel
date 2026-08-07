@@ -195,23 +195,73 @@
 }
 
 [data-component="tool-output"] {
-  white-space: pre;
-  padding: 8px 12px;
+  white-space: pre-wrap;
+  padding: 4px 18px 12px;
   height: fit-content;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
+  color: var(--text-weak);
+  font-family: var(--font-family-sans);
+  font-size: 13px;
+  line-height: 20px;
 
   [data-component="markdown"] {
     width: 100%;
     min-width: 0;
+    font-size: 13px;
+    line-height: 20px;
 
     pre {
       margin: 0;
       padding: 0;
       background-color: transparent !important;
       border: none !important;
+      line-height: 20px;
+    }
+
+    .shiki {
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background-color: transparent !important;
+      font-size: 13px;
+      line-height: 20px;
+    }
+
+    p {
+      margin-bottom: 6px;
+    }
+
+    ul,
+    ol {
+      margin-top: 2px;
+      margin-bottom: 6px;
+    }
+
+    li {
+      margin-bottom: 2px;
+    }
+
+    table {
+      margin: 0;
+      font-size: 13px;
+    }
+
+    tr {
+      height: 29px;
+    }
+
+    th,
+    td {
+      padding: 4px 0;
+      border-bottom-color: var(--border-weaker-base);
+    }
+
+    th + th,
+    td + td {
+      padding-left: 16px;
     }
   }
 
@@ -219,6 +269,7 @@
     margin: 0;
     padding: 0;
     background: none;
+    line-height: 20px;
   }
 
   &[data-scrollable] {
@@ -260,7 +311,7 @@
     align-items: center;
     gap: 4px;
     font-family: var(--font-family-sans);
-    font-size: var(--font-size-base);
+    font-size: 13px;
     font-style: normal;
     font-weight: var(--font-weight-medium);
     line-height: var(--line-height-large);
@@ -344,10 +395,20 @@
 }
 
 [data-component="todos"] {
-  padding: 10px 12px 24px 48px;
+  padding: 2px 18px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+
+  [data-component="checkbox"] {
+    min-height: 29px;
+    gap: 8px;
+  }
+
+  [data-slot="checkbox-checkbox-label"] {
+    font-size: 13px;
+    line-height: 20px;
+  }
 
   [data-slot="message-part-todo-content"] {
     &[data-completed="completed"] {
@@ -357,16 +418,28 @@
   }
 }
 
+[data-component="collapsible"]:has([data-component="todos"]) {
+  [data-slot="basic-tool-tool-info-main"] {
+    width: 100%;
+    flex-grow: 1;
+  }
+
+  [data-slot="basic-tool-tool-subtitle"]:last-child {
+    margin-left: auto;
+  }
+}
+
 [data-component="task-tools"] {
-  padding: 8px 12px;
+  padding: 2px 18px 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
 
   [data-slot="task-tool-item"] {
     display: flex;
     align-items: center;
     gap: 8px;
+    min-height: 29px;
     color: var(--text-weak);
 
     [data-slot="icon-svg"] {
@@ -377,17 +450,17 @@
 
   [data-slot="task-tool-title"] {
     font-family: var(--font-family-sans);
-    font-size: var(--font-size-small);
+    font-size: 13px;
     font-weight: var(--font-weight-medium);
-    line-height: var(--line-height-large);
+    line-height: 20px;
     color: var(--text-weak);
   }
 
   [data-slot="task-tool-subtitle"] {
     font-family: var(--font-family-sans);
-    font-size: var(--font-size-small);
+    font-size: 13px;
     font-weight: var(--font-weight-regular);
-    line-height: var(--line-height-large);
+    line-height: 20px;
     color: var(--text-weaker);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -536,15 +609,23 @@
 [data-component="permission-prompt"] {
   display: flex;
   flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   background-color: var(--surface-raised-strong);
   border-radius: 0 0 6px 6px;
+
+  [data-slot="permission-summary"] {
+    font-size: 12px;
+    color: var(--text-weak);
+    overflow-wrap: anywhere;
+  }
 
   [data-slot="permission-actions"] {
     display: flex;
     align-items: center;
     gap: 8px;
     justify-content: flex-end;
+    flex-wrap: wrap;
   }
 }
 
@@ -664,8 +745,18 @@
         color: var(--text-base);
         outline: none;
 
+        /* This field frames itself — the border and radius above ARE the frame
+           — so it takes the lit frame, not the halo the app-wide rule hands
+           fields whose border box is just the glyphs (atlas.css). That rule is
+           !important, so out-specifying it is not enough; matching its weight
+           is the only way the treatment declared here reaches the screen at
+           all. Outline included: text inputs match :focus-visible on mouse
+           focus too, and without this the halo's offset ring survives on top
+           of the frame, at a different radius. */
         &:focus {
-          border-color: var(--border-focus);
+          border-color: var(--focus-lit-ring);
+          outline: none !important;
+          box-shadow: var(--focus-lit) !important;
         }
 
         &::placeholder {
@@ -814,11 +905,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0 4px 28px;
+  min-height: 29px;
+  padding: 4px 18px;
   font-family: var(--font-family-sans);
-  font-size: var(--font-size-small);
+  font-size: 13px;
   font-weight: var(--font-weight-regular);
-  line-height: var(--line-height-large);
+  line-height: 20px;
   color: var(--text-weak);
 
   [data-component="icon"] {

@@ -17,6 +17,7 @@ import { PermissionNext } from "@/permission/next"
 import { Question } from "@/question"
 import { OpenScience, InsufficientCreditsError } from "@/openscience"
 import { requiresWalletBalance, shouldReportUsage, resolveCredentialSource, llmBillingMode } from "./billing-gate"
+import { SessionTraceStore } from "./trace-store"
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
@@ -44,6 +45,29 @@ export namespace SessionProcessor {
       (p) =>
         p.tool === toolName && p.state.status !== "pending" && JSON.stringify(p.state.input) === JSON.stringify(input),
     )
+  }
+
+  function sharedPrefixLen(a: string, b: string): number {
+    const n = Math.min(a.length, b.length)
+    let i = 0
+    while (i < n && a[i] === b[i]) i++
+    return i
+  }
+
+  /** True when the last 3 finished assistant turns are long AND share a large
+   *  identical leading block — the repeated "continuity summary" a weak/local
+   *  model emits instead of converging on a final answer (#176). The tool-call
+   *  isDoomLoop guard can't see this: the TEXT repeats, not the tool calls. Inputs
+   *  are already-normalized turn texts (lowercased, whitespace-collapsed). Kept
+   *  conservative — 3 substantial near-identical turns in a row is a signal that
+   *  legitimate progress does not produce. */
+  export function isTextLoop(turns: string[], minLen = 400, prefix = 300): boolean {
+    if (turns.length < 3) return false
+    const last = turns.slice(-3)
+    const lengths = last.map((t) => t.length)
+    if (Math.min(...lengths) < minLen) return false
+    if (Math.max(...lengths) / Math.max(1, Math.min(...lengths)) > 1.25) return false
+    return sharedPrefixLen(last[0], last[1]) >= prefix && sharedPrefixLen(last[1], last[2]) >= prefix
   }
 
   export type Info = Awaited<ReturnType<typeof create>>
@@ -97,7 +121,7 @@ export namespace SessionProcessor {
             // wallet, so they are NOT gated here.
             if ((await llmBillingMode()) === "managed" && credentialSource === "byok") {
               throw new Error(
-                `Managed LLM spend is on, but ${input.model.providerID} isn't available through your Atlas wallet — it resolved to a non-managed key. Switch LLM spend to BYOK in Settings → Spend to use your own key, or pick a managed model.`,
+                `Managed LLM spend is on, but ${input.model.providerID} isn't available through Credits - it resolved to a non-managed key. Switch LLM spend to BYOK in Settings → Spend to use your own key, or pick a managed model.`,
               )
             }
 
@@ -113,7 +137,7 @@ export namespace SessionProcessor {
                 // attempt instead of blocking until the TTL expires.
                 OpenScience.invalidateBalance()
                 throw new Error(
-                  "Your Atlas wallet is empty. Top up at app.syntheticsciences.ai/cli, or switch LLM spend to BYOK in Settings → Spend — BYOK uses your own key and is never billed.",
+                  "Your Credits balance is empty. Top up at app.syntheticsciences.ai/billing, or switch LLM spend to BYOK in Settings → Spend - BYOK uses your own key and is never billed.",
                 )
               }
             }
@@ -158,8 +182,8 @@ export namespace SessionProcessor {
                 case "reasoning-end":
                   if (value.id in reasoningMap) {
                     const part = reasoningMap[value.id]
-                    part.text = part.text.trimEnd()
-
+                    // A provider signature authenticates the exact thinking bytes.
+                    // Trimming even one trailing byte makes the next turn invalid.
                     part.time = {
                       ...part.time,
                       end: Date.now(),
@@ -296,6 +320,7 @@ export namespace SessionProcessor {
                 case "finish-step":
                   const usage = Session.getUsage({
                     model: input.model,
+                    tier: streamInput.user.tier,
                     usage: value.usage,
                     metadata: value.providerMetadata,
                   })
@@ -317,7 +342,7 @@ export namespace SessionProcessor {
 
                   // Report usage ONLY for managed-proxy credentials. BYOK keys
                   // and first-party OAuth subscriptions are billed to the user's
-                  // own account, not the openscience CLI wallet, so they are never
+                  // own account, not Credits, so they are never
                   // reported (regardless of the model's nominal models.dev price).
                   const usageResult = !shouldReportUsage(credentialSource)
                     ? null
@@ -342,7 +367,7 @@ export namespace SessionProcessor {
                   if (usageResult && "modelBlocked" in usageResult) {
                     log.warn("model blocked by server — halting session", { model: input.model.id })
                     // Hard stop. The user is out of credits (managed
-                    // mode) or has no active thesis subscription. The
+                    // mode) or has no active atlas subscription. The
                     // current step's response is already in their
                     // context; we just don't kick off the next loop.
                     throw new InsufficientCreditsError()
@@ -379,6 +404,23 @@ export namespace SessionProcessor {
                     (await SessionCompaction.isOverflow({ tokens: usage.tokens, model: input.model }))
                   ) {
                     needsCompaction = true
+                  }
+                  // A "length" finish with an over-threshold token count is NOT a
+                  // finished answer — the turn was truncated mid-thought (often right
+                  // before a tool call, leaving a pending tool part). isContinuing()
+                  // excludes "length", so the block above skips it. Treat it as a
+                  // context overflow: compact history and re-run the SAME user message
+                  // against the summary, instead of exiting the loop as if the agent
+                  // was done (which strands the pending tool part → "Tool execution
+                  // aborted"). A genuine max-output truncation (small input) has
+                  // isOverflow=false and still falls through unchanged.
+                  if (
+                    !input.assistantMessage.summary &&
+                    value.finishReason === "length" &&
+                    (await SessionCompaction.isOverflow({ tokens: usage.tokens, model: input.model }))
+                  ) {
+                    overflow = true
+                    input.assistantMessage.finish = "compact"
                   }
                   break
 
@@ -440,7 +482,7 @@ export namespace SessionProcessor {
                   })
                   continue
               }
-              if (needsCompaction) break
+              if (needsCompaction || overflow) break
             }
           } catch (e: any) {
             log.error("process", {
@@ -465,6 +507,13 @@ export namespace SessionProcessor {
               if (retry !== undefined && attempt < MAX_RETRY_ATTEMPTS) {
                 attempt++
                 const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
+                await SessionTraceStore.recordRetry({
+                  sessionID: input.sessionID,
+                  messageID: input.assistantMessage.id,
+                  attempt,
+                  message: retry,
+                  delayMs: delay,
+                })
                 SessionStatus.set(input.sessionID, {
                   type: "retry",
                   attempt,
@@ -507,7 +556,9 @@ export namespace SessionProcessor {
                 state: {
                   ...part.state,
                   status: "error",
-                  error: "Tool execution aborted",
+                  error: overflow
+                    ? "Model output was truncated before the tool call completed (context limit); no action was taken. Compacting and retrying."
+                    : "Tool execution aborted",
                   time: {
                     start: Date.now(),
                     end: Date.now(),

@@ -12,6 +12,7 @@ import { NamedError } from "@synsci/util/error"
 import { withTimeout } from "../util/timeout"
 import { Instance } from "../project/instance"
 import { Filesystem } from "../util/filesystem"
+import { ProjectTrust } from "../project/trust"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150
 
@@ -141,6 +142,9 @@ export namespace LSPClient {
       get serverID() {
         return input.serverID
       },
+      get project() {
+        return input.server.project === true
+      },
       get connection() {
         return connection
       },
@@ -151,6 +155,7 @@ export namespace LSPClient {
           const text = await file.text()
           const extension = path.extname(input.path)
           const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+          if (result.project) await ProjectTrust.require(Instance.project, "project_lsp")
 
           const version = files[input.path]
           if (version !== undefined) {

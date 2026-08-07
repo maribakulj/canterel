@@ -11,9 +11,11 @@ import { NamedError } from "@synsci/util/error"
 import { Auth } from "../auth"
 import { Env } from "../env"
 import { Instance } from "../project/instance"
+import { ProjectTrust } from "../project/trust"
 import { Flag } from "../flag/flag"
 import { iife } from "@/util/iife"
 import { OpenScience } from "../openscience"
+import { isAtlasProxyURL, managedOpenRouterBaseURL } from "../openscience/synced-env-policy"
 
 // Direct imports for bundled providers
 import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
@@ -41,6 +43,42 @@ import { ProviderTransform } from "./transform"
 
 export namespace Provider {
   const log = Log.create({ service: "provider" })
+
+  // Models exposed by the ChatGPT / Codex OAuth transport. Keep the dot and
+  // dash spellings because older models.dev snapshots normalized version dots
+  // while current snapshots preserve the upstream ids.
+  const CODEX_MODEL_IDS = new Set([
+    "gpt-5.6-sol",
+    "gpt-5-6-sol",
+    "gpt-5.6-terra",
+    "gpt-5-6-terra",
+    "gpt-5.6-luna",
+    "gpt-5-6-luna",
+    "gpt-5.5",
+    "gpt-5-5",
+    "gpt-5.4",
+    "gpt-5-4",
+    "gpt-5.4-mini",
+    "gpt-5-4-mini",
+  ])
+
+  export function isCodexOAuthModel(modelID: string): boolean {
+    return CODEX_MODEL_IDS.has(modelID)
+  }
+
+  function codexOAuthModes(modelID: string) {
+    if (!/^gpt-5[.-](?:4(?:-mini)?|5|6(?:-(?:sol|terra|luna))?)$/.test(modelID)) return undefined
+    return {
+      fast: {
+        provider: {
+          body: {
+            service_tier: "priority",
+          },
+          headers: {},
+        },
+      },
+    }
+  }
 
   function isGpt5OrLater(modelID: string): boolean {
     const match = /^gpt-(\d+)/.exec(modelID)
@@ -79,12 +117,68 @@ export namespace Provider {
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
   }
 
-  function isAtlasApiKey(key: unknown): key is string {
-    return typeof key === "string" && key.startsWith("thk_")
+  const REMOVED_MODEL_IDS = new Set(["mistralai/mistral-small-3.2-24b-instruct"])
+
+  function isRemovedModel(modelID: string) {
+    const normalized = modelID.toLowerCase()
+    if (normalized.includes("fable")) return true
+    return REMOVED_MODEL_IDS.has(normalized)
   }
 
-  function isAtlasProxyBaseURL(baseURL: unknown): baseURL is string {
-    return typeof baseURL === "string" && baseURL.includes("/api/llm/proxy/")
+  export function isAtlasProxyBaseURL(baseURL: unknown): baseURL is string {
+    return isAtlasProxyURL(baseURL)
+  }
+
+  const PUBLIC_PROVIDER_BASE_URLS: Record<string, string> = {
+    anthropic: "https://api.anthropic.com/v1",
+    openai: "https://api.openai.com/v1",
+    google: "https://generativelanguage.googleapis.com/v1beta",
+    xai: "https://api.x.ai/v1",
+  }
+
+  /** Detect a stale managed-proxy path without trusting its origin. This is
+   * used only to keep a user's BYOK secret away from any old proxy URL. Managed
+   * Atlas tokens still require isAtlasProxyBaseURL's exact configured origin. */
+  function hasManagedProxyPath(baseURL: unknown): baseURL is string {
+    if (typeof baseURL !== "string") return false
+    try {
+      // Atlas may be hosted below a path prefix (for example
+      // https://host/control/api/llm/proxy/...). Match the exact proxy path
+      // segments anywhere in the normalized pathname so a stale prefixed URL
+      // can never receive a user-owned key. Collapsing repeated slashes and
+      // decoding escaped separators is deliberately conservative: custom
+      // gateways with an Atlas-proxy-shaped path are pinned to the provider's
+      // public endpoint instead of risking credential disclosure.
+      let path = new URL(baseURL).pathname
+      for (let pass = 0; pass < 3 && path.includes("%"); pass++) {
+        let decoded: string
+        try {
+          decoded = decodeURIComponent(path)
+        } catch {
+          // Keep checking the undecoded path. A malformed escape before a
+          // plain /api/llm/proxy suffix must not disable the leak guard.
+          break
+        }
+        if (decoded === path) break
+        path = decoded
+      }
+      path = path.replace(/\/+/g, "/").replace(/\/+$/, "")
+      return /\/api\/llm\/proxy(?:\/|$)/.test(path)
+    } catch {
+      return false
+    }
+  }
+
+  /** Strict compatibility probe for a well-formed managed-proxy path on any
+   * origin. BYOK leak prevention uses hasManagedProxyPath directly. */
+  export function isManagedProxyBaseURL(baseURL: unknown): baseURL is string {
+    if (!hasManagedProxyPath(baseURL)) return false
+    try {
+      const url = new URL(baseURL)
+      return !url.search && !url.hash
+    } catch {
+      return false
+    }
   }
 
   // Explicit apiKey for a provider routed through the Atlas managed proxy: force
@@ -97,11 +191,11 @@ export namespace Provider {
     const managed =
       isAtlasProxyBaseURL(baseURL) && (await Config.get().catch(() => undefined))?.billing?.llm === "managed"
     if (!managed) return {}
-    // Managed wallet routes through OpenRouter ONLY: never attach the wallet's
-    // thk_ token to a first-party proxy (anthropic / openai / google). Those
-    // providers are also dropped from availability (see isProviderAllowed), so
-    // this is belt-and-suspenders — a managed token can only ever reach the
-    // sanctioned OpenRouter (or hosted synsci) route.
+    // Managed wallet routes are deliberately narrow: OpenRouter for the
+    // aggregated catalog. Never attach the wallet's thk_ token to any other
+    // first-party proxy (anthropic / openai / google / xAI / Meta). Those
+    // providers are also dropped from availability below, so this is
+    // belt-and-suspenders.
     if (!managedProviderAllowed(providerID)) return {}
     const session = await OpenScience.getSession().catch(() => null)
     return session?.api_key ? { apiKey: session.api_key } : {}
@@ -113,7 +207,7 @@ export namespace Provider {
     // proxy routing for it hard-failed every call with advice (`connect
     // sync`) that re-delivers the same env and can never fix it.
     const effective = effectiveKey(provider, options)
-    if (!isAtlasApiKey(effective)) return
+    if (!Auth.isAtlasApiKey(effective)) return
     if (isAtlasProxyBaseURL(options["baseURL"])) return
     throw new Error(
       `${provider.id} is using a managed Atlas key without an Atlas proxy URL. ` +
@@ -124,7 +218,7 @@ export namespace Provider {
   /** A user-owned (BYOK) key: a real, non-managed credential. Excludes the
    *  "public" sentinel used for the zero-cost openscience demo models. */
   function isByokKey(key: unknown): key is string {
-    return typeof key === "string" && key.length > 0 && key !== "public" && !isAtlasApiKey(key)
+    return typeof key === "string" && key.length > 0 && key !== "public" && !Auth.isAtlasApiKey(key)
   }
 
   /** The credential that actually authenticates a provider: an explicit apiKey
@@ -145,30 +239,51 @@ export namespace Provider {
     )
   }
 
-  /** Managed wallet ⇒ OpenRouter-only routing.
+  /** Managed wallet ⇒ curated managed-provider routing.
    *
    *  When the LLM spend toggle is explicitly "managed", every wallet inference
-   *  call flows through OpenRouter — the one gateway whose stream exposes a
-   *  single, unified reasoning format (`reasoning` / `reasoning_details`). The
-   *  first-party managed proxies (anthropic / openai / google), each with a
-   *  different reasoning shape, are taken out of the managed path entirely; the
-   *  hosted zero-cost `synsci` demo provider is kept. BYOK and the legacy
+   *  call flows through OpenRouter. The other first-party managed proxies
+   *  (anthropic / openai / google / xAI / Meta) are taken out of the managed
+   *  path entirely; the hosted
+   *  zero-cost `synsci` demo provider is kept. BYOK and the legacy
    *  auto-detect path (`billing.llm` unset / null / "byok") are UNTOUCHED —
    *  this only fires on an explicit managed-wallet opt-in. Pure + sync. */
-  export function managedRoutesOpenRouterOnly(config: Config.Info): boolean {
+  export function managedRoutesCuratedProvidersOnly(config: Config.Info): boolean {
     return config.billing?.llm === "managed"
   }
 
-  /** Providers a managed (OpenRouter-only) wallet session may load: OpenRouter
-   *  for all real inference, plus the hosted `synsci` demo. Pure + sync. */
+  /** Providers a managed wallet session may load: OpenRouter for aggregated
+   *  inference, plus the hosted `synsci` demo. Pure. */
   export function managedProviderAllowed(providerID: string): boolean {
     return providerID === "openrouter" || providerID.startsWith("synsci")
+  }
+
+  const OPENROUTER_VENDOR_PREFIX: Record<string, string> = {
+    gemini: "google",
+    google: "google",
+    xai: "x-ai",
+    meta: "meta",
+    zai: "z-ai",
+    zhipuai: "z-ai",
+  }
+
+  const ANTHROPIC_DASHED_VERSION = /^(claude-(?:opus|sonnet|haiku)-\d+)-(\d+)(?:-\d{8})?$/
+
+  function openrouterAliasCandidates(providerID: string, modelID: string) {
+    if (providerID === "openrouter") return []
+    const vendor = OPENROUTER_VENDOR_PREFIX[providerID] ?? providerID
+    const base = modelID.replace(/^~/, "")
+    if (!vendor || !base) return []
+    const direct = `${vendor}/${base}`
+    const normalized = vendor === "anthropic" ? `${vendor}/${base.replace(ANTHROPIC_DASHED_VERSION, "$1.$2")}` : direct
+    const aliased = providerID === "openai" && base === "gpt-5.6" ? ["openai/gpt-5.6-sol"] : []
+    return Array.from(new Set([direct, normalized, ...aliased]))
   }
 
   /** True when a base URL points at the local machine (localhost / loopback).
    *  A provider with a local baseURL runs on the user's own hardware, is free,
    *  and is BYOK-class — so it's kept available even in managed-wallet mode
-   *  (where the wallet itself still routes only through OpenRouter). Pure. */
+   *  (where the wallet itself still routes only through curated proxies). Pure. */
   export function isLocalBaseURL(url: unknown): boolean {
     if (typeof url !== "string" || !url) return false
     try {
@@ -188,16 +303,27 @@ export namespace Provider {
    * would leak the credential and mis-bill. Pin the base URL back to the
    * provider's public endpoint and drop the managed routing.
    */
-  function pinByokToPublicEndpoint(provider: Info, options: Record<string, any>, publicURL: string) {
+  function pinByokToPublicEndpoint(provider: Info, options: Record<string, any>, publicURL?: string) {
     const effective = effectiveKey(provider, options)
     // Managed (thk_*) keys must keep their Atlas proxy routing.
-    if (isAtlasApiKey(effective)) return
+    if (Auth.isAtlasApiKey(effective)) return
     if (!isByokKey(effective)) return
-    if (isAtlasProxyBaseURL(options["baseURL"])) {
+    if (hasManagedProxyPath(options["baseURL"])) {
       log.warn("refusing to route BYOK key through Atlas proxy — pinning to public endpoint", {
         provider: provider.id,
       })
-      options["baseURL"] = publicURL
+      const modelURL = typeof publicURL === "string" && !hasManagedProxyPath(publicURL) ? publicURL : undefined
+      const safeURL = modelURL ?? PUBLIC_PROVIDER_BASE_URLS[provider.id]
+      if (!safeURL) {
+        throw new Error(
+          `${provider.id} is using a user-owned key with an Atlas proxy URL, but no safe public endpoint is known. ` +
+            "Remove the managed proxy base URL and try again.",
+        )
+      }
+      // Set an explicit value even when the catalog omitted model.api.url.
+      // Leaving this undefined lets several provider SDKs re-read the stale
+      // *_BASE_URL directly from process.env and defeats the guard.
+      options["baseURL"] = safeURL
     }
   }
 
@@ -206,6 +332,11 @@ export namespace Provider {
     autoload: boolean
     getModel?: CustomModelLoader
     options?: Record<string, any>
+    // Overrides the reported `source` regardless of whether the provider was
+    // already registered by an earlier stage (env/api/plugin). Only the
+    // openrouter loader's managed-proxy branch sets this today — every other
+    // loader leaves it undefined and keeps the call site's default behavior.
+    source?: Info["source"]
   }>
 
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
@@ -258,6 +389,25 @@ export namespace Provider {
           return sdk.responses(modelID)
         },
         options: baseURL ? { baseURL, ...(await managedProxyKey("openai", baseURL)) } : {},
+      }
+    },
+    xai: async () => {
+      return {
+        autoload: false,
+        // Grok 4.5's low/medium/high effort ladder is implemented by xAI's
+        // Responses API. The pinned chat adapter accepts only low/high and
+        // rejects medium before sending a request, so route just this family
+        // through responses while preserving chat behavior for older models.
+        //
+        // This responses path only works because of
+        // tooling/patches/@ai-sdk%2Fxai@2.0.51.patch. xAI opens every stream
+        // with `response.created` carrying `"usage": null`, which the pinned
+        // 2.0.51 schema rejects (it marks usage optional, not nullable), so
+        // Grok 4.5 died on its first SSE event. @ai-sdk/xai@4.0.25 ships the
+        // same fix upstream; drop the patch when the @ai-sdk major bump lands.
+        async getModel(sdk: any, modelID: string) {
+          return /grok-4[.-]5\b/i.test(modelID) ? sdk.responses(modelID) : sdk.languageModel(modelID)
+        },
       }
     },
     "github-copilot": async () => {
@@ -455,22 +605,35 @@ export namespace Provider {
         "HTTP-Referer": "https://syntheticsciences.ai/",
         "X-Title": "synsci",
       }
-      // OpenRouter is the ONE provider with both a managed and a BYOK route, and
-      // resolution is deterministic by key presence (mirrors the Atlas server's
-      // BYOK-first rule): the user's OWN OpenRouter key wins and hits public
-      // OpenRouter directly; with no own key, a logged-in session falls back to
-      // the Atlas managed proxy (thk_* token → wallet-billed). Deleting the own
-      // key restores the managed route automatically — nothing is latched.
+      // OpenRouter is the ONE provider with both a managed and a BYOK route.
+      // Resolution is gated on the explicit `billing.llm` spend toggle: an
+      // explicit "managed" opt-in refuses to route on a stored own key, so it
+      // resolves the Atlas managed proxy (thk_* token → wallet-billed) even
+      // when an own key exists. The key is retained in auth (never
+      // deleted/rewritten) and simply loses this branch. When managed spend is
+      // on but NO managed credential can be found — a lapsed Atlas session,
+      // say — this returns no credential at all, and the availability guard in
+      // init() then drops the provider outright; it must, because the earlier
+      // "load apikeys" stage has already stamped provider.key from auth.json
+      // and getSDK would otherwise fall back to it against public OpenRouter,
+      // billing the user's own key under a toggle that reads "Managed".
+      // `byok` and auto-detect (unset / null) are unchanged from the old
+      // key-presence rule: the user's OWN OpenRouter key wins and hits public
+      // OpenRouter directly; with no own key, a logged-in session falls back
+      // to the Atlas managed proxy. Switching billing.llm back to
+      // byok/auto-detect (or deleting the own key under those modes) restores
+      // the previous resolution automatically — nothing is latched.
       const auth = await Auth.get("openrouter").catch(() => undefined)
       const authKey = auth?.type === "api" ? auth.key : undefined
       const envKey = Env.get("OPENROUTER_API_KEY")
-      const ownKey = isByokKey(authKey) ? authKey : isByokKey(envKey) ? envKey : undefined
+      const managed = (await Config.get().catch(() => undefined))?.billing?.llm === "managed"
+      const ownKey = managed ? undefined : isByokKey(authKey) ? authKey : isByokKey(envKey) ? envKey : undefined
       if (ownKey) {
         // Honour a user's own OpenRouter-compatible gateway (custom
         // OPENROUTER_BASE_URL); only the Atlas proxy is swapped for the public
         // endpoint, since a BYOK key must never be sent to the managed proxy.
         const envBase = Env.get("OPENROUTER_BASE_URL")
-        const baseURL = envBase && !isAtlasProxyBaseURL(envBase) ? envBase : "https://openrouter.ai/api/v1"
+        const baseURL = envBase && !hasManagedProxyPath(envBase) ? envBase : "https://openrouter.ai/api/v1"
         return { autoload: false, options: { apiKey: ownKey, baseURL, headers } }
       }
 
@@ -480,14 +643,35 @@ export namespace Provider {
       // managed token — the live session, or the synced thk_* already in env if
       // the session file is momentarily unreadable.
       const proxyBase = Env.get("OPENROUTER_BASE_URL")
-      if (isAtlasProxyBaseURL(proxyBase)) {
-        const session = await OpenScience.getSession().catch(() => null)
-        const managedKey = session?.api_key ?? (isAtlasApiKey(envKey) ? envKey : undefined)
-        if (managedKey) return { autoload: false, options: { apiKey: managedKey, baseURL: proxyBase, headers } }
+      const session = await OpenScience.getSession().catch(() => null)
+      const managedKey = session?.api_key ?? (Auth.isAtlasApiKey(envKey) ? envKey : undefined)
+      if (managedKey) {
+        const baseURL = isAtlasProxyBaseURL(proxyBase) ? proxyBase : managedOpenRouterBaseURL()
+        return { autoload: false, options: { apiKey: managedKey, baseURL, headers }, source: "managed" }
       }
 
       // Neither an own key nor a managed route — nothing to route with.
       return { autoload: false, options: { headers } }
+    },
+    meta: async () => {
+      // Meta is BYOK-only in the client. Managed Muse Spark now routes through
+      // OpenRouter's `meta/muse-spark-1.1` slug, so stale Atlas Meta proxy env
+      // from older syncs must not create a managed Meta provider.
+      const auth = await Auth.get("meta").catch(() => undefined)
+      const authKey = auth?.type === "api" ? auth.key : undefined
+      const envKey = Env.get("META_MODEL_API_KEY")
+      const ownKey = isByokKey(authKey) ? authKey : isByokKey(envKey) ? envKey : undefined
+      if (ownKey) {
+        const envBase = Env.get("META_MODEL_BASE_URL")
+        const baseURL = envBase && !hasManagedProxyPath(envBase) ? envBase : "https://api.meta.ai/v1"
+        return {
+          autoload: false,
+          options: { apiKey: ownKey, baseURL },
+          getModel: async (sdk, modelID) => sdk.responses(modelID),
+        }
+      }
+
+      return { autoload: false, getModel: async (sdk, modelID) => sdk.responses(modelID) }
     },
     vercel: async () => {
       return {
@@ -689,13 +873,33 @@ export namespace Provider {
     },
   }
 
+  const Mode = z.object({
+    model: z.string().optional(),
+    cost: z
+      .object({
+        input: z.number(),
+        output: z.number(),
+        cache: z.object({
+          read: z.number(),
+          write: z.number(),
+        }),
+      })
+      .optional(),
+    provider: z
+      .object({
+        body: z.record(z.string(), z.any()).optional(),
+        headers: z.record(z.string(), z.string()).optional(),
+      })
+      .optional(),
+  })
+
   export const Model = z
     .object({
       id: z.string(),
       providerID: z.string(),
       api: z.object({
         id: z.string(),
-        url: z.string(),
+        url: z.string().optional(),
         npm: z.string(),
       }),
       name: z.string(),
@@ -753,7 +957,9 @@ export namespace Provider {
       options: z.record(z.string(), z.any()),
       headers: z.record(z.string(), z.string()),
       release_date: z.string(),
+      reasoningOptions: z.array(z.record(z.string(), z.any())).optional(),
       variants: z.record(z.string(), z.record(z.string(), z.any())).optional(),
+      modes: z.record(z.string(), Mode).optional(),
     })
     .meta({
       ref: "Model",
@@ -764,7 +970,7 @@ export namespace Provider {
     .object({
       id: z.string(),
       name: z.string(),
-      source: z.enum(["env", "config", "custom", "api"]),
+      source: z.enum(["env", "config", "custom", "api", "managed"]),
       env: z.string().array(),
       key: z.string().optional(),
       options: z.record(z.string(), z.any()),
@@ -774,6 +980,30 @@ export namespace Provider {
       ref: "Provider",
     })
   export type Info = z.infer<typeof Info>
+
+  export function redact(info: Info): Info {
+    return {
+      ...info,
+      key: undefined,
+      options: {},
+      models: mapValues(info.models, (model) => ({
+        ...model,
+        api: {
+          ...model.api,
+          url: undefined,
+        },
+        options: {},
+        headers: {},
+        variants: model.variants ? mapValues(model.variants, () => ({})) : undefined,
+        modes: model.modes
+          ? mapValues(model.modes, (mode) => ({
+              model: mode.model,
+              cost: mode.cost,
+            }))
+          : undefined,
+      })),
+    }
+  }
 
   /** Synthesize a minimal Model entry for an OpenRouter model that
    *  isn't in the models.dev catalog. OR is OpenAI-compat for every
@@ -811,9 +1041,14 @@ export namespace Provider {
       capabilities: {
         temperature: true,
         reasoning: true,
-        attachment: false,
+        // #192: this is a placeholder for a whitelisted model NOT in the
+        // local catalog — guessing `false` here silently drops images/PDFs
+        // for what may well be a vision-capable model. Guess permissive
+        // instead: a genuinely-unsupported attachment surfaces a real
+        // provider error rather than a fabricated "unsupported" one.
+        attachment: true,
         toolcall: true,
-        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        input: { text: true, audio: false, image: true, video: false, pdf: true },
         output: { text: true, audio: false, image: false, video: false, pdf: false },
         interleaved: false,
       },
@@ -824,7 +1059,94 @@ export namespace Provider {
     return m
   }
 
+  function directModes(
+    providerID: string,
+    modelID: string,
+    experimental: ModelsDev.Model["experimental"],
+  ): Model["modes"] | undefined {
+    const modes = experimental && typeof experimental === "object" ? experimental.modes : undefined
+    const result = Object.fromEntries(
+      Object.entries(modes ?? {})
+        .filter(([key, mode]) => {
+          if (!mode) return false
+          if (key === "pro" && /(^|\/)gpt-/.test(modelID)) return false
+          if (providerID !== "anthropic" || key !== "fast") return true
+          const id = modelID.toLowerCase().replaceAll(".", "-")
+          return id.startsWith("claude-opus-5") || id.startsWith("claude-opus-4-8")
+        })
+        .map(([key, mode]) => [
+          key,
+          {
+            model: mode?.model,
+            cost: mode?.cost
+              ? {
+                  input: mode.cost.input,
+                  output: mode.cost.output,
+                  cache: {
+                    read: mode.cost.cache_read ?? 0,
+                    write: mode.cost.cache_write ?? 0,
+                  },
+                }
+              : undefined,
+            provider: mode?.provider
+              ? {
+                  body: mode.provider.body ?? {},
+                  headers: mode.provider.headers ?? {},
+                }
+              : undefined,
+          },
+        ]),
+    )
+    if (Object.keys(result).length === 0) return undefined
+    return result
+  }
+
+  function modelModes(provider: ModelsDev.Provider, model: ModelsDev.Model): Model["modes"] | undefined {
+    const direct = directModes(provider.id, model.id, model.experimental) ?? {}
+    const sibling =
+      provider.id === "openrouter" && !/-fast$/.test(model.id)
+        ? Object.fromEntries(
+            ["fast"]
+              .map((key) => [key, provider.models[`${model.id}-${key}`]] as const)
+              .filter((entry) => !!entry[1])
+              .map(([key, route]) => [
+                key,
+                {
+                  model: route!.id,
+                  cost: route!.cost
+                    ? {
+                        input: route!.cost.input,
+                        output: route!.cost.output,
+                        cache: {
+                          read: route!.cost.cache_read ?? 0,
+                          write: route!.cost.cache_write ?? 0,
+                        },
+                      }
+                    : undefined,
+                },
+              ]),
+          )
+        : {}
+    const result = { ...direct, ...sibling }
+    if (Object.keys(result).length === 0) return undefined
+    return result
+  }
+
   function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model): Model {
+    // models.dev can lag a just-launched model's authoritative provider
+    // contract. Normalize Muse at the ingestion seam so cached, bundled, and
+    // freshly fetched catalogs all drive the same token budgeting.
+    const isMetaMuse11 = provider.id === "meta" && /muse-spark-1[.-]1\b/.test(model.id.toLowerCase())
+    // xAI and OpenRouter publish different cached-input rates for Grok 4.5.
+    // Keep the route-specific contract even when models.dev flattens both
+    // entries to the same value.
+    const isGrok45 = /grok-4[.-]5\b/.test(model.id.toLowerCase())
+    const cacheRead =
+      isGrok45 && provider.id === "xai"
+        ? 0.3
+        : isGrok45 && provider.id === "openrouter"
+          ? 0.5
+          : (model.cost?.cache_read ?? 0)
     const m: Model = {
       id: model.id,
       providerID: provider.id,
@@ -838,11 +1160,13 @@ export namespace Provider {
       status: model.status ?? "active",
       headers: model.headers ?? {},
       options: model.options ?? {},
+      modes: modelModes(provider, model),
+      reasoningOptions: model.reasoning_options,
       cost: {
         input: model.cost?.input ?? 0,
         output: model.cost?.output ?? 0,
         cache: {
-          read: model.cost?.cache_read ?? 0,
+          read: cacheRead,
           write: model.cost?.cache_write ?? 0,
         },
         experimentalOver200K: model.cost?.context_over_200k
@@ -857,9 +1181,9 @@ export namespace Provider {
           : undefined,
       },
       limit: {
-        context: model.limit.context,
+        context: isMetaMuse11 ? 1_048_576 : model.limit.context,
         input: model.limit.input,
-        output: model.limit.output,
+        output: isMetaMuse11 ? 131_072 : model.limit.output,
       },
       capabilities: {
         temperature: model.temperature,
@@ -882,7 +1206,7 @@ export namespace Provider {
         },
         interleaved: model.interleaved ?? false,
       },
-      release_date: model.release_date,
+      release_date: isMetaMuse11 ? "2026-07-09" : model.release_date,
       variants: {},
     }
 
@@ -898,7 +1222,11 @@ export namespace Provider {
       name: provider.name,
       env: provider.env ?? [],
       options: {},
-      models: mapValues(provider.models, (model) => fromModelsDevModel(provider, model)),
+      models: Object.fromEntries(
+        Object.entries(provider.models)
+          .filter(([modelID]) => !isRemovedModel(modelID))
+          .map(([modelID, model]) => [modelID, fromModelsDevModel(provider, model)]),
+      ),
     }
   }
 
@@ -915,6 +1243,7 @@ export namespace Provider {
     modelLoaders: { [providerID: string]: CustomModelLoader }
   }> | null = null
   let _stateCacheDirectory: string | undefined
+  let _stateCacheTrust: boolean | undefined
 
   async function _loadState() {
     using _ = log.time("state")
@@ -924,18 +1253,17 @@ export namespace Provider {
 
     const disabled = new Set(config.disabled_providers ?? [])
     const enabled = config.enabled_providers ? new Set(config.enabled_providers) : null
-    // Managed wallet ⇒ OpenRouter-only. Drop every other provider (the
-    // first-party managed proxies included) from a managed session so wallet
-    // inference can only flow through OpenRouter's unified reasoning stream,
-    // plus the hosted zero-cost demo. Gated on the explicit toggle, so BYOK and
-    // legacy auto-detect sessions see every provider exactly as before. This is
-    // the single seam that makes defaultModel()/getSmallModel() managed-safe:
-    // both read the filtered state, so they can only resolve openrouter/synsci.
-    const managedOpenRouterOnly = managedRoutesOpenRouterOnly(config)
+    // Managed wallet ⇒ curated routes only. OpenRouter handles the aggregated
+    // catalog. Every other first-party managed proxy is dropped. Gated on the
+    // explicit toggle, so
+    // BYOK and legacy auto-detect sessions see every provider as before. This is
+    // the single seam that makes defaultModel()/getSmallModel() managed-safe.
+    const managedCuratedProvidersOnly = managedRoutesCuratedProvidersOnly(config)
     // Config-registered providers pointing at the local machine (Ollama, LM
     // Studio, any OpenAI-compatible localhost endpoint). They're free and run on
     // the user's own hardware, so they stay available even in managed-wallet
-    // mode — the wallet still only routes real inference through OpenRouter.
+    // mode — the wallet still only routes real inference through curated
+    // managed proxies.
     const localProviderIds = new Set(
       Object.entries(config.provider ?? {})
         .filter(([, p]) => isLocalBaseURL(p?.options?.baseURL ?? p?.api))
@@ -951,7 +1279,7 @@ export namespace Provider {
       // managed users finish the ChatGPT login (the credential persists) but the
       // provider is filtered out and the UI never flips to Connected.
       if (providerID === "openai-codex") return !disabled.has(providerID)
-      if (managedOpenRouterOnly && !managedProviderAllowed(providerID) && !localProviderIds.has(providerID))
+      if (managedCuratedProvidersOnly && !managedProviderAllowed(providerID) && !localProviderIds.has(providerID))
         return false
       if (enabled && !enabled.has(providerID)) return false
       if (disabled.has(providerID)) return false
@@ -1009,7 +1337,9 @@ export namespace Provider {
       }
 
       for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+        if (isRemovedModel(modelID)) continue
         const existingModel = parsed.models[model.id ?? modelID]
+        const baseURL = typeof provider.options?.baseURL === "string" ? provider.options.baseURL : undefined
         const name = iife(() => {
           if (model.name) return model.name
           if (model.id && model.id !== modelID) return modelID
@@ -1025,7 +1355,7 @@ export namespace Provider {
               existingModel?.api.npm ??
               modelsDev[providerID]?.npm ??
               "@ai-sdk/openai-compatible",
-            url: provider?.api ?? existingModel?.api.url ?? modelsDev[providerID]?.api,
+            url: baseURL ?? provider.api ?? existingModel?.api.url ?? modelsDev[providerID]?.api,
           },
           status: model.status ?? existingModel?.status ?? "active",
           name,
@@ -1071,7 +1401,9 @@ export namespace Provider {
           headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
           family: model.family ?? existingModel?.family ?? "",
           release_date: model.release_date ?? existingModel?.release_date ?? "",
+          reasoningOptions: existingModel?.reasoningOptions,
           variants: {},
+          modes: directModes(providerID, modelID, model.experimental) ?? existingModel?.modes,
         }
         const merged = mergeDeep(ProviderTransform.variants(parsedModel), model.variants ?? {})
         parsedModel.variants = mapValues(
@@ -1095,33 +1427,32 @@ export namespace Provider {
       // snapshot normalizes dots to dashes (e.g. `gpt-5-5`) while the
       // OpenAI API expects dots (`gpt-5.5`). We pick up whichever the
       // snapshot ships and route it through the codex provider.
-      const codexModelIds = new Set<string>([
-        "gpt-5.5",
-        "gpt-5-5",
-        "gpt-5.4",
-        "gpt-5-4",
-        "gpt-5.4-mini",
-        "gpt-5-4-mini",
-        "gpt-5.3-codex",
-        "gpt-5-3-codex",
-        "gpt-5.2",
-        "gpt-5-2",
-      ])
       const baseOpenai = database["openai"]
       const codexModels: Record<string, (typeof baseOpenai.models)[string]> = {}
       for (const [id, model] of Object.entries(baseOpenai.models)) {
-        if (codexModelIds.has(id)) {
-          codexModels[id] = {
+        if (isCodexOAuthModel(id)) {
+          const codexModel = {
             ...model,
             providerID: "openai-codex",
             cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+            // Codex OAuth advertises a separate 272k window even when the
+            // copied public-API entry has a million-token context.
+            limit: { ...model.limit, context: 272_000 },
+            // Codex advertises its own fast tier independently of the public
+            // API catalog, so synthesize only the modes in the OAuth contract.
+            modes: codexOAuthModes(model.id),
           }
+          // The public API and ChatGPT/Codex expose different GPT-5.6 effort
+          // ladders. Recompute after changing providerID instead of copying the
+          // API model's pre-built variants (`none` is not a Codex picker option).
+          codexModel.variants = ProviderTransform.variants(codexModel)
+          codexModels[id] = codexModel
         }
       }
       database["openai-codex"] = {
         ...baseOpenai,
         id: "openai-codex",
-        name: "OpenAI Codex (ChatGPT subscription)",
+        name: "OpenAI (Codex subscription)",
         env: [],
         options: {},
         models: codexModels,
@@ -1209,14 +1540,33 @@ export namespace Provider {
       if (result && (result.autoload || providers[providerID])) {
         if (result.getModel) modelLoaders[providerID] = result.getModel
         const opts = result.options ?? {}
-        const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
+        // A loader-reported source (e.g. openrouter's managed-proxy branch)
+        // always wins, even when an earlier stage (env/api) already
+        // registered the provider under a different source — that earlier
+        // credential is exactly what the managed route is overriding.
+        // Absent an explicit source, keep the existing rule: "custom" only
+        // when this is the provider's first registration.
+        const patch: Partial<Info> = providers[providerID]
+          ? { options: opts, ...(result.source ? { source: result.source } : {}) }
+          : { source: result.source ?? "custom", options: opts }
         mergeProvider(providerID, patch)
       }
     }
 
     // load config
     for (const [providerID, provider] of configProviders) {
-      const partial: Partial<Info> = { source: "config" }
+      // A provider already registered by an earlier stage under a genuinely
+      // credential-derived source (env/api/managed) must not be relabeled —
+      // a `config.provider` entry that only supplies a `whitelist`, `name`,
+      // etc. is not where the credential came from. "custom" is excluded from
+      // this protection: it's loader-assigned (not credential-derived) and an
+      // autoloaded provider (AWS-profile Bedrock, google-vertex, synsci,
+      // cloudflare-ai-gateway, gitlab, sap-ai-core, ...) that also appears in
+      // config.provider for its whitelist has always been, and must stay,
+      // "config" here.
+      const credentialSource = providers[providerID]?.source
+      const claimed = credentialSource === "env" || credentialSource === "api" || credentialSource === "managed"
+      const partial: Partial<Info> = claimed ? {} : { source: "config" }
       if (provider.env) partial.env = provider.env
       if (provider.name) partial.name = provider.name
       if (provider.options) partial.options = provider.options
@@ -1237,28 +1587,52 @@ export namespace Provider {
       // credential the user never brought. BYOK must use the user's OWN keys
       // only; auto-detect (billing unset) is left alone so a thk_ key can still
       // resolve to managed there.
-      if (config.billing?.llm === "byok" && isAtlasApiKey(effectiveKey(provider))) {
+      if (config.billing?.llm === "byok" && Auth.isAtlasApiKey(effectiveKey(provider))) {
+        delete providers[providerID]
+        continue
+      }
+
+      // The managed mirror of the guard above. Under an EXPLICIT managed
+      // toggle the OpenRouter loader declines to route on a stored own key,
+      // but declining is not enough on its own: "load apikeys" already stamped
+      // provider.key from auth.json, and getSDK picks that up with baseURL
+      // falling back to public OpenRouter. A user whose Atlas session lapsed
+      // would keep chatting on their OWN key while the toggle still reads
+      // "Managed" and the wallet is never touched. Drop the provider instead —
+      // seeing no OpenRouter models is honest, silently spending a BYOK key is
+      // not. Exempt the two provider classes this file already treats as
+      // BYOK-by-design, since neither can debit the wallet and both are
+      // deliberately kept in managed mode: the user's own ChatGPT subscription
+      // (see isProviderAllowed) and anything served from their own machine
+      // (see isLocalBaseURL). Auto-detect (billing unset / null) and byok never
+      // reach this branch.
+      const exempt =
+        providerID === "openai-codex" ||
+        localProviderIds.has(providerID) ||
+        isLocalBaseURL(provider.options?.["baseURL"])
+      if (managedCuratedProvidersOnly && !exempt && isByokKey(effectiveKey(provider))) {
         delete providers[providerID]
         continue
       }
 
       const configProvider = config.provider?.[providerID]
 
-      // The synced OpenRouter whitelist curates the MANAGED catalog only. When
-      // OpenRouter resolves to the user's OWN key (BYOK — the resolver above
-      // attaches a non-thk_ apiKey), it's their account: show the full local
-      // models.dev OpenRouter catalog instead of the managed subset.
-      const openrouterByok = providerID === "openrouter" && isByokKey(provider.options?.["apiKey"])
+      // Synced whitelists curate MANAGED catalogs only. When a dual-route
+      // provider resolves to the user's OWN key, it is their account: show the
+      // full local models.dev catalog instead of the managed subset.
+      const bypassManagedWhitelist =
+        (providerID === "openrouter" || providerID === "meta") && isByokKey(provider.options?.["apiKey"])
 
       for (const [modelID, model] of Object.entries(provider.models)) {
         model.api.id = model.api.id ?? model.id ?? modelID
+        if (isRemovedModel(modelID)) delete provider.models[modelID]
         if (modelID === "gpt-5-chat-latest" || (providerID === "openrouter" && modelID === "openai/gpt-5-chat"))
           delete provider.models[modelID]
         if (model.status === "alpha" && !Flag.OPENSCIENCE_ENABLE_EXPERIMENTAL_MODELS) delete provider.models[modelID]
         if (model.status === "deprecated") delete provider.models[modelID]
         if (
           (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
-          (!openrouterByok && configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
+          (!bypassManagedWhitelist && configProvider?.whitelist && !configProvider.whitelist.includes(modelID))
         )
           delete provider.models[modelID]
 
@@ -1281,8 +1655,9 @@ export namespace Provider {
       // OpenAI-compat for every upstream + managed billing uses usage.cost from
       // the response, not a local price table. Skipped on a BYOK key — that path
       // shows the full local catalog and isn't bound to the managed whitelist.
-      if (!openrouterByok && providerID === "openrouter" && configProvider?.whitelist) {
+      if (!bypassManagedWhitelist && providerID === "openrouter" && configProvider?.whitelist) {
         for (const wlid of configProvider.whitelist) {
+          if (isRemovedModel(wlid)) continue
           if (!(wlid in provider.models)) {
             provider.models[wlid] = _syntheticOpenRouterModel(wlid)
           }
@@ -1306,11 +1681,13 @@ export namespace Provider {
   }
 
   // Returns the memoised state, creating it on first call or after invalidate().
-  function state() {
+  async function state() {
     const directory = Instance.directory
-    if (_stateCacheDirectory !== directory) {
+    const trusted = await ProjectTrust.allowed(Instance.project)
+    if (_stateCacheDirectory !== directory || _stateCacheTrust !== trusted) {
       _stateCache = null
       _stateCacheDirectory = directory
+      _stateCacheTrust = trusted
     }
     if (_stateCache === null) {
       _stateCache = _loadState()
@@ -1327,10 +1704,86 @@ export namespace Provider {
   export function invalidate(): void {
     _stateCache = null
     _stateCacheDirectory = undefined
+    _stateCacheTrust = undefined
+  }
+
+  function resolveOpenRouterAlias(s: Awaited<ReturnType<typeof state>>, providerID: string, modelID: string) {
+    const openrouter = s.providers["openrouter"]
+    if (!openrouter) return undefined
+    for (const alias of openrouterAliasCandidates(providerID, modelID)) {
+      const model = openrouter.models[alias]
+      if (model) return model
+    }
+  }
+
+  function resolveAvailableModel(s: Awaited<ReturnType<typeof state>>, providerID: string, modelID: string) {
+    const exact = s.providers[providerID]?.models[modelID]
+    return exact ?? resolveOpenRouterAlias(s, providerID, modelID)
   }
 
   export async function list() {
     return state().then((state) => state.providers)
+  }
+
+  // === tokenCommand: refreshing shell-command auth (#146) ===
+  // Some providers sit behind a rotating/SSO-minted bearer token that a local
+  // command prints on demand. `options.tokenCommand` runs that command and injects
+  // its stdout as `Authorization: Bearer <token>`, re-minting shortly before the
+  // token's JWT exp. Module-level so the cache + single-flight are shared across the
+  // (memoized) SDK instances rather than re-run per request.
+  const tokenCache = new Map<string, { token: string; expires: number }>()
+  const tokenInflight = new Map<string, Promise<string>>()
+
+  async function projectToken(model: Model, command: string) {
+    const config = await Config.get()
+    const declared = config.provider?.[model.providerID]?.options?.tokenCommand
+    if (declared !== command) return false
+    const executable = await Config.getExecution()
+    return executable.provider?.[model.providerID]?.options?.tokenCommand !== command
+  }
+
+  async function projectModule(model: Model) {
+    const configured = (config: Config.Info) => {
+      const provider = config.provider?.[model.providerID]
+      return provider?.models?.[model.id]?.provider?.npm ?? provider?.npm
+    }
+    const declared = configured(await Config.get())
+    if (declared !== model.api.npm) return false
+    return configured(await Config.getExecution()) !== model.api.npm
+  }
+
+  async function mintToken(command: string): Promise<string> {
+    const cached = tokenCache.get(command)
+    // Re-mint a minute early so an in-flight request never ships an expired token.
+    if (cached && cached.expires > Date.now() + 60_000) return cached.token
+    const pending = tokenInflight.get(command)
+    if (pending) return pending
+    const run = (async () => {
+      const proc = Bun.spawn(["sh", "-c", command], { stdout: "pipe", stderr: "pipe" })
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      const token = out.trim()
+      if (code !== 0) throw new Error(`tokenCommand exited ${code}: ${err.trim() || "no stderr"}`)
+      if (!token) throw new Error("tokenCommand produced no output")
+      // Decode a JWT exp (seconds) so we can re-mint just before it lapses; a
+      // non-JWT token has no exp, so expire it immediately (re-mint every request).
+      const claims = token.split(".")
+      let exp = 0
+      if (claims.length === 3) {
+        try {
+          exp = JSON.parse(Buffer.from(claims[1], "base64url").toString()).exp ?? 0
+        } catch {
+          /* not a JWT — leave exp 0 */
+        }
+      }
+      tokenCache.set(command, { token, expires: exp ? exp * 1000 : 0 })
+      return token
+    })().finally(() => tokenInflight.delete(command))
+    tokenInflight.set(command, run)
+    return run
   }
 
   async function getSDK(model: Model) {
@@ -1346,8 +1799,12 @@ export namespace Provider {
         options["includeUsage"] = true
       }
 
-      if (!options["baseURL"]) options["baseURL"] = model.api.url
+      if (!options["baseURL"] && model.api.url) options["baseURL"] = model.api.url
       if (options["apiKey"] === undefined && provider.key) options["apiKey"] = provider.key
+      // tokenCommand supplies the credential per-request via the fetch hook below;
+      // give the SDK a non-empty placeholder so @ai-sdk/openai's loadApiKey doesn't
+      // throw at construction (the real Bearer header is overwritten on each call).
+      if (options["tokenCommand"] && options["apiKey"] === undefined) options["apiKey"] = "token-command"
       pinByokToPublicEndpoint(provider, options, model.api.url)
       requireAtlasProxyForManagedKey(provider, options)
       if (model.headers)
@@ -1361,6 +1818,7 @@ export namespace Provider {
       if (existing) return existing
 
       const customFetch = options["fetch"]
+      const tokenCommand = options["tokenCommand"] as string | undefined
 
       options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
         // Preserve custom fetch if it exists, wrap it with timeout logic
@@ -1395,6 +1853,19 @@ export namespace Provider {
           }
         }
 
+        // Mint (or reuse) the shell-command token and overwrite Authorization.
+        // Headers.set is case-insensitive, so it replaces the placeholder key the
+        // SDK attached at construction.
+        if (tokenCommand) {
+          if (await projectToken(model, tokenCommand)) {
+            await ProjectTrust.require(Instance.project, "provider_token_command")
+          }
+          const token = await mintToken(tokenCommand)
+          const headers = new Headers(opts.headers as HeadersInit | undefined)
+          headers.set("authorization", `Bearer ${token}`)
+          opts.headers = headers
+        }
+
         return fetchFn(input, {
           ...opts,
           // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
@@ -1416,6 +1887,9 @@ export namespace Provider {
         return loaded as SDK
       }
 
+      if (await projectModule(model)) {
+        await ProjectTrust.require(Instance.project, "provider_module")
+      }
       let installedPath: string
       if (!model.api.npm.startsWith("file://")) {
         installedPath = await BunProc.install(model.api.npm, "latest")
@@ -1444,6 +1918,9 @@ export namespace Provider {
 
   export async function getModel(providerID: string, modelID: string) {
     const s = await state()
+    const resolved = resolveAvailableModel(s, providerID, modelID)
+    if (resolved) return resolved
+
     const provider = s.providers[providerID]
     if (!provider) {
       const availableProviders = Object.keys(s.providers)
@@ -1452,14 +1929,10 @@ export namespace Provider {
       throw new ModelNotFoundError({ providerID, modelID, suggestions })
     }
 
-    const info = provider.models[modelID]
-    if (!info) {
-      const availableModels = Object.keys(provider.models)
-      const matches = fuzzysort.go(modelID, availableModels, { limit: 3, threshold: -10000 })
-      const suggestions = matches.map((m) => m.target)
-      throw new ModelNotFoundError({ providerID, modelID, suggestions })
-    }
-    return info
+    const availableModels = Object.keys(provider.models)
+    const matches = fuzzysort.go(modelID, availableModels, { limit: 3, threshold: -10000 })
+    const suggestions = matches.map((m) => m.target)
+    throw new ModelNotFoundError({ providerID, modelID, suggestions })
   }
 
   export async function getLanguage(model: Model): Promise<LanguageModelV2> {
@@ -1590,7 +2063,8 @@ export namespace Provider {
       // (e.g. a saved `anthropic/...` model with no API key must not be returned)
       // — otherwise fall through to the priority-based selection below.
       const parsed = parseModel(cfg.model)
-      if (available[parsed.providerID]?.models[parsed.modelID]) return parsed
+      const resolved = resolveAvailableModel(await state(), parsed.providerID, parsed.modelID)
+      if (resolved) return { providerID: resolved.providerID, modelID: resolved.id }
       log.warn("configured model is not available, falling back to default selection", parsed)
     }
 

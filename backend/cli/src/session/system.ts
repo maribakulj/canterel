@@ -2,27 +2,24 @@ import { Ripgrep } from "../file/ripgrep"
 
 import { Instance } from "../project/instance"
 
-import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
-import PROMPT_ANTHROPIC_WITHOUT_TODO from "./prompt/qwen.txt"
-import PROMPT_BEAST from "./prompt/beast.txt"
-import PROMPT_GEMINI from "./prompt/gemini.txt"
-
-import PROMPT_CODEX from "./prompt/codex_header.txt"
+import PROMPT_CORE from "./prompt/core.txt"
 import type { Provider } from "@/provider/provider"
 import { Config } from "../config/config"
+import { Skill } from "../skill"
+import { PermissionNext } from "../permission/next"
+import { ComputePrompt } from "../compute/prompt"
 
 export namespace SystemPrompt {
   export function instructions() {
-    return PROMPT_CODEX.trim()
+    return PROMPT_CORE.trim()
   }
 
-  export function provider(model: Provider.Model) {
-    if (model.api.id.includes("gpt-5")) return [PROMPT_CODEX]
-    if (model.api.id.includes("gpt-") || model.api.id.includes("o1") || model.api.id.includes("o3"))
-      return [PROMPT_BEAST]
-    if (model.api.id.includes("gemini-")) return [PROMPT_GEMINI]
-    if (model.api.id.includes("claude")) return [PROMPT_ANTHROPIC]
-    return [PROMPT_ANTHROPIC_WITHOUT_TODO]
+  export function provider(_model: Provider.Model) {
+    return [PROMPT_CORE]
+  }
+
+  export async function compute(value?: unknown) {
+    return [await ComputePrompt.system(value)]
   }
 
   /** When the user message begins with `/<name>` matching an installed
@@ -58,6 +55,41 @@ If <name> is NOT a known skill, treat the / as literal text and respond
 normally.
 </slash-skill-invocation>`,
     ]
+  }
+
+  export async function availableSkills(permission: PermissionNext.Ruleset) {
+    const skills = (await Skill.all()).filter(
+      (skill) => PermissionNext.evaluate("skill", skill.name, permission).action !== "deny",
+    )
+    if (skills.length === 0) {
+      return [
+        "<available-skills>",
+        "No skills are currently available. Static skill routing tables are guidance only.",
+        "Do not call the skill tool because no skill name will resolve.",
+        "</available-skills>",
+      ].join("\n")
+    }
+
+    const groups = new Map<string, string[]>()
+    for (const skill of skills) {
+      const category = skill.category ?? "other"
+      groups.set(category, [...(groups.get(category) ?? []), skill.name])
+    }
+
+    const list = [...groups.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([category, names]) => [
+        `### ${category}`,
+        ...names.sort((a, b) => a.localeCompare(b)).map((name) => `- ${name}`),
+      ])
+
+    return [
+      "<available-skills>",
+      "Only the skill names below are currently loaded and callable.",
+      "Static skill routing tables are guidance only. Never call a skill absent from this list.",
+      ...list,
+      "</available-skills>",
+    ].join("\n")
   }
 
   export async function planModeInstructions(): Promise<string[]> {

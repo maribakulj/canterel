@@ -42,6 +42,18 @@ test("research agent has correct default properties", async () => {
   })
 })
 
+test("domain agents are delegated specialists instead of competing primary modes", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      expect((await Agent.get("biology"))?.mode).toBe("subagent")
+      expect((await Agent.get("physics"))?.mode).toBe("subagent")
+      expect((await Agent.get("ml"))?.mode).toBe("subagent")
+    },
+  })
+})
+
 test("plan agent denies edits except .openscience/plans/*", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
@@ -128,6 +140,27 @@ test("custom agent from config creates new agent", async () => {
       expect(custom?.topP).toBe(0.9)
       expect(custom?.native).toBe(false)
       expect(custom?.mode).toBe("all")
+    },
+  })
+})
+
+test("legacy docs config remains a subagent", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      agent: {
+        docs: {
+          description: "Documentation specialist",
+          mode: "all",
+        },
+      },
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const docs = await Agent.get("docs")
+      expect(docs?.mode).toBe("subagent")
+      expect(docs?.description).toBe("Documentation specialist")
     },
   })
 })
@@ -604,7 +637,7 @@ test("defaultAgent throws when default_agent points to non-existent agent", asyn
   })
 })
 
-test("defaultAgent returns next primary agent when first is disabled", async () => {
+test("defaultAgent does not silently replace disabled research with plan mode", async () => {
   await using tmp = await tmpdir({
     config: {
       agent: {
@@ -615,9 +648,7 @@ test("defaultAgent returns next primary agent when first is disabled", async () 
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      const agent = await Agent.defaultAgent()
-      // research is disabled, so it should return the next primary agent
-      expect(agent).toBe("biology")
+      await expect(Agent.defaultAgent()).rejects.toThrow("no primary visible agent found")
     },
   })
 })

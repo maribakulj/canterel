@@ -15,7 +15,6 @@ export type LocalPTY = {
   scrollY?: number
 }
 
-const WORKSPACE_KEY = "__workspace__"
 const MAX_TERMINAL_SESSIONS = 20
 
 type TerminalSession = ReturnType<typeof createTerminalSession>
@@ -37,7 +36,7 @@ function createTerminalSession(sdk: ReturnType<typeof useSDK>, dir: string, sess
   }
 
   const [store, setStore, _, ready] = persisted(
-    Persist.workspace(dir, "terminal", legacy),
+    Persist.scoped(dir, session, "terminal", legacy),
     createStore<{
       active?: string
       all: LocalPTY[]
@@ -86,9 +85,10 @@ function createTerminalSession(sdk: ReturnType<typeof useSDK>, dir: string, sess
     ready,
     all: createMemo(() => Object.values(store.all)),
     active: createMemo(() => store.active),
-    // `opts.command`/`opts.args` run a specific program in the new terminal
-    // instead of the default shell (e.g. `ollama serve`, `ollama pull llama3.1`).
-    new(opts?: { command?: string; args?: string[]; title?: string }) {
+    new(opts?: { title?: string }) {
+      if (!session || session === "new") {
+        return Promise.reject(new Error("Create or open a session before starting a terminal."))
+      }
       const existingTitleNumbers = new Set(
         store.all.flatMap((pty) => {
           const direct = Number.isFinite(pty.titleNumber) && pty.titleNumber > 0 ? pty.titleNumber : undefined
@@ -104,10 +104,10 @@ function createTerminalSession(sdk: ReturnType<typeof useSDK>, dir: string, sess
           (number) => !existingTitleNumbers.has(number),
         ) ?? 1
 
-      sdk.client.pty
+      return sdk.client.pty
         .create({
+          sessionID: session,
           title: opts?.title ?? `Terminal ${nextNumber}`,
-          ...(opts?.command ? { command: opts.command, args: opts.args ?? [] } : {}),
         })
         .then((pty) => {
           const id = pty.data?.id
@@ -122,9 +122,11 @@ function createTerminalSession(sdk: ReturnType<typeof useSDK>, dir: string, sess
             return newAll
           })
           setStore("active", id)
+          return newTerminal
         })
         .catch((e) => {
           console.error("Failed to create terminal", e)
+          throw e
         })
     },
     update(pty: Partial<LocalPTY> & { id: string }) {
@@ -148,6 +150,7 @@ function createTerminalSession(sdk: ReturnType<typeof useSDK>, dir: string, sess
       if (!pty) return
       const clone = await sdk.client.pty
         .create({
+          sessionID: session,
           title: pty.title,
         })
         .catch((e) => {
@@ -240,7 +243,7 @@ export const { use: useTerminal, provider: TerminalProvider } = createSimpleCont
     }
 
     const load = (dir: string, session?: string) => {
-      const key = `${dir}:${WORKSPACE_KEY}`
+      const key = `${dir}:${session ?? "new"}`
       const existing = cache.get(key)
       if (existing) {
         cache.delete(key)
@@ -258,13 +261,13 @@ export const { use: useTerminal, provider: TerminalProvider } = createSimpleCont
       return entry.value
     }
 
-    const workspace = createMemo(() => load(params.dir!, params.id))
+    const workspace = createMemo(() => load(sdk.scope, params.id))
 
     return {
       ready: () => workspace().ready(),
       all: () => workspace().all(),
       active: () => workspace().active(),
-      new: (opts?: { command?: string; args?: string[]; title?: string }) => workspace().new(opts),
+      new: (opts?: { title?: string }) => workspace().new(opts),
       update: (pty: Partial<LocalPTY> & { id: string }) => workspace().update(pty),
       clone: (id: string) => workspace().clone(id),
       open: (id: string) => workspace().open(id),

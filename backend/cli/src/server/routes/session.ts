@@ -16,6 +16,9 @@ import { Log } from "../../util/log"
 import { PermissionNext } from "@/permission/next"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
+import { SessionFilesystem } from "../../session/filesystem"
+import { SessionReview } from "../../session/review"
+import { SessionTrace } from "../../session/trace"
 
 const log = Log.create({ service: "server" })
 
@@ -153,6 +156,119 @@ export const SessionRoutes = lazy(() =>
       },
     )
     .get(
+      "/:sessionID/trace",
+      describeRoute({
+        summary: "Get local harness trace",
+        tags: ["Session"],
+        description:
+          "Build one local, Atlas-independent trace of observable inference, tool, child-agent, search, kernel, compute, approval, artifact, review, failure, retry, cost, and timing records. Hidden reasoning and copied tool outputs are excluded.",
+        operationId: "session.trace",
+        responses: {
+          200: {
+            description: "Local observable session trace",
+            content: {
+              "application/json": {
+                schema: resolver(SessionTrace.Info),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: Session.get.schema })),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.assertDirectory(sessionID)
+        return c.json(await SessionTrace.build(sessionID))
+      },
+    )
+    .get(
+      "/:sessionID/filesystem",
+      describeRoute({
+        summary: "List filesystem grants",
+        description:
+          "List durable read-only and read-write filesystem grants for the session, project, and installation.",
+        operationId: "session.filesystem.list",
+        responses: {
+          200: {
+            description: "Versioned filesystem grant state",
+            content: { "application/json": { schema: resolver(SessionFilesystem.Snapshot) } },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: Session.get.schema })),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.assertDirectory(sessionID)
+        return c.json(await SessionFilesystem.snapshot(sessionID))
+      },
+    )
+    .post(
+      "/:sessionID/filesystem",
+      describeRoute({
+        summary: "Grant filesystem access",
+        description:
+          "Grant read-only or read-write access to a canonical filesystem path for one use, the session, every project session, or every session in this installation.",
+        operationId: "session.filesystem.grant",
+        responses: {
+          200: {
+            description: "Created filesystem grant",
+            content: { "application/json": { schema: resolver(SessionFilesystem.Grant) } },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: Session.get.schema })),
+      validator(
+        "json",
+        z.object({
+          path: z.string().trim().min(1),
+          access: SessionFilesystem.Access,
+          scope: SessionFilesystem.Scope.default("session"),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.assertDirectory(sessionID)
+        const grant = await SessionFilesystem.grant({
+          sessionID,
+          ...c.req.valid("json"),
+          source: "api",
+        })
+        return c.json(grant)
+      },
+    )
+    .delete(
+      "/:sessionID/filesystem/:grantID",
+      describeRoute({
+        summary: "Revoke filesystem access",
+        description:
+          "Revoke a filesystem grant across its whole scope and stop affected kernels so stale mounts cannot survive.",
+        operationId: "session.filesystem.revoke",
+        responses: {
+          200: {
+            description: "Revoked filesystem grant",
+            content: { "application/json": { schema: resolver(SessionFilesystem.Grant) } },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: Session.get.schema,
+          grantID: z.string().startsWith("fsg_"),
+        }),
+      ),
+      async (c) => {
+        const params = c.req.valid("param")
+        await Session.assertDirectory(params.sessionID)
+        const grant = await SessionFilesystem.revoke(params.sessionID, params.grantID)
+        return c.json(grant)
+      },
+    )
+    .get(
       "/:sessionID/todo",
       describeRoute({
         summary: "Get session todos",
@@ -180,6 +296,61 @@ export const SessionRoutes = lazy(() =>
         const sessionID = c.req.valid("param").sessionID
         const todos = await Todo.get(sessionID)
         return c.json(todos)
+      },
+    )
+    .post(
+      "/:sessionID/review",
+      describeRoute({
+        summary: "Run an independent reviewer pass",
+        description:
+          "Launches the reviewer directly on this session: session-level permission rules restore its provenance tools and it receives a structured context message. Returns immediately; the review streams into the session like any other turn.",
+        operationId: "session.review",
+        responses: {
+          200: {
+            description: "Review started",
+            content: { "application/json": { schema: resolver(z.object({ started: z.boolean() })) } },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: z.string().meta({ description: "Session ID" }) })),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.get(sessionID)
+        await SessionReview.start(sessionID)
+        return c.json({ started: true })
+      },
+    )
+    .post(
+      "/:sessionID/review/artifact",
+      describeRoute({
+        summary: "Review one immutable artifact version",
+        description:
+          "Launches a read-only reviewer against one exact artifact-store version. The returned target binds the version id, byte count, MIME type, and SHA-256 used by every recorded finding.",
+        operationId: "session.reviewArtifact",
+        responses: {
+          200: {
+            description: "Exact-version review started",
+            content: {
+              "application/json": {
+                schema: resolver(z.object({ started: z.boolean(), target: SessionReview.Bound })),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ sessionID: z.string().meta({ description: "Session ID" }) })),
+      validator("json", SessionReview.Target),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        await Session.get(sessionID)
+        const target = await SessionReview.start(sessionID, c.req.valid("json")).catch((error) =>
+          error instanceof Error ? error : new Error(String(error)),
+        )
+        if (target instanceof Error) return c.json({ error: target.message }, 400)
+        if (!target) return c.json({ error: "The immutable artifact review target was not created" }, 400)
+        return c.json({ started: true, target })
       },
     )
     .post(
@@ -268,6 +439,7 @@ export const SessionRoutes = lazy(() =>
           time: z
             .object({
               archived: z.number().optional(),
+              pinned: z.number().optional(),
             })
             .optional(),
         }),
@@ -283,6 +455,9 @@ export const SessionRoutes = lazy(() =>
               session.title = updates.title
             }
             if (updates.time?.archived !== undefined) session.time.archived = updates.time.archived
+            if (updates.time?.pinned !== undefined) {
+              session.time.pinned = updates.time.pinned || undefined
+            }
           },
           { touch: false },
         )
@@ -379,7 +554,9 @@ export const SessionRoutes = lazy(() =>
         }),
       ),
       async (c) => {
-        SessionPrompt.cancel(c.req.valid("param").sessionID)
+        const sessionID = c.req.valid("param").sessionID
+        await Session.assertDirectory(sessionID)
+        SessionPrompt.cancel(sessionID)
         return c.json(true)
       },
     )
@@ -552,6 +729,7 @@ export const SessionRoutes = lazy(() =>
       ),
       async (c) => {
         const params = c.req.valid("param")
+        await Session.assertDirectory(params.sessionID)
         const message = await MessageV2.get({
           sessionID: params.sessionID,
           messageID: params.messageID,
@@ -871,6 +1049,7 @@ export const SessionRoutes = lazy(() =>
       validator("json", z.object({ response: PermissionNext.Reply })),
       async (c) => {
         const params = c.req.valid("param")
+        await Session.assertDirectory(params.sessionID)
         PermissionNext.reply({
           requestID: params.permissionID,
           reply: c.req.valid("json").response,

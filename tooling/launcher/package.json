@@ -1,6 +1,6 @@
 {
   "name": "synsci",
-  "version": "1.2.5",
+  "version": "2.0.2",
   "description": "Install wizard for OpenScience, the open-source AI research workspace (optionally with Atlas)",
   "license": "Apache-2.0",
   "type": "module",
@@ -8,7 +8,8 @@
     "synsci": "bin/synsci.mjs"
   },
   "files": [
-    "bin"
+    "bin",
+    "lib"
   ],
   "keywords": [
     "openscience",

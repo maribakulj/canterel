@@ -10,12 +10,6 @@ type PermissionObject = Record<string, PermissionAction>
 type PermissionValue = PermissionAction | PermissionObject | string[] | undefined
 type PermissionMap = Record<string, PermissionValue>
 
-type PermissionItem = {
-  id: string
-  title: string
-  description: string
-}
-
 const ACTIONS = [
   { value: "allow", label: "settings.permissions.action.allow" },
   { value: "ask", label: "settings.permissions.action.ask" },
@@ -201,6 +195,7 @@ export const PermissionToolDefaults: Component = () => {
           {(item) => (
             <SettingsRow title={language.t(item.title)} description={language.t(item.description)}>
               <Select
+                aria-label={`${language.t(item.title)} permission`}
                 options={actions()}
                 current={actions().find((o) => o.value === actionFor(item.id))}
                 value={(o) => o.value}

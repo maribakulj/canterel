@@ -1,7 +1,11 @@
 import z from "zod"
+import fs from "fs/promises"
+import path from "path"
 import { Tool } from "./tool"
 import { registry } from "../science/connectors"
 import type { ConnectorHit } from "../science/connectors"
+import { Instance } from "../project/instance"
+import { outcomeFor, formatBytes, classifyError } from "../science/connectors/fetch-outcome"
 
 /**
  * Small, database-agnostic surface over the scientific connector registry.
@@ -43,7 +47,10 @@ export const ScienceListDbsTool = Tool.define("science_list_dbs", {
     }
 
     const sections = [...byDomain.entries()].map(([domain, list]) => {
-      const rows = list.map((e) => `- **${e.id}** (${e.name}) — ${e.description}`)
+      const rows = list.map((e) => {
+        const formats = e.formats?.length ? ` · formats: ${e.formats.join(", ")}` : ""
+        return `- **${e.id}** (${e.name}) — ${e.description}${formats}`
+      })
       return `### ${domain}\n${rows.join("\n")}`
     })
 
@@ -140,6 +147,146 @@ export const ScienceSearchTool = Tool.define("science_search", {
   },
 })
 
-export const ScienceTools = [ScienceListDbsTool, ScienceSearchTool]
+export const ScienceFetchTool = Tool.define("science_fetch", {
+  description: [
+    "Retrieve one record from a scientific database by id.",
+    "Pass a `db` id (from `science_list_dbs`) and the record `id` returned by `science_search`.",
+    "Small records are returned inline; large ones are written to a file whose path is reported.",
+    "Pass `format` to retrieve a file (e.g. 'cif', 'fasta', 'sdf') instead of a record —",
+    "`science_list_dbs` reports which formats each database supports.",
+  ].join("\n"),
+  parameters: z.object({
+    db: z.string().describe("Database id (from science_list_dbs, e.g. 'rcsb-pdb', 'uniprot')"),
+    id: z.string().describe("Record id within that database (e.g. '6LU7', 'P04637')"),
+    format: z
+      .string()
+      .optional()
+      .describe("Optional file format, e.g. 'cif' | 'pdb' | 'fasta' | 'sdf'. Omit for a structured record."),
+  }),
+  async execute(params, ctx) {
+    const connector = registry.get(params.db)
+    if (!connector) {
+      const available = registry
+        .catalog()
+        .map((e) => e.id)
+        .join(", ")
+      return {
+        title: "Unknown database",
+        output: `No database "${params.db}". Available: ${available || "(none registered)"}. Use science_list_dbs.`,
+        metadata: { error: "unknown_db", truncated: false } as Record<string, unknown>,
+      }
+    }
 
-export const SCIENCE_TOOL_IDS = new Set(["science_list_dbs", "science_search"])
+    const format = params.format?.trim().toLowerCase()
+    if (format && !connector.formats?.includes(format)) {
+      const supported = connector.formats?.length
+        ? `Supported formats: ${connector.formats.join(", ")}.`
+        : `${connector.name} serves records only — omit \`format\`.`
+      return {
+        title: `${connector.name}: unsupported format`,
+        output: [`${connector.name} cannot serve "${format}".`, supported].join("\n"),
+        metadata: { db: connector.id, error: "unsupported_format", truncated: false } as Record<string, unknown>,
+      }
+    }
+
+    let payload: unknown
+    try {
+      payload =
+        format && connector.fetchFile
+          ? (await connector.fetchFile(params.id, format, { signal: ctx.abort })).body
+          : await connector.fetch(params.id, { signal: ctx.abort })
+    } catch (err) {
+      if (ctx.abort.aborted) throw err
+      const { retryable: rateLimited, message } = classifyError(err)
+      const guidance = rateLimited
+        ? `${connector.name} is rate limiting requests. Wait a few seconds, then retry.`
+        : `${connector.name} returned an error: ${message}`
+      return {
+        title: `${connector.name} temporarily unavailable — ${rateLimited ? "rate limited, retry shortly" : "source error"}`,
+        output: [`Could not retrieve "${params.id}".`, guidance].join("\n"),
+        metadata: {
+          db: connector.id,
+          count: 0,
+          error: rateLimited ? "rate_limited" : "source_error",
+          message,
+          truncated: false,
+        } as Record<string, unknown>,
+      }
+    }
+
+    const outcome = outcomeFor({ db: connector.id, id: params.id, format, payload })
+
+    if (outcome.kind === "miss")
+      return {
+        title: `${connector.name}: no record for ${params.id}`,
+        output: `${connector.name} has no record "${params.id}" (${outcome.note}).`,
+        metadata: { db: connector.id, count: 0, truncated: false } as Record<string, unknown>,
+      }
+
+    if (outcome.kind === "error")
+      return {
+        title: `${connector.name}: ${outcome.message}`,
+        output: `${connector.name} could not serve "${params.id}": ${outcome.message}`,
+        metadata: {
+          db: connector.id,
+          count: 0,
+          error: "source_error",
+          message: outcome.message,
+          truncated: false,
+        } as Record<string, unknown>,
+      }
+
+    if (outcome.disposition === "inline")
+      return {
+        title: `${connector.name}: ${params.id}`,
+        output: outcome.body,
+        metadata: {
+          db: connector.id,
+          count: 1,
+          bytes: outcome.bytes,
+          disposition: "inline",
+          truncated: false,
+        } as Record<string, unknown>,
+      }
+
+    const target = path.join(Instance.directory, outcome.filename)
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    // Self-ignoring dir so per-fetch spill files never show up in `git status`
+    // (mirrors src/session/compaction.ts's handoff directory). Failure-tolerant:
+    // a read-only checkout must not break a fetch.
+    await Bun.write(path.join(path.dirname(target), ".gitignore"), "*\n").catch(() => {})
+
+    await ctx.ask({
+      permission: "edit",
+      patterns: [path.relative(Instance.worktree, target)],
+      always: ["*"],
+      metadata: { path: outcome.filename },
+    })
+
+    await Bun.write(target, outcome.body)
+
+    return {
+      title: `${connector.name}: ${params.id} → ${outcome.filename}`,
+      output: [
+        `${connector.name} record "${params.id}" is ${formatBytes(outcome.bytes)} — written to disk rather than inlined.`,
+        ``,
+        `**path**: ${outcome.filename}`,
+        `**summary**: ${outcome.summary}`,
+        ``,
+        `Read that path for the full content.`,
+      ].join("\n"),
+      metadata: {
+        db: connector.id,
+        count: 1,
+        bytes: outcome.bytes,
+        disposition: "spill",
+        path: outcome.filename,
+        truncated: false,
+      } as Record<string, unknown>,
+    }
+  },
+})
+
+export const ScienceTools = [ScienceListDbsTool, ScienceSearchTool, ScienceFetchTool]
+
+export const SCIENCE_TOOL_IDS = new Set(["science_list_dbs", "science_search", "science_fetch"])

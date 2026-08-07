@@ -6,10 +6,8 @@ import { Component, For, Show, createResource, createSignal } from "solid-js"
 import { Button } from "@synsci/ui/button"
 import { Icon } from "@synsci/ui/icon"
 import { showToast } from "@synsci/ui/toast"
-import { useDialog } from "@synsci/ui/context/dialog"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { usePlatform } from "@/context/platform"
-import { uiStore } from "@/thesis/store/ui"
 import { settingsApi } from "./api"
 
 interface Detected {
@@ -38,14 +36,21 @@ interface Runtime {
 const LocalModels: Component = () => {
   const sdk = useGlobalSDK()
   const platform = usePlatform()
-  const dialog = useDialog()
   const fetchFn = platform.fetch ?? fetch
 
-  // Run a command in the workspace terminal (opens a new tab, reveals the pane)
-  // and close Settings so the user sees it — for people who prefer the terminal.
-  const runInTerminal = (command: string, args: string[], title: string) => {
-    uiStore.setTerminalCommand({ command, args, title })
-    dialog.close()
+  const copyCommand = (command: string) => {
+    if (!navigator.clipboard) {
+      showToast({ title: "Couldn't copy command", description: "Clipboard access is unavailable." })
+      return
+    }
+    return navigator.clipboard.writeText(command).then(
+      () => showToast({ title: "Command copied", description: command }),
+      (error) =>
+        showToast({
+          title: "Couldn't copy command",
+          description: error instanceof Error ? error.message : String(error),
+        }),
+    )
   }
   const call = <T,>(path: string, init?: RequestInit) =>
     settingsApi<T>(sdk.url, fetchFn, `/settings/local${path}`, init)
@@ -54,7 +59,7 @@ const LocalModels: Component = () => {
     call<{ detected: Detected[] }>("/detect").then((r) => r.detected),
   )
   const [configured, { refetch: refetchConfigured }] = createResource(() =>
-    call<{ providers: Configured[] }>("/").then((r) => r.providers),
+    call<{ providers: Configured[] }>("").then((r) => r.providers),
   )
   const [status, { refetch: refetchStatus }] = createResource(() =>
     call<{ runtimes: Runtime[] }>("/status").then((r) => r.runtimes),
@@ -80,7 +85,7 @@ const LocalModels: Component = () => {
   const addRuntime = (d: Detected) =>
     guard(
       () =>
-        call("/", {
+        call("", {
           method: "POST",
           body: JSON.stringify({ url: d.baseURL, id: d.id, name: `${d.name} (local)`, models: d.models }),
         }),
@@ -106,7 +111,7 @@ const LocalModels: Component = () => {
         showToast({ title: `${rt.name} isn't installed`, description: `Install it, then start it here.` })
         window.open(r.install ?? rt.install, "_blank", "noopener")
       } else if (r.running && r.models?.length) {
-        await call("/", {
+        await call("", {
           method: "POST",
           body: JSON.stringify({ url: rt.baseURL, id: rt.id, name: `${rt.name} (local)`, models: r.models }),
         })
@@ -126,19 +131,19 @@ const LocalModels: Component = () => {
   const addRunning = (rt: Runtime) =>
     guard(
       () =>
-        call("/", {
+        call("", {
           method: "POST",
           body: JSON.stringify({ url: rt.baseURL, id: rt.id, name: `${rt.name} (local)`, models: rt.models }),
         }),
       "Failed to add models",
     )
 
-  // ── Pull a model (in the terminal, with visible progress) ──
+  // ── Pull a model ──
   const [pullName, setPullName] = createSignal("")
   const pull = () => {
     const m = pullName().trim()
     if (!m) return
-    runInTerminal("ollama", ["pull", m], `ollama pull ${m}`)
+    void copyCommand(`ollama pull ${m}`)
   }
 
   // ── Custom endpoint flow ──
@@ -172,7 +177,7 @@ const LocalModels: Component = () => {
     guard(async () => {
       const models = [...selected()]
       if (!models.length) throw new Error("Select at least one model.")
-      await call("/", {
+      await call("", {
         method: "POST",
         body: JSON.stringify({ url: url().trim(), key: key().trim() || undefined, models }),
       })
@@ -229,7 +234,7 @@ const LocalModels: Component = () => {
                       variant="secondary"
                       onClick={() => window.open(rt.install, "_blank", "noopener")}
                     >
-                      install
+                      Install
                     </Button>
                   }
                 >
@@ -242,7 +247,7 @@ const LocalModels: Component = () => {
                         disabled={busy() || !!starting()}
                         onClick={() => startRuntime(rt)}
                       >
-                        {starting() === rt.id ? "starting…" : "start"}
+                        {starting() === rt.id ? "Starting…" : "Start"}
                       </Button>
                     }
                   >
@@ -252,7 +257,7 @@ const LocalModels: Component = () => {
                       disabled={busy() || rt.models.length === 0}
                       onClick={() => addRunning(rt)}
                     >
-                      add {rt.models.length}
+                      Add {rt.models.length}
                     </Button>
                   </Show>
                 </Show>
@@ -261,11 +266,11 @@ const LocalModels: Component = () => {
           </For>
         </section>
 
-        {/* ── Pull a model (Ollama, via the terminal) ── */}
+        {/* ── Pull a model (Ollama) ── */}
         <section class="flex flex-col gap-2">
           <h3 class="text-13-medium text-text-strong">Pull a model</h3>
           <p class="text-12-regular text-text-weak/70">
-            Download an Ollama model — runs <code>ollama pull</code> in the terminal so you can watch progress.
+            Copy an <code>ollama pull</code> command, then run it in your terminal to download the model.
           </p>
           <div class="flex gap-2">
             <input
@@ -276,14 +281,15 @@ const LocalModels: Component = () => {
               onKeyDown={(e) => e.key === "Enter" && pull()}
             />
             <Button size="small" variant="secondary" disabled={!pullName().trim()} onClick={pull}>
-              pull in terminal
+              Copy command
             </Button>
           </div>
           <p class="text-11-regular text-text-weak/60">
-            Prefer to do it yourself? In the terminal:{" "}
+            Need to start Ollama first? Copy this command:{" "}
             <button
               class="underline hover:text-text-strong"
-              onClick={() => runInTerminal("ollama", ["serve"], "ollama serve")}
+              aria-label="Copy ollama serve command"
+              onClick={() => void copyCommand("ollama serve")}
             >
               ollama serve
             </button>
@@ -295,14 +301,14 @@ const LocalModels: Component = () => {
           <div class="flex items-center justify-between">
             <h3 class="text-13-medium text-text-strong">Detected on this machine</h3>
             <Button size="small" variant="secondary" disabled={busy()} onClick={refetch}>
-              rescan
+              Rescan
             </Button>
           </div>
           <Show
             when={(detected()?.length ?? 0) > 0}
             fallback={
               <p class="text-12-regular text-text-weak/70">
-                Nothing running yet. Start a server (e.g. <code>ollama serve</code>) and hit rescan, or add a custom
+                Nothing running yet. Start a server (e.g. <code>ollama serve</code>) and select Rescan, or add a custom
                 endpoint below.
               </p>
             }
@@ -319,7 +325,7 @@ const LocalModels: Component = () => {
                     </span>
                   </div>
                   <Button size="small" variant="primary" disabled={busy()} onClick={() => addRuntime(d)}>
-                    add {d.models.length}
+                    Add {d.models.length}
                   </Button>
                 </div>
               )}
@@ -345,11 +351,11 @@ const LocalModels: Component = () => {
             />
             <div class="flex gap-2">
               <Button size="small" variant="secondary" disabled={busy() || !url().trim()} onClick={listCustom}>
-                list models
+                List models
               </Button>
               <Show when={found().length > 0}>
                 <Button size="small" variant="primary" disabled={busy() || selected().size === 0} onClick={addCustom}>
-                  add {selected().size} selected
+                  Add {selected().size} selected
                 </Button>
               </Show>
             </div>
@@ -392,7 +398,7 @@ const LocalModels: Component = () => {
                     disabled={busy()}
                     onClick={() => removeProvider(p.id)}
                   >
-                    remove
+                    Remove
                   </Button>
                 </div>
               )}

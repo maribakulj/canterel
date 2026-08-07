@@ -73,6 +73,16 @@ export interface RateLimit {
   maxConcurrent?: number
 }
 
+/** A record retrieved as a file rather than a structured record. */
+export interface FetchedFile {
+  /** File contents. Text formats only — no binary support in this increment. */
+  body: string
+  /** MIME type as served, e.g. "chemical/x-cif". */
+  contentType: string
+  /** Extension-bearing suggested name, e.g. "6LU7.cif". */
+  filename: string
+}
+
 /** The uniform contract every scientific data source implements. */
 export interface Connector {
   /** Unique, stable, lowercase id used to route (e.g. "uniprot", "rcsb-pdb"). */
@@ -89,6 +99,13 @@ export interface Connector {
   search(query: string, opts?: SearchOptions): Promise<ConnectorHit[]>
   /** Fetch a single record by id. Return shape is source-specific. */
   fetch(id: string, opts?: FetchOptions): Promise<unknown>
+  /**
+   * FILE formats this connector can serve, e.g. ["pdb", "cif"]. Absent = records only.
+   * Never includes "json" — omitting `format` is the record path via `fetch()`.
+   */
+  formats?: string[]
+  /** Retrieve a record as a file in one of `formats`. Present iff `formats` is. */
+  fetchFile?(id: string, format: string, opts?: FetchOptions): Promise<FetchedFile>
 }
 
 /** Public catalog entry shape returned by the registry (no functions). */
@@ -98,6 +115,7 @@ export interface CatalogEntry {
   domain: ConnectorDomain
   description: string
   homepage?: string
+  formats?: string[]
 }
 
 /**
@@ -132,12 +150,13 @@ export class ConnectorRegistry {
 
   /** Serializable catalog for tools / UI (drops the search/fetch functions). */
   catalog(): CatalogEntry[] {
-    return this.all().map(({ id, name, domain, description, homepage }) => ({
+    return this.all().map(({ id, name, domain, description, homepage, formats }) => ({
       id,
       name,
       domain,
       description,
       homepage,
+      formats,
     }))
   }
 }

@@ -37,6 +37,8 @@ export namespace Sandbox {
   export interface Policy {
     /** Absolute paths the sandboxed process may write to. */
     writable: string[]
+    /** Exact host files the sandboxed process must not be able to read. */
+    unreadable?: string[]
     /** Whether the sandboxed process may reach the network. */
     network: boolean
   }
@@ -204,7 +206,12 @@ export namespace Sandbox {
   }
 
   /** Assemble the writable allowlist for a policy, dropping over-broad roots. */
-  function buildPolicy(input: { workspace: string[]; extraWritable?: string[]; options: Options }): Policy {
+  function buildPolicy(input: {
+    workspace: string[]
+    extraWritable?: string[]
+    unreadable?: string[]
+    options: Options
+  }): Policy {
     const candidates = dedupe([
       ...input.workspace,
       ...tempDirs(),
@@ -218,7 +225,11 @@ export namespace Sandbox {
       }
       return true
     })
-    return { writable, network: (input.options.network ?? "allow") !== "deny" }
+    return {
+      writable,
+      unreadable: dedupe(input.unreadable ?? []).filter((value) => !tooBroadToConfine(value)),
+      network: (input.options.network ?? "allow") !== "deny",
+    }
   }
 
   // ── macOS: Seatbelt (sandbox-exec) ──────────────────────────────────────────
@@ -242,6 +253,10 @@ export namespace Sandbox {
   export function seatbeltProfile(policy: Policy): string {
     const lines = ["(version 1)", "(allow default)"]
     if (!policy.network) lines.push("(deny network*)")
+    const unreadable = withPrivateAliases(dedupe(policy.unreadable ?? []))
+    if (unreadable.length) {
+      lines.push(`(deny file-read* ${unreadable.map((value) => `(literal "${sbpl(value)}")`).join(" ")})`)
+    }
     lines.push("(deny file-write*)")
 
     const writable = withPrivateAliases(dedupe(policy.writable))
@@ -266,6 +281,15 @@ export namespace Sandbox {
       if (p === "/tmp") continue
       // --bind-try: don't abort if the source path doesn't exist.
       args.push("--bind-try", p, p)
+    }
+    for (const value of dedupe(policy.unreadable ?? [])) {
+      // bwrap's *-try only tolerates a missing source. With /dev/null as the
+      // source it still attempts to create a missing destination, which fails
+      // beneath our read-only root before the command can start. An absent
+      // credential cannot be read and the sandbox cannot create it, so only
+      // mount masks for files that exist when the namespace is assembled.
+      if (!fs.existsSync(value)) continue
+      args.push("--ro-bind-try", "/dev/null", value)
     }
     if (!policy.network) args.push("--unshare-net")
     // --unshare-pid: don't share the host PID namespace, so /proc/<pid>/root of a
@@ -353,6 +377,8 @@ export namespace Sandbox {
     workspace: string[]
     /** Extra paths (e.g. a generated kernel script under /tmp) to keep writable/visible. */
     extraWritable?: string[]
+    /** Exact host credential files to mask from the process. */
+    unreadable?: string[]
     options?: Options
   }): Wrapped {
     const { backend: b, warning } = decide(input.options)
@@ -362,6 +388,7 @@ export namespace Sandbox {
     const policy = buildPolicy({
       workspace: input.workspace,
       extraWritable: input.extraWritable,
+      unreadable: input.unreadable,
       options: input.options!,
     })
     const s = specForArgv([input.file, ...input.args], policy)!

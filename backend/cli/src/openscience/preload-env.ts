@@ -2,8 +2,8 @@
  * Loads synced env vars from disk synchronously at module init.
  *
  * Runs BEFORE any provider SDK construction (Anthropic, OpenAI,
- * @ai-sdk/google) so those SDKs see the correct ANTHROPIC_BASE_URL /
- * ANTHROPIC_API_KEY / etc. on their own startup, without waiting for
+ * @ai-sdk/google) so those SDKs see synced user-owned BYOK keys and the
+ * managed OpenRouter route on startup, without waiting for
  * the asynchronous `openscience sync` call later in CLI boot.
  *
  * Without this, the first invocation after a fresh terminal session
@@ -22,6 +22,8 @@ import { isSyncedEnvAllowed } from "./synced-env-policy"
 import { loadProjectDotenv } from "./dotenv"
 
 function syncedEnvPath(): string {
+  const config = process.env.OPENSCIENCE_CONFIG_DIR?.trim()
+  if (config) return path.join(path.resolve(config), "synced-env.json")
   const xdg = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
   return path.join(xdg, "openscience", "synced-env.json")
 }
@@ -56,12 +58,13 @@ function syncedEnvPath(): string {
   }
   if (!env || typeof env !== "object" || Array.isArray(env)) return
   for (const [k, v] of Object.entries(env as Record<string, unknown>)) {
-    // Drop per-provider LLM credentials that are BYOK-local-only now — a stale
-    // synced key must never shadow the user's own (see synced-env-policy.ts).
-    if (!isSyncedEnvAllowed(k)) continue
+    if (typeof v !== "string") continue
+    // Drop unsafe direct-provider proxy tokens and provider base URLs. Explicit
+    // shell/project values already won above (see synced-env-policy.ts).
+    if (!isSyncedEnvAllowed(k, v)) continue
     // Don't clobber values already set in the parent environment —
     // explicit shell exports win over persisted sync state.
-    if (typeof v === "string" && !process.env[k]) {
+    if (!process.env[k]) {
       process.env[k] = v
     }
   }
