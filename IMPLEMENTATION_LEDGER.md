@@ -25,9 +25,8 @@ reçoit un ADR et est référencée ici, pas décrite ici.
 Le périmètre déclaré doit correspondre au diff. Un débordement signale soit un découpage trop fin,
 soit un couplage non anticipé — les deux méritent une ligne.
 
-**Sur ce dépôt : toute modification hors de `backend/cli/src/locus/**` et
-`backend/cli/test/locus/**` est justifiée ici, parce qu'elle sera payée à chaque synchronisation
-amont (ADR 0010).**
+Sur ce dépôt, toute modification hors de `backend/cli/src/locus/` et `backend/cli/test/locus/` est
+justifiée ici, parce qu'elle sera payée à chaque synchronisation amont (ADR 0010).
 
 Une migration `[M]` inscrit son plan de rollback dans l'entrée.
 
