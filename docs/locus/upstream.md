@@ -43,10 +43,11 @@ avant de merger.
 
 ### 2. Amont modifié avec justification — `JUSTIFIED_UPSTREAM_EDITS`
 
-| Fichier          | Raison                                                                                                                          |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE.md`      | En-tête additif qui oriente vers `docs/locus/` ; le document amont suit, conservé intact.                                        |
-| `.prettierignore` | Exclut `docs/locus/`, placé byte-identique et vérifié contre ses checksums ; reformater une spec normative la mute en silence.   |
+| Fichier                     | Raison                                                                                                                        |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `CLAUDE.md`                 | En-tête additif qui oriente vers `docs/locus/` ; le document amont suit, conservé intact.                                      |
+| `.prettierignore`           | Exclut `docs/locus/`, placé byte-identique et vérifié contre ses checksums ; reformater une spec normative la mute en silence. |
+| `backend/cli/src/index.ts`  | Enregistre `canterel worker` (W2.3) : un import et un `.command()`. La liste des commandes bouge en amont, donc ce hunk conflictera ; il se rejoue en deux lignes et n'a pas d'alternative — la CLI amont n'expose aucun mécanisme d'enregistrement de commande par plugin. |
 
 ADR 0010 ne les interdit pas. Il exige que le prix soit écrit, « parce qu'il sera payé à chaque
 synchronisation ». Un conflit sur l'un d'eux est **attendu** : on le résout à la main, en gardant

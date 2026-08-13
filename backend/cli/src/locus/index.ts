@@ -1,0 +1,67 @@
+/**
+ * La surface publique de la couche Locus.
+ *
+ * Tout ce qui, hors de `src/locus/**`, a affaire à Locus passe par ce fichier — et une seule
+ * chose en a le droit aujourd'hui, la couture déclarée dans `standalone.ts`. Ce point de passage
+ * unique est ce qui permet au garde-fou de §28.8 d'être une question à laquelle on sait répondre :
+ * « qui importe Locus ? » a une réponse énumérable.
+ *
+ * Le worker de W2.3 **ne fait rien**, délibérément (`docs/10` : « `canterel worker --locus` qui ne
+ * fait rien »). Il résout sa configuration et rend compte de ce qu'il ferait. Ce n'est pas un
+ * bouchon vide pour autant : la résolution des cinq niveaux de priorité de §6, le refus structuré
+ * d'une variable illisible et le rendu rédigé sont réels, et ce sont eux que W2.4 trouvera en
+ * place plutôt qu'à écrire en même temps que l'enrôlement.
+ */
+
+export {
+  describeConfig,
+  ENV_BINDINGS,
+  LAYER_ORDER,
+  LocusConfig,
+  layerFromEnv,
+  mergeLayers,
+  parseConfig,
+  requireConnectable,
+  resolveConfig,
+  type Layer,
+  type LayerName,
+} from "./config.ts"
+
+export { LocusConfigInvalid, LocusNotConfigured } from "./errors.ts"
+
+import { describeConfig, layerFromEnv, resolveConfig, type Layer, type LocusConfig } from "./config.ts"
+
+/** Ce que le worker rend quand on le lance — aujourd'hui, un constat. */
+export type WorkerOutcome = {
+  /** `inert` tant que W2.4 n'a pas donné d'identité au worker. Le mot est explicite exprès. */
+  readonly status: "inert"
+  /** La configuration résolue, rédigée — la seule forme qui a le droit d'être affichée. */
+  readonly config: Record<string, unknown>
+  /** Ce qui manque pour que le worker puisse se connecter. Vide ne veut pas dire prêt. */
+  readonly missing: readonly string[]
+}
+
+/**
+ * Résoudre la configuration du worker depuis les couches disponibles.
+ *
+ * `env` est un paramètre plutôt que `process.env` lu en douce, pour la même raison que dans
+ * `config.ts` : un module qui va chercher son contexte tout seul se teste en muant le processus,
+ * et se comporte différemment selon qui l'appelle.
+ */
+export function loadConfig(env: Record<string, string | undefined>, extra: readonly Layer[] = []): LocusConfig {
+  return resolveConfig([...extra, layerFromEnv(env)])
+}
+
+/**
+ * Lancer le worker — inerte à W2.3.
+ *
+ * Rend un constat au lieu de lever quand la configuration est incomplète : à ce stade, « tu n'as
+ * pas d'endpoint » est une information, pas une panne. `requireConnectable` existe pour le moment
+ * où ça deviendra une panne, c'est-à-dire quand quelque chose tentera vraiment de se connecter.
+ */
+export function runWorker(config: LocusConfig): WorkerOutcome {
+  const missing: string[] = []
+  if (!config.endpoint) missing.push("locus.endpoint")
+  if (!config.identity) missing.push("locus.identity")
+  return { status: "inert", config: describeConfig(config), missing }
+}

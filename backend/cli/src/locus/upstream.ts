@@ -41,6 +41,11 @@ export const JUSTIFIED_UPSTREAM_EDITS: readonly { path: string; reason: string }
     reason:
       "Exclut docs/locus/, placé byte-identique et vérifié contre ses checksums ; reformater une spec normative la mute en silence.",
   },
+  {
+    path: "backend/cli/src/index.ts",
+    reason:
+      "Enregistre `canterel worker` (W2.3) : un import et un `.command()`. La liste des commandes bouge en amont, donc ce hunk conflictera ; il se rejoue en deux lignes et n'a pas d'alternative — la CLI amont n'expose aucun mécanisme d'enregistrement de commande par plugin.",
+  },
 ]
 
 export type MergeVerdict = {
