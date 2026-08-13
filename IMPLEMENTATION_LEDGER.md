@@ -133,3 +133,92 @@ qui l'exécute. La dette est ici, écrite, plutôt que découverte au premier me
 test de sortie « passe sur le HEAD actuel ». Ses dépendances sont satisfaites : elle ne dépend que
 du HEAD amont. Elle hérite de la dette ci-dessus, le `fetch-depth: 0` du job qui exécute le merge à
 blanc.
+
+## 2026-08-13 — W2.2 — non-régression standalone en CI (§28.8)
+
+**Périmètre.** `backend/cli/src/locus/standalone.ts`, `backend/cli/test/locus/standalone.test.ts`
+et `.github/workflows/locus.yml`, plus un correctif sur `upstream-merge.ts` / `upstream.test.ts`
+qui solde la dette écrite en W2.1. **Un fichier hors périmètre Locus**, justifié ci-dessous.
+
+**Tests exécutés.** `bun test test/locus/` : 28 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` sur les deux répertoires Locus et le workflow : conforme. Le test de sortie de
+W2.2 — « passe sur le HEAD actuel » — passe : 386 fichiers atteints depuis `src/index.ts`, aucun
+sous `src/locus/`, aucun constat.
+
+La première poussée a fait **rougir le job `Test`**, et sur mon propre test : « chaque déclaration
+porte sa raison et sert réellement ». Cause réelle, instructive. Le job `Test` construit les assets
+web avant de lancer la suite ; les autres jobs non. `./assets.generated` s'y résout donc, n'est
+jamais relevé comme absent, et mon assertion exigeait qu'il le soit — j'avais confondu « déclaré »
+et « actuellement manquant ». Le relevé se fait désormais **avant** la résolution : ce qu'on veut
+savoir est stable dans les deux états, à savoir si la déclaration correspond encore à un import
+réel. Vérifié dans les deux, en fabriquant puis retirant les trois fichiers générés. Un test le
+verrouille, parce que c'est exactement le genre de dépendance à l'environnement qui revient.
+
+Vérifié par mutation sur l'arbre réel, pas sur une maquette. En ajoutant à `src/cli/logo.ts`
+— un fichier amont ordinaire, à trois niveaux de l'entrée — d'abord `import { LOCAL_PATHS } from
+"@/locus/upstream"`, puis, séparément, `export const late = () => import("@/locus/standalone")`,
+le test de sortie rougit dans les **deux** cas. Les deux portes sont donc réellement fermées, pas
+seulement celle qui se voit.
+
+**Décisions prises.** Cinq.
+
+_Les coutures sont décidées maintenant, à froid, et il n'y en a aucune._ `canterel worker --locus`
+devra bien atteindre le worker depuis quelque part : une règle qui l'interdit sans réserve serait
+desserrée sous la pression le jour où elle gênera — c'est-à-dire au prochain item. `LOCUS_SEAMS`
+est donc la liste, explicite et raisonnée, des fichiers hors périmètre autorisés à désigner Locus.
+Elle est **vide au HEAD**, et c'est le point : y ajouter une entrée est un acte visible en revue,
+pas un assouplissement discret. Une couture dispense du balayage textuel et **jamais** du parcours
+du graphe, si bien que les deux règles ensemble disent exactement la bonne chose : une couture doit
+être paresseuse. Un `import` statique vers Locus dans un fichier atteignable depuis `src/index.ts`
+reste rouge, déclaré couture ou non.
+
+_Le garde-fou marche le graphe d'imports depuis `src/index.ts`._ `docs/locus/CLAUDE.md` énonce la
+règle sans détour — « le mode autonome ne doit jamais charger `src/locus/**` ». C'est une propriété
+du graphe, pas une intention, et la seule façon de la connaître est de le parcourir depuis le vrai
+point d'entrée.
+
+_Deux vérifications, parce qu'il y a deux portes._ Un `import` statique se voit dans le graphe. Un
+`await import("./locus/…")` ne s'y voit pas : il n'existe qu'à l'exécution, sur une branche qui
+peut ne jamais être prise en test, et se comporte pourtant exactement comme la dépendance que
+§28.8 interdit. La seconde vérification balaie donc le texte de tout ce qui est hors périmètre à
+la recherche d'un specifier désignant Locus, quelle qu'en soit la forme.
+
+_Un import irrésolu est un constat, jamais un saut._ Le verdict d'un graphe incomplet ne vaut
+rien. Trois modules d'amont ne se résolvent pas au HEAD parce qu'ils n'existent qu'après un build
+(`./models-snapshot`, `./assets.generated`, `./bundled.generated`) : ils sont **déclarés** dans
+`GENERATED_MODULES` avec leur raison, rapportés dans le champ `generated`, et un test exige que
+chaque déclaration serve encore. Un irrésolu hors de cette liste reste rouge.
+
+_Les alias `@/` sont suivis._ Découvert en écrivant le test d'ancrage, pas supposé : la première
+version du résolveur ne suivait que le relatif et manquait 84 specifiers, soit 13 fichiers du
+graphe — dont tout ce que `src/permission/next.ts` tire derrière lui. Un résolveur qui ignore une
+classe d'arêtes croit parcourir le graphe, n'en voit qu'une partie, et rend un verdict rassurant
+sur ce qu'il n'a pas regardé. Un test relit désormais les `paths` de `tsconfig.json` et échoue si
+un alias y apparaît sans être connu du résolveur.
+
+**Écart avec la spec.** Deux, l'un assumé, l'autre corrigeant W2.1.
+
+_Le fichier hors périmètre._ `.github/workflows/locus.yml` est neuf, donc l'amont n'a rien du même
+nom et **aucune synchronisation ne peut le conflicter** — c'est précisément pourquoi les deux jobs
+vivent dans un fichier à eux plutôt qu'ajoutés à `ci.yml`, dont chaque hunk local serait payé à
+chaque merge (ADR 0010). Le coût de sync est donc nul ; la justification est due quand même, et la
+voici. Le job `standalone` exécute le garde-fou ; le job `upstream-sync` clone en `fetch-depth: 0`
+et exécute le merge à blanc de W2.1 pour de vrai. Ce que W2.2 n'ajoute pas : la suite historique
+elle-même, que le job `Test` amont exécute déjà. §28.8 demande qu'elle reste testée sans Locus —
+elle l'est ; W2.2 fournit le garde-fou qui empêche que ça cesse d'être vrai.
+
+_Une correction de W2.1, écrite ici parce que le journal ne se réécrit pas._ L'entrée précédente
+annonçait un court-circuit sur clone superficiel. Il a été écrit, puis retiré : il est **faux**.
+Un clone superficiel garde souvent un ancêtre commun avec l'amont, parce que sa frontière tombe
+au-delà du point de fork — c'est le cas de ce dépôt même, où le merge à blanc s'exécute
+réellement malgré `.git/shallow`. Court-circuiter sur `--is-shallow-repository` aurait sauté un
+contrôle parfaitement exécutable, et un contrôle sauté par excès de prudence ne se distingue plus
+d'un contrôle absent. La superficialité ne se constate donc qu'**après** l'échec de `merge-base`,
+comme cause possible, jamais comme prédiction. Reste acquis de la dette : `LOCUS_UPSTREAM_STRICT`,
+que seul le job `upstream-sync` positionne — là où le contrôle fait autorité, se dégrader n'est
+plus une excuse mais une panne.
+
+**Prochain item.** W2.3 `[R]` — `src/locus/{index,config,errors}.ts` + `canterel worker --locus`
+qui ne fait rien, test de sortie « `bun run check` vert ; standalone intact ». Ses dépendances sont
+satisfaites, et c'est exactement le pas que le garde-fou de W2.2 existe pour surveiller : la
+commande `worker --locus` devra être atteignable sans que `src/index.ts` charge `src/locus/**`.
