@@ -1,0 +1,59 @@
+# Les deux garde-fous du fork Locus Solus, séparés du CI amont exprès.
+#
+# Ce fichier est neuf : l'amont n'en a aucun de ce nom, donc aucune synchronisation ne peut le
+# conflicter. C'est la raison pour laquelle les jobs vivent ici plutôt qu'ajoutés à `ci.yml`, dont
+# chaque hunk local serait payé à chaque merge amont (ADR 0010).
+name: Locus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: locus-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # SPEC_V1.md §28.8 — « toutes les fonctions historiques essentielles restent testées sans Locus
+  # Solus installé ». Le corollaire exécutable, que docs/locus/CLAUDE.md énonce sans détour : le
+  # mode autonome ne doit jamais charger `src/locus/**`. Ce job existe avant le premier module
+  # `locus/` fonctionnel, exprès — écrit après, il documenterait l'état atteint au lieu de refuser
+  # le premier pas de travers.
+  standalone:
+    name: Non-régression standalone
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-bun
+      - name: Le mode autonome ne charge aucun module Locus
+        working-directory: backend/cli
+        run: bun test test/locus/standalone.test.ts
+
+  # Le merge amont à blanc de W2.1. Il tourne déjà dans la suite `Test`, mais y tombe toujours
+  # dans sa branche dégradée : `actions/checkout` clone à `fetch-depth: 1` par défaut, la
+  # frontière du clone coupe l'ancêtre commun, et `merge-tree` n'a alors aucune base de fusion.
+  # Un contrôle qu'on croit avoir lancé est pire qu'un contrôle absent — celui-ci est l'exécution
+  # qui fait autorité.
+  upstream-sync:
+    name: Merge amont à blanc
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # L'historique complet, sans quoi il n'y a pas de base de fusion avec l'amont.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
+      - name: Aucun fichier Locus n'est touché par un merge amont
+        working-directory: backend/cli
+        env:
+          # Ici, se dégrader n'est plus une excuse mais une panne : ce job est le seul endroit où
+          # le contrôle est censé s'exécuter pour de vrai.
+          LOCUS_UPSTREAM_STRICT: "1"
+        run: bun test test/locus/upstream.test.ts

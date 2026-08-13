@@ -58,9 +58,12 @@ export async function dryRunMerge(cwd: string): Promise<DryRun> {
   }
 
   // Sans base de fusion, `merge-tree` refuse — et son message ressemble à une panne réseau. Le
-  // cas arrive pour une seule raison : un clone superficiel, dont la frontière coupe l'ancêtre
-  // commun. Le nommer ici évite de lire « amont injoignable » là où le dépôt est simplement
-  // tronqué, et dit quoi faire.
+  // nommer ici évite de lire « amont injoignable » là où le dépôt est simplement tronqué.
+  //
+  // La superficialité se constate APRÈS coup, jamais avant : un clone superficiel garde souvent
+  // un ancêtre commun avec l'amont, parce que sa frontière tombe au-delà du point de fork. Court-
+  // circuiter sur `--is-shallow-repository` sauterait un contrôle parfaitement exécutable — et un
+  // contrôle sauté par excès de prudence ne se distingue plus d'un contrôle absent.
   const base = await git(["merge-base", "HEAD", `upstream/${UPSTREAM_BRANCH}`], cwd)
   if (base.code !== 0) {
     const shallow = await git(["rev-parse", "--is-shallow-repository"], cwd)

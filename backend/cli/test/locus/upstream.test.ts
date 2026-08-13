@@ -75,16 +75,23 @@ describe("merge amont à blanc — le test de sortie de W2.1", () => {
   test("aucun fichier Locus n'est touché", async () => {
     const result = await dryRunMerge(REPO)
     if (!result.ok) {
-      // Hors ligne ou pare-feu : ce n'est pas une violation de la politique, et le dire
-      // autrement rendrait le contrôle bruyant là où il devrait être muet. Mais il le DIT,
-      // plutôt que de passer en silence — un contrôle qu'on croit avoir tourné est pire
+      // Hors ligne, pare-feu, clone superficiel : ce n'est pas une violation de la politique, et
+      // le dire autrement rendrait le contrôle bruyant là où il devrait être muet. Mais il le
+      // DIT, plutôt que de passer en silence — un contrôle qu'on croit avoir tourné est pire
       // qu'un contrôle absent.
+      //
+      // Sauf là où il fait autorité. Le job `upstream-sync` de `.github/workflows/locus.yml`
+      // cloner en `fetch-depth: 0` précisément pour que ce contrôle s'exécute pour de vrai ; s'y
+      // dégrader n'y est plus une excuse mais une panne, et `LOCUS_UPSTREAM_STRICT` le dit.
+      if (process.env["LOCUS_UPSTREAM_STRICT"] === "1") {
+        throw new Error(`merge à blanc dégradé alors qu'il devait faire autorité : ${result.reason}`)
+      }
       console.warn(`[W2.1] merge à blanc non exécuté : ${result.reason}`)
       expect(result.reason.length).toBeGreaterThan(0)
       return
     }
     expect(result.verdict.localTouched).toEqual([])
-  }, 120_000)
+  }, 300_000)
 
   test("la politique écrite énumère le périmètre que le code applique", async () => {
     // Deux endroits disent le périmètre : le code, qui l'applique, et `docs/locus/upstream.md`,
