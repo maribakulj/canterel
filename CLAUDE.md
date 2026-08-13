@@ -1,5 +1,19 @@
 # CLAUDE.md: OpenScience
 
+> **Ce dépôt est aussi le worker Locus Solus (« Canterel »).** C'est un fork **non divergé** de
+> `synthetic-sciences/OpenScience`, pas un codebase dont le projet Locus hérite.
+>
+> **Aucun rebrand** — ne renomme ni `@synsci/*`, ni les import paths, ni les fichiers amont, ni le
+> `NOTICE` (ADR 0010). Tout le code local vit sous `backend/cli/src/locus/**` et
+> `backend/cli/test/locus/**`, un répertoire neuf, donc sans conflit de merge. Toute modification
+> hors de ce périmètre se justifie dans `IMPLEMENTATION_LEDGER.md`, parce qu'elle sera payée à
+> chaque synchronisation amont.
+>
+> Règles complètes : **`docs/locus/CLAUDE.md`** — à lire avant d'écrire quoi que ce soit sous
+> `src/locus/`. Spécification : `docs/locus/SPEC_V1.md`. Migration : `docs/locus/MIGRATION_FROM_OPENSCIENCEDH.md`.
+>
+> Tout ce qui suit est le document amont, conservé intact.
+
 ## Project Overview
 
 **OpenScience (`openscience`)** is an open-source, model-agnostic AI research agent for ML engineering and scientific work. Built with Bun and TypeScript, it ships as native binaries for Linux, macOS, and Windows.
