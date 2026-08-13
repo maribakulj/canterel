@@ -71,3 +71,65 @@ dépendances sont satisfaites : W2 ne dépend pas de W1, et ADR 0010 déclare d�
 `upstream` comme conséquence. À noter cependant que le premier item réellement bloquant du
 chantier est W0.4 à W0.9 côté `locusolus` : W2.5 et suivants consomment le SDK et le harness de
 conformance qui en sortent.
+
+## 2026-08-13 — W2.1 — remote `upstream` et politique de synchronisation
+
+**Périmètre.** Trois fichiers neufs, tous dans le périmètre Locus : `docs/locus/upstream.md`
+(la politique écrite), `backend/cli/src/locus/{upstream,upstream-merge}.ts` (la même politique,
+exécutable) et `backend/cli/test/locus/upstream.test.ts`. **Aucun fichier amont modifié** pour cet
+item : aucune justification ADR 0010 n'est due. Le remote `upstream` lui-même n'est pas versionné —
+il vit dans `.git/config` — mais son URL et sa branche le sont, dans `upstream.ts`.
+
+**Tests exécutés.** `bun test test/locus/upstream.test.ts` depuis `backend/cli` : 9 pass, 0 fail.
+Le test de sortie de W2.1 — « un merge amont à blanc ne touche aucun fichier local » — s'exécute
+réellement ici, pas dans sa branche dégradée : `dryRunMerge` rend `ok: true` avec
+`localTouched: []`, `justifiedTouched: []` et 60+ chemins amont. `bun run typecheck` : 7/7.
+`prettier --check` sur les deux répertoires Locus : conforme.
+
+Les deux garde-fous ont été vérifiés par mutation, pas seulement observés verts. En ajoutant
+`backend/cli/src/tool/bash.ts` — un fichier que l'amont modifie réellement — à `LOCAL_PATHS`, le
+test de sortie **et** le test de dérive de la doc passent au rouge. Un test de sortie qui ne peut
+pas rougir ne mesure rien : celui-ci pouvait passer par vacuité si `isLocal` était cassé, et la
+mutation établit qu'il ne le fait pas.
+
+**Décisions prises.** Trois.
+
+_Le contrôle est un merge à blanc, pas un merge._ `git merge-tree --write-tree HEAD upstream/main`
+calcule l'arbre fusionné en mémoire objet ; la comparaison porte sur cet arbre via
+`git diff --name-only`. Rien n'est écrit — ni index, ni répertoire de travail, ni commit. Deux
+conséquences voulues : le contrôle tourne sur un arbre sale, et un échec ne laisse pas le dépôt à
+moitié fusionné. Un contrôle qu'on n'ose pas lancer n'est pas lancé.
+
+_Le verdict a trois catégories, pas deux._ `localTouched` / `justifiedTouched` /
+`upstreamTouched`. Un merge qui touche du code amont est un merge normal ; un merge qui touche
+`CLAUDE.md` ou `.prettierignore` est le coût connu et écrit de W0.1 ; un merge qui touche du code
+Locus veut dire que le périmètre a fui. Seul le troisième est une faute, et les confondre rendrait
+le contrôle soit bruyant soit muet.
+
+_Le remote n'est jamais réécrit en silence._ `ensureUpstream` ajoute `upstream` s'il manque, mais
+un remote existant qui pointe ailleurs est **signalé**, pas corrigé. Quelqu'un l'a peut-être fait
+exprès, et écraser sa configuration pour faire passer un contrôle serait le contraire de ce que le
+contrôle sert à établir.
+
+**Écart avec la spec.** Aucun sur le périmètre de l'item. Deux ajouts au-delà de sa lettre, tous
+deux dans le périmètre Locus.
+
+Le premier : un test de **dérive** entre `docs/locus/upstream.md` et le code. Deux endroits disent
+le périmètre — le code, qui l'applique, et la doc, qu'un humain lit avant de résoudre un conflit.
+Le second qui dérive du premier est pire qu'absent : on résout un conflit en croyant une liste qui
+n'est plus la bonne. Le test exige que la doc énumère chaque `LOCAL_PATHS` et chaque
+`JUSTIFIED_UPSTREAM_EDITS`.
+
+Le second : le cas du **clone superficiel**, nommé explicitement. Sans base de fusion, `merge-tree`
+refuse avec un message qui ressemble à une panne réseau. `dryRunMerge` teste donc `git merge-base`
+d'abord et distingue « amont injoignable » de « clone superficiel : la frontière coupe l'ancêtre
+commun (fetch-depth: 0) ». Ce n'est pas cosmétique : `actions/checkout` clone à `fetch-depth: 1`
+par défaut, donc **un job CI qui exécuterait ce contrôle tel quel tomberait toujours dans la
+branche dégradée** et déclarerait un contrôle qui n'a jamais tourné. Le test le dit sur
+`console.warn` au lieu de passer en silence, et c'est W2.2 qui devra donner `fetch-depth: 0` au job
+qui l'exécute. La dette est ici, écrite, plutôt que découverte au premier merge.
+
+**Prochain item.** W2.2 `[R]` — non-régression standalone en CI (§28.8), avant tout code `locus/`,
+test de sortie « passe sur le HEAD actuel ». Ses dépendances sont satisfaites : elle ne dépend que
+du HEAD amont. Elle hérite de la dette ci-dessus, le `fetch-depth: 0` du job qui exécute le merge à
+blanc.
