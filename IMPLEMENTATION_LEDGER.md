@@ -222,3 +222,98 @@ plus une excuse mais une panne.
 qui ne fait rien, test de sortie « `bun run check` vert ; standalone intact ». Ses dépendances sont
 satisfaites, et c'est exactement le pas que le garde-fou de W2.2 existe pour surveiller : la
 commande `worker --locus` devra être atteignable sans que `src/index.ts` charge `src/locus/**`.
+
+## 2026-08-13 — W2.3 — `src/locus/{index,config,errors}.ts` et un worker inerte
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/{index,config,errors}.ts`,
+`test/locus/config.test.ts`, plus les mises à jour de `standalone.ts` et `upstream.ts` que cet item
+provoque. **Deux éléments hors périmètre**, de natures différentes et justifiés séparément
+ci-dessous : `src/cli/cmd/worker.ts` (fichier neuf, couture déclarée) et `src/index.ts` (deux
+lignes, modification amont). `docs/locus/upstream.md` suit, parce que le test de dérive de W2.1
+l'exige — et c'est exactement ce pour quoi il a été écrit.
+
+**Tests exécutés.** `bun test test/locus/` : 46 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme. La suite complète locale rend 78 échecs, tous du jeu préexistant lié
+à l'environnement (bubblewrap absent, assets web non construits, sémantique de `ps` dans ce
+conteneur) : le contrôle « aucun échec ne mentionne locus, worker ou index » est vide, et la CI est
+l'autorité — elle rendait 0 fail avant cet item.
+
+Le test de sortie de W2.3 est double et les deux moitiés passent. `bun run check` : vert.
+_Standalone intact_ : le garde-fou de W2.2 reste vert avec la commande enregistrée, ce qui est la
+propriété intéressante — `src/locus/**` n'entre pas dans le graphe de démarrage bien que la CLI
+expose désormais `canterel worker`.
+
+Exécuté pour de vrai, pas seulement typé. `canterel worker --locus http://127.0.0.1:7420 --identity
+canterel-test --labels "local, interactive"` rend la configuration résolue et `worker: inert` ;
+sans options, il rend `incomplet — manque : locus.endpoint, locus.identity` ;
+`LOCUS_MAX_CONCURRENCY=beaucoup` rend `configuration Locus invalide — LOCUS_MAX_CONCURRENCY :
+attendu un entier, reçu beaucoup` et sort en code 1.
+
+**Décisions prises.** Cinq.
+
+_`config.ts` est un port pur._ Il ne lit ni fichier ni réseau et reçoit son environnement en
+paramètre. La fusion des cinq niveaux de priorité de §6 est une fonction de données vers données,
+donc testable sans disque — et un module qui va chercher son contexte tout seul se teste en mutant
+le processus et se comporte différemment selon qui l'appelle. Un test vérifie que le fichier ne
+contient ni `node:fs`, ni `fetch(`, ni `Bun.spawn`.
+
+_Aucun champ de secret dans la configuration, et un seul rendu._ §6 exige que les secrets
+n'apparaissent jamais dans un log ou un diagnostic exporté. La façon la plus sûre de tenir cette
+promesse est qu'il n'y ait rien à omettre : le token d'enrôlement de §7.2 est un argument à usage
+unique, pas un champ de configuration. `describeConfig` est le seul rendu autorisé à sortir, pour
+que la promesse ait **un** endroit où être tenue plutôt qu'autant d'endroits qu'il y a de
+`console.log`. Le test porte sur les champs qui pourraient **porter** un secret, pas sur les noms
+qui en parlent : `reject_plaintext_secrets` est un booléen de politique, et interdire le mot
+plutôt que la charge donnerait un test qu'on contourne en renommant le champ.
+
+_Les défauts sont les plus stricts que §6 propose._ `enabled: false`, `max_concurrency: 1`,
+`reject_plaintext_secrets`, `fail_closed_on_policy_error`, `redact_prompts`. Un défaut permissif se
+propage dans toutes les installations qui n'ont rien configuré, c'est-à-dire la plupart.
+
+_Une variable d'environnement illisible est un refus, jamais un silence._ Un worker qui ignore
+`LOCUS_MAX_CONCURRENCY=beaucoup` et tourne à 1 fait quelque chose que personne n'a demandé, sans le
+dire. `ENV_BINDINGS` est une table, et un test exige que chaque liaison déclarée soit réellement
+lue : une variable documentée sans effet est pire qu'une variable absente, parce qu'on croit
+l'avoir posée.
+
+_Deux erreurs, et les deux sont levées._ `LocusConfigInvalid` porte le **chemin** du champ fautif,
+pas un message, ce qui permet de pointer une ligne au lieu de faire relire un fichier.
+`LocusNotConfigured` en est distincte parce que « tu n'as rien configuré » et « ce que tu as
+configuré est faux » appellent deux gestes différents. Un catalogue d'erreurs écrit avant les
+chemins de code qui les lèvent serait une liste de suppositions.
+
+**Écart avec la spec.** Trois, dont deux sont des corrections d'items précédents.
+
+_Le fichier amont modifié._ `src/index.ts` reçoit un import et un `.command(WorkerCommand)`. La
+liste des commandes bouge en amont, donc ce hunk conflictera, et il n'a pas d'alternative : la CLI
+amont n'expose aucun mécanisme d'enregistrement de commande par plugin — vérifié dans
+`src/plugin/`. Le coût est deux lignes à rejouer. En regard, `src/cli/cmd/worker.ts` est un fichier
+**neuf** : aucune synchronisation ne peut le conflicter, et il est déclaré dans `LOCUS_SEAMS` plutôt
+que dans `JUSTIFIED_UPSTREAM_EDITS`, parce que sa nature est d'être la couture, pas une modification.
+Il est mince exprès — ce qui est dedans est payé à chaque sync, ce qui n'y est pas ne l'est pas. Il
+porte une seule logique au-delà du câblage : la traduction de `LocusConfigInvalid` vers le
+terminal, sans quoi l'utilisateur lit « Unexpected error, check log file » là où la couche sait
+quel champ est fautif. Adapter une erreur Locus au terminal est le travail d'une couture, et le
+faire là évite de toucher `src/cli/error.ts`.
+
+_Correction de W2.2, trouvée par W2.3._ Le parcours de graphe suivait les `import()` **dynamiques**
+comme des arêtes. C'est faux, et ça rendait toute couture paresseuse impossible à écrire : la
+première tentative de câbler `worker.ts` a fait rougir le garde-fou alors que le code était
+exactement celui qu'on veut. Le graphe de démarrage est ce qui se charge au seul fait de démarrer ;
+un `import()` attend qu'on prenne sa branche. Les deux sortes sont désormais **résolues** — pour
+que le compte des irrésolus et des modules générés reste complet — et une seule est **suivie**. Ne
+pas les résoudre du tout aurait fait qu'un garde-fou cesse de regarder une classe entière de
+specifiers sans le dire à personne.
+
+_Un piège de zod 4, à retenir._ `.default(v)` en zod 4 rend `v` **sans le parser**, contrairement à
+zod 3. Les objets imbriqués déclarés `.default({})` sortaient donc littéralement `{}`, et tous les
+défauts de sécurité de §6 étaient silencieusement absents — `config.security.reject_plaintext_secrets`
+valait `undefined`, pas `true`. C'est `.prefault({})` qu'il faut. Le test des défauts sûrs l'a
+attrapé au premier passage ; écrit après coup, il aurait constaté l'absence au lieu de la refuser.
+
+**Prochain item.** W2.4 `[R]` — `identity.ts`, `auth.ts`, enrôlement, révocation (§7), test de
+sortie « identité persistante après redémarrage ». Ses dépendances sont satisfaites : la
+configuration, les erreurs structurées et la couture existent. Il apportera le premier secret réel
+du dépôt (le token d'enrôlement de §7.2) — le test qui interdit un champ de secret dans la
+configuration est là pour qu'il aille ailleurs qu'en configuration, et §7.1 dit où : une clé privée
+locale protégée, qui ne quitte jamais la machine.

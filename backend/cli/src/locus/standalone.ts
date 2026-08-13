@@ -91,7 +91,13 @@ function isGenerated(specifier: string): boolean {
  * atteignable depuis `src/index.ts` met Locus dans le graphe standalone et reste rouge, couture
  * déclarée ou non.
  */
-export const LOCUS_SEAMS: readonly { path: string; reason: string }[] = []
+export const LOCUS_SEAMS: readonly { path: string; reason: string }[] = [
+  {
+    path: "src/cli/cmd/worker.ts",
+    reason:
+      "La commande `canterel worker` (W2.3) : import dynamique de `@/locus` dans le handler, donc hors du graphe de démarrage. Mince exprès — ce qui est dans ce fichier est payé à chaque synchronisation amont.",
+  },
+]
 
 function isSeam(file: string): boolean {
   return LOCUS_SEAMS.some((seam) => seam.path === file)
@@ -164,28 +170,64 @@ export function resolveRelative(fromFile: string, specifier: string, root: strin
  * signaler une dépendance qui n'existe pas, et un garde-fou qui crie faux se fait désarmer aussi
  * sûrement qu'un garde-fou muet. Rien n'est perdu : un import en commentaire ne s'exécute pas.
  */
-export function specifiersOf(source: string): readonly string[] {
-  const found: string[] = []
-  const patterns = [
-    /\bfrom\s+["']([^"']+)["']/g,
-    /\bimport\s+["']([^"']+)["']/g,
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
-  ]
-  const code = source
+function withoutComments(source: string): string {
+  return source
     .split("\n")
     .filter((line) => {
       const trimmed = line.trimStart()
       return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*")
     })
     .join("\n")
-  for (const pattern of patterns) {
+}
+
+/**
+ * Les specifiers **statiques** : ceux qui chargent le module au seul fait d'en charger un autre.
+ *
+ * Ce sont eux, et eux seuls, qui forment le graphe de démarrage. Un `import()` n'en fait pas
+ * partie — c'est toute la raison d'être d'une couture paresseuse, et les compter ici la rendrait
+ * impossible à écrire. L'amont s'en sert déjà pour la même raison, avec le motif écrit au-dessus
+ * de son appel : « dynamic import keeps the credential route module out of every command's static
+ * graph ».
+ */
+export function staticSpecifiersOf(source: string): readonly string[] {
+  const found: string[] = []
+  const code = withoutComments(source)
+  for (const pattern of [/\bfrom\s+["']([^"']+)["']/g, /\bimport\s+["']([^"']+)["']/g]) {
     for (const match of code.matchAll(pattern)) {
       const specifier = match[1]
       if (specifier) found.push(specifier)
     }
   }
   return found
+}
+
+/** Les specifiers chargés à l'exécution : `import()` et `require()`. */
+export function dynamicSpecifiersOf(source: string): readonly string[] {
+  const found: string[] = []
+  const code = withoutComments(source)
+  for (const pattern of [/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g, /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g]) {
+    for (const match of code.matchAll(pattern)) {
+      const specifier = match[1]
+      if (specifier) found.push(specifier)
+    }
+  }
+  return found
+}
+
+/**
+ * Tous les specifiers d'un fichier, statiques et dynamiques.
+ *
+ * Une regex plutôt qu'un parseur, assumé : le garde-fou doit sur-détecter, pas sous-détecter. Un
+ * parseur qui rate une forme produit un silence, et le silence est le seul résultat inacceptable
+ * ici.
+ *
+ * Les lignes de commentaire sont écartées, et c'est la seule concession. `src/science/connectors`
+ * documente son usage par des exemples d'`import` en en-tête de fichier ; les compter serait
+ * signaler une dépendance qui n'existe pas, et un garde-fou qui crie faux se fait désarmer aussi
+ * sûrement qu'un garde-fou muet. Rien n'est perdu : un import en commentaire ne s'exécute pas.
+ */
+export function specifiersOf(source: string): readonly string[] {
+  return [...staticSpecifiersOf(source), ...dynamicSpecifiersOf(source)]
 }
 
 /**
@@ -228,7 +270,20 @@ export function walkGraph(
       continue
     }
 
-    for (const specifier of specifiersOf(source)) {
+    // Les deux sortes sont **résolues**, une seule est **suivie**.
+    //
+    // Le graphe de démarrage est ce qui se charge au seul fait de démarrer : un `import()` attend
+    // qu'on prenne sa branche, donc il n'en fait pas partie — c'est exactement ce qui rend une
+    // couture paresseuse possible, et les enfiler ici la rendrait impossible à écrire.
+    //
+    // Mais ne pas les résoudre du tout perdrait le compte des irrésolus, et un garde-fou qui
+    // arrête de regarder une classe entière de specifiers ne le dit à personne. `follow` porte
+    // donc la distinction, et rien d'autre.
+    const specifiers = [
+      ...staticSpecifiersOf(source).map((specifier) => ({ specifier, follow: true })),
+      ...dynamicSpecifiersOf(source).map((specifier) => ({ specifier, follow: false })),
+    ]
+    for (const { specifier, follow } of specifiers) {
       if (!isInternal(specifier)) continue
       // Relevé AVANT la résolution, et non dans la branche « irrésolu » : selon que le build a
       // tourné ou non, `./assets.generated` existe ou pas, et un relevé qui dépendrait de ça
@@ -246,6 +301,7 @@ export function walkGraph(
         })
         continue
       }
+      if (!follow) continue
       if (seen.has(resolved)) continue
       seen.add(resolved)
       queue.push(resolved)

@@ -38,6 +38,9 @@ import { WalletCommand } from "./cli/cmd/billing"
 import { KeysCommand, ConnectCommand, DisconnectCommand } from "./cli/cmd/auth"
 import { LocalCommand } from "./cli/cmd/local"
 import { SandboxCommand } from "./cli/cmd/sandbox"
+// Locus Solus (fork Canterel) : la commande est mince et charge `src/locus/**` par import
+// dynamique, pour que le mode autonome n'en dépende jamais — voir docs/locus/upstream.md.
+import { WorkerCommand } from "./cli/cmd/worker"
 import { InitCommand, DoctorCommand } from "./cli/onboard"
 import { OpenScience } from "./openscience"
 
@@ -143,6 +146,7 @@ const cli = yargs(hideBin(process.argv))
   .command(ProjectCommand)
   .command(ConnectCommand)
   .command(DisconnectCommand)
+  .command(WorkerCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

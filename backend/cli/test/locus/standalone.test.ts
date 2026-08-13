@@ -12,7 +12,9 @@ import {
   isInternal,
   resolveRelative,
   scanForLocusSpecifiers,
+  dynamicSpecifiersOf,
   specifiersOf,
+  staticSpecifiersOf,
   verifyStandalone,
   walkGraph,
 } from "../../src/locus/standalone.ts"
@@ -141,8 +143,22 @@ describe("le garde-fou sait rougir", () => {
 })
 
 describe("coutures", () => {
-  test("aucune couture au HEAD — en ajouter une se voit en revue", () => {
-    expect(LOCUS_SEAMS).toEqual([])
+  test("chaque couture est paresseuse, existe, et porte sa raison", () => {
+    // Ce test valait `toEqual([])` jusqu'à W2.3, et il est tombé au moment exact où il devait
+    // tomber : la première couture est arrivée. C'était le but — en ajouter une est un acte
+    // visible en revue, pas un assouplissement discret. Il vérifie maintenant ce qui doit rester
+    // vrai de toutes les suivantes.
+    for (const seam of LOCUS_SEAMS) {
+      expect(seam.reason.length).toBeGreaterThan(30)
+      expect(seam.path.startsWith(LOCUS_DIR)).toBe(false)
+      const source = readFileSync(join(CLI, seam.path), "utf8")
+      // Paresseuse : elle désigne Locus dynamiquement, et jamais statiquement. Un import statique
+      // mettrait toute la couche dans le graphe de démarrage — le graphe le prendrait de toute
+      // façon, mais l'exiger ici nomme la règle au lieu de la laisser déduire d'un échec.
+      const designates = (specifier: string) => /(^|\/)locus(\/|$)/.test(specifier)
+      expect(staticSpecifiersOf(source).some(designates)).toBe(false)
+      expect(dynamicSpecifiersOf(source).some(designates)).toBe(true)
+    }
   })
 
   test("une couture dispense du balayage, jamais du graphe", () => {
