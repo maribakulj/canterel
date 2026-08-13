@@ -37,10 +37,12 @@ export type StandaloneReport = {
   /** Les vérifications qui ont tourné, nommément. */
   readonly ran: readonly string[]
   /**
-   * Les modules générés rencontrés absents de l'arbre, déclarés et donc non comptés en constat.
+   * Les références aux modules déclarés générés, rencontrées pendant le parcours.
    *
-   * Ils sont **rapportés**, pas tus. Un garde-fou qui avale ses exceptions en silence finit par
-   * n'avoir plus que des exceptions, et personne ne s'en aperçoit.
+   * Relevées qu'elles se résolvent ou non : le job `Test` construit les assets web, les autres
+   * non, et un relevé conditionné par l'état du build dirait deux choses différentes dans deux
+   * jobs de la même CI. Elles sont **rapportées**, pas tues — un garde-fou qui avale ses
+   * exceptions en silence finit par n'avoir plus que des exceptions, sans que personne le voie.
    */
   readonly generated: readonly string[]
 }
@@ -228,12 +230,15 @@ export function walkGraph(
 
     for (const specifier of specifiersOf(source)) {
       if (!isInternal(specifier)) continue
+      // Relevé AVANT la résolution, et non dans la branche « irrésolu » : selon que le build a
+      // tourné ou non, `./assets.generated` existe ou pas, et un relevé qui dépendrait de ça
+      // dirait deux choses différentes dans deux jobs de la même CI. Ce qu'on veut savoir est
+      // stable : cette déclaration correspond-elle encore à un import réel ?
+      if (isGenerated(specifier)) generated.push(`${file} → ${specifier}`)
+
       const resolved = resolveRelative(file, specifier, root)
       if (!resolved) {
-        if (isGenerated(specifier)) {
-          generated.push(`${file} → ${specifier}`)
-          continue
-        }
+        if (isGenerated(specifier)) continue
         findings.push({
           rule: "unresolved-import",
           where: file,

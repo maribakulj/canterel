@@ -140,10 +140,19 @@ blanc.
 et `.github/workflows/locus.yml`, plus un correctif sur `upstream-merge.ts` / `upstream.test.ts`
 qui solde la dette écrite en W2.1. **Un fichier hors périmètre Locus**, justifié ci-dessous.
 
-**Tests exécutés.** `bun test test/locus/` : 25 pass, 0 fail. `bun run typecheck` : 7/7.
+**Tests exécutés.** `bun test test/locus/` : 28 pass, 0 fail. `bun run typecheck` : 7/7.
 `prettier --check` sur les deux répertoires Locus et le workflow : conforme. Le test de sortie de
 W2.2 — « passe sur le HEAD actuel » — passe : 386 fichiers atteints depuis `src/index.ts`, aucun
 sous `src/locus/`, aucun constat.
+
+La première poussée a fait **rougir le job `Test`**, et sur mon propre test : « chaque déclaration
+porte sa raison et sert réellement ». Cause réelle, instructive. Le job `Test` construit les assets
+web avant de lancer la suite ; les autres jobs non. `./assets.generated` s'y résout donc, n'est
+jamais relevé comme absent, et mon assertion exigeait qu'il le soit — j'avais confondu « déclaré »
+et « actuellement manquant ». Le relevé se fait désormais **avant** la résolution : ce qu'on veut
+savoir est stable dans les deux états, à savoir si la déclaration correspond encore à un import
+réel. Vérifié dans les deux, en fabriquant puis retirant les trois fichiers générés. Un test le
+verrouille, parce que c'est exactement le genre de dépendance à l'environnement qui revient.
 
 Vérifié par mutation sur l'arbre réel, pas sur une maquette. En ajoutant à `src/cli/logo.ts`
 — un fichier amont ordinaire, à trois niveaux de l'entrée — d'abord `import { LOCAL_PATHS } from

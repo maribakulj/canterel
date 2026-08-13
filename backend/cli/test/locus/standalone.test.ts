@@ -172,6 +172,22 @@ describe("modules générés", () => {
     }
   })
 
+  test("le relevé ne dépend pas de l'état du build", () => {
+    // La CI a fait tomber la première version de ce test, et elle avait raison : le job `Test`
+    // construit les assets web, les autres non. Un relevé conditionné par la présence du fichier
+    // dit donc deux choses différentes dans deux jobs de la même CI. Ce qu'on veut savoir est
+    // stable — cette déclaration correspond-elle encore à un import réel ?
+    const absent = scratch({ "src/index.ts": `import "./assets.generated"` })
+    const present = scratch({
+      "src/index.ts": `import "./assets.generated"`,
+      "src/assets.generated.ts": `export const A = 1`,
+    })
+    expect(walkGraph(absent).generated).toEqual(["src/index.ts → ./assets.generated"])
+    expect(walkGraph(present).generated).toEqual(["src/index.ts → ./assets.generated"])
+    // Et quand il existe, il est parcouru comme n'importe quel autre fichier.
+    expect(walkGraph(present).reached).toContain("src/assets.generated.ts")
+  })
+
   test("un module absent non déclaré reste un constat", () => {
     const root = scratch({ "src/index.ts": `import "./models-snapshot"\nimport "./autre-absent"` })
     const findings = walkGraph(root).findings
