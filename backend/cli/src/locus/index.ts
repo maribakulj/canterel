@@ -77,6 +77,22 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  applyRedactions,
+  assertBranchScope,
+  assertViewIntegrity,
+  classRank,
+  materialize,
+  requestExtension,
+  viewContentHash,
+  type ContextItem,
+  type Exclusion,
+  type ExclusionReason,
+  type Materialized,
+} from "./context-materializer.ts"
+
+export { LocusContextRefused } from "./errors.ts"
+
+export {
   ALLOWED_AFTER_LOSS,
   HEARTBEAT_TTL_RATIO,
   LEASE_LOST_ACTIONS,

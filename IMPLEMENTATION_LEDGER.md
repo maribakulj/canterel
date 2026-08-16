@@ -706,3 +706,63 @@ Test de sortie : « un contexte de branche A n'atteint jamais une mission de bra
 dépendances sont satisfaites. C'est l'item qui porte l'invariant 11 du projet — les reviewers
 indépendants ne reçoivent pas le raisonnement privé du générateur — et §12.3 y ajoute que le hash
 de la vue doit être vérifié **avant** démarrage.
+
+## 2026-08-16 — W2.10 — matérialisation du contexte et isolation informationnelle (§12.4)
+
+**Périmètre.** Entièrement dans le périmètre Locus : `src/locus/context-materializer.ts`,
+`test/locus/context.test.ts`, une erreur ajoutée à `errors.ts`, réexports d'`index.ts`. **Aucun
+fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 195 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.10 — « un contexte de branche A n'atteint jamais une mission de branche
+B » — passe. Vérifié par mutation : neutraliser la garde de branche le fait rougir, laisser passer
+un secret fait rougir l'interdit correspondant.
+
+**Décisions prises.** Quatre.
+
+_L'isolation de branche est une propriété de la **vue entière**, pas de chacun de ses éléments._
+C'est la correction la plus importante de cet item, et elle a été trouvée par le test de sortie
+lui-même. Ma première version filtrait élément par élément avec la règle « l'élément passe s'il est
+de la branche de la mission **ou** dans la portée déclarée » — ce qui faisait de `branch_scope` une
+**autorisation**, l'exact inverse de son rôle. C'est la même faute que W2.8 refuse pour la
+politique locale : une portée restreint, elle n'ouvre jamais. Le schéma est plus fort que ma
+première lecture — « une vue construite pour la branche A ne doit jamais atteindre une mission de
+la branche B » parle de la vue, pas de son contenu. `assertBranchScope` refuse donc la vue **en
+bloc**, et le filtrage élément par élément ne s'applique qu'à une vue déjà reconnue comme
+légitime.
+
+_Le défaut sans portée est la branche de la mission, et rien d'autre._ Une vue non rattachée à une
+branche ne devient pas un passe-droit pour les conclusions d'une branche concurrente (§12.4).
+
+_L'intégrité est vérifiée avant tout filtrage._ §12.3 dit « avant démarrage ». Filtrer d'abord
+reviendrait à appliquer une politique d'isolation à un document qu'on n'a pas authentifié —
+c'est-à-dire à faire confiance au document qui décrit ce à quoi on a droit. Le hash se calcule sur
+la vue **privée de son propre champ de hash** : l'y inclure le rendrait invérifiable.
+
+_Il n'existe aucune fonction qui accorde une extension._ §12.4 : « tout accès additionnel nécessite
+`context.extension_requested` puis une décision Locus Solus ». Le module produit la **demande** ;
+offrir un `grantExtension()` local offrirait le moyen de contourner exactement ce qu'il protège. Un
+test vérifie l'absence de ces noms dans le module — une garantie qui vaut mieux qu'une intention.
+
+**Écart avec la spec.** Deux notes.
+
+_Ce qui n'est pas classable est refusé._ Une classe de confidentialité inconnue est traitée comme
+au-dessus du plafond : ne pas savoir classer n'autorise pas à laisser passer. Même posture pour un
+élément dont la position dépasse le watermark — il n'existait pas encore pour l'agent.
+
+_Rien n'est écarté en silence._ Chaque exclusion porte un code stable et un détail lisible, et le
+rapport est rendu même vide. Un contexte amputé sans que personne le sache produit un raisonnement
+dont on ne saura pas qu'il était aveugle — et c'est cette liste qui permet à l'appelant de demander
+une extension plutôt que de deviner ce qui lui manque. Pour la même raison, un contexte
+intégralement écarté rend une liste vide et non une exception : l'exception ferait perdre les
+raisons.
+
+**Prochain item.** W2.11 `[R]` — `session-map.ts`, `agent-overlay.ts`, `model-policy.ts`,
+`tool-policy.ts`, la couche d'adaptation vers l'amont. Test de sortie : « mission → session **sans
+modifier `src/session/`** », ce qui en fait l'item le plus exposé au périmètre d'ADR 0010 de tout
+W2 : toute la difficulté est d'adapter sans toucher. `docs/locus/CLAUDE.md` prévient déjà que
+`src/session/`, `src/agent/` et `src/permission/` existent en amont avec un sens local, et
+`model_unavailable` / `tool_forbidden` — deux des quatre codes déclarés sans être levés en W2.8 —
+y trouveront leur producteur.
