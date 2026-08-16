@@ -102,6 +102,7 @@ export {
 } from "./event-spool.ts"
 
 export {
+  ATTEMPT_SCOPED_TYPES,
   COALESCIBLE_TYPES,
   NEVER_COALESCIBLE_TYPES,
   REQUIRED_EVENT_FIELDS,
@@ -110,6 +111,41 @@ export {
   eventFieldFindings,
   isCoalescible,
 } from "./event-bridge.ts"
+
+export {
+  DEFAULT_HASH_ALGORITHM,
+  HASH_ALGORITHMS,
+  artifactDeclaredPayload,
+  artifactUploadedPayload,
+  cachePath,
+  contentHash,
+  declareArtifact,
+  evictable,
+  parseHash,
+  publishArtifact,
+  sameHash,
+  type ArtifactTransport,
+  type Declaration,
+  type DeclareInput,
+  type PublishResult,
+  type UploadReceipt,
+  type UploadTicket,
+} from "./artifact-client.ts"
+
+export {
+  MAX_ARCHIVE_EXPANSION_RATIO,
+  SCAN_CHECKS,
+  TEXT_SNIFF_BYTES,
+  quarantineReason,
+  scanArtifact,
+  type CheckOutcome,
+  type CheckStatus,
+  type ScanCheck,
+  type ScanFinding,
+  type ScanInput,
+  type ScanReport,
+  type ScannerTools,
+} from "./artifact-scanner.ts"
 
 export {
   UNTOUCHABLE_UPSTREAM_DIRS,
