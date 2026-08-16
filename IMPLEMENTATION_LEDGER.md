@@ -960,3 +960,96 @@ upload (§19.1). Test de sortie : « hash déclaré ≠ hash reçu → rejet ».
 satisfaites : le canonicaliseur épinglé sait déjà produire un `ContentHash` préfixé par son
 algorithme, et le SDK impose ce préfixe — « un hash nu ne dit pas comment le recalculer, et une
 vérification d'intégrité qui devine son algorithme n'en est pas une ».
+
+## 2026-08-16 — W2.14 — artefacts : déclaration avant upload, scan et quarantaine (§19)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/artifact-client.ts`,
+`src/locus/artifact-scanner.ts`, `test/locus/artifact.test.ts`, une erreur ajoutée à
+`src/locus/errors.ts`, réexports dans `src/locus/index.ts`, plus une correction dans
+`src/locus/event-bridge.ts` et son test (voir « Correction »). **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 278 pass, 0 fail (16 fichiers). `bun run typecheck` :
+7/7. `prettier --check` : conforme.
+
+Le test de sortie de W2.14 — « hash déclaré ≠ hash reçu → rejet » — passe. Vérifié par mutation,
+trois fois : neutraliser la comparaison du hash reçu fait rougir le test de sortie ; neutraliser le
+blocage d'upload en quarantaine fait rougir §19.5 × §19.1 ; faire passer le contrôle antimalware
+absent pour `enforced` fait rougir deux tests de §19.5.
+
+**Décisions prises.** Six.
+
+_Le rejet est une erreur levée, pas une valeur de retour._ Les deux autres issues de `publish`
+laissent une suite possible — un artefact en quarantaine attend une revue, un upload non vérifié
+attend un nouvel essai — alors qu'un hash qui ne correspond pas ne laisse rien à tenter. Le rendre
+comme une valeur inviterait un appelant à l'ignorer d'un `if (!result.ok) continue`. §24.5 le dit
+pour tout le système : « une incohérence déclenche quarantaine et diagnostic, jamais réparation
+silencieuse ».
+
+_Aucun chemin ne réécrit le hash déclaré._ Il n'existe ni `redeclare`, ni `acceptServerHash`, ni
+`forceUpload`, et un test verrouille ces absences. Hasher ce que le serveur confirme avoir reçu
+produirait une vérification qui ne peut jamais échouer, donc pas une vérification.
+
+_Le contenu est re-hashé avant l'envoi, et le refus a lieu avant de demander l'URL temporaire._
+C'est le cas ordinaire d'un worker qui écrit encore dans le fichier qu'il vient de déclarer. Le
+test vérifie que `requestUpload` n'a pas été appelé : rien n'est sorti de la machine.
+
+_Sans hash de réception, `artifact.uploaded` n'est pas atteint._ §19.1 place la vérification
+**avant** l'événement ; l'émettre quand même transformerait « je crois » en « c'est fait ». L'issue
+s'appelle `unverified` et l'état reste `declared`, ce qui est exactement vrai.
+
+_L'URL temporaire subit la politique d'endpoint de §7.3._ Le ticket vient du serveur, donc c'est
+une entrée distante : `assertEndpointAcceptable` s'y applique comme à l'endpoint d'enrôlement. Un
+ticket en clair ou vers un hôte interne ferait sortir l'artefact par un chemin que personne n'a
+autorisé. Une date d'expiration illisible vaut expirée — des deux choix, c'est le seul qui ne
+puisse pas faire fuiter l'artefact.
+
+_Chaque contrôle de scan rend son état, et le scanner n'efface rien._ §19.5 dit « malware **selon
+outils disponibles** » : il y a des machines où ce contrôle ne tourne pas, et une passe qui n'a pas
+eu lieu doit se distinguer d'une passe qui n'a rien trouvé. D'où `enforced` / `not-applicable` /
+`skipped` par contrôle, et un `complete` global : un rapport `clean` avec `complete: false` n'est
+pas un artefact propre, c'est un artefact partiellement regardé. Et « un échec ne supprime pas la
+preuve » : aucune fonction n'efface ici, un test verrouille l'absence de `rmSync` / `unlinkSync`.
+
+**Écart avec la spec.** Trois notes, toutes dans le cadre.
+
+_Le seuil d'expansion d'archive est une politique._ §19.5 dit « archives dangereuses » sans
+chiffrer. `MAX_ARCHIVE_EXPANSION_RATIO` vaut 200 et vit en constante pour être discutée d'un seul
+endroit. Le scanner **n'extrait pas** : il lit l'en-tête gzip, qui déclare la taille non
+compressée. Décompresser pour inspecter, ce serait exécuter la bombe qu'on cherche. Un zip ne porte
+pas cette information en tête, donc son contrôle se déclare `skipped` plutôt que sain.
+
+_Le contrôle `forbidden_data` s'appuie sur les classes autorisées de la mission._ La politique de
+localité de §21.9 n'existe pas encore côté worker ; sans liste déclarée, le contrôle est `skipped`
+et le dit. C'est aussi le producteur manquant du code de refus `data_locality_violation` relevé en
+W2.8 — il attend toujours §21.9.
+
+_`RunManifest` et `EnvironmentManifest` (§19.3, §19.4) ne sont pas remplis ici._ Le SDK épinglé les
+définit ; ce sont les modules `executor.ts` et `sandbox-policy.ts` qui sauront ce qu'ils
+contiennent. Les remplir depuis le client d'artefacts reviendrait à deviner l'environnement d'un
+run qu'il n'a pas observé.
+
+**Correction — §18.2, entrée de W2.12.** L'entrée de W2.12 affirmait que `lep/1.0` ne définit
+« ni `message_id` ni `correlation_id` ». **C'est faux pour `correlation_id`** : le schéma
+`event.schema.json` le définit, avec `causation_id`, tous deux facultatifs. Seul `message_id` est
+réellement absent — `idempotency_key` y tient ce rôle, et l'arbitrage cross-repo sur ce nom reste
+ouvert pour `locusolus`. Le commentaire de `event-bridge.ts` est corrigé ; `correlation_id` n'entre
+pas dans `REQUIRED_EVENT_FIELDS` parce qu'il est facultatif au schéma et que c'est la couche qui
+émet qui le pose — l'exiger de ce qui ne le pose pas encore ferait crier la vérification sur chaque
+événement conforme.
+
+Corrigé du même coup : `REQUIRED_EVENT_FIELDS` exigeait `task_id` et `attempt` de **tout**
+événement, ce qui faisait passer `worker.registered` pour non conforme alors qu'il précède toute
+tâche. Ces deux champs ne sont désormais exigés que des types listés dans `ATTEMPT_SCOPED_TYPES`.
+Vérifié par mutation : réexiger `task_id` partout fait rougir le nouveau test.
+
+**Note d'outillage.** Les appâts du scanner — en-tête de clé privée PEM, identifiant AWS — sont
+assemblés à l'exécution dans le test. Écrits en clair, ils feraient rougir le job `Gitleaks`, à
+juste titre : son travail est de crier sur ces formes dans le dépôt, et il n'a pas à savoir
+lesquelles sont des décors. Les ajouter à `.gitleaksignore` aurait appris au garde-fou à ignorer
+une forme réelle ; les assembler ne change rien à ce que le scanner d'artefacts voit.
+
+**Prochain item.** W2.15 `[R]` — `epistemic-commit.ts`, jamais au-delà de `staged` (§2.3). Test de
+sortie : « tentative de promotion → erreur structurée ». Ses dépendances sont satisfaites : le SDK
+épinglé définit déjà `EpistemicCommit` avec ses claims, objections, inférences, décisions locales
+et résultats négatifs, et l'invariant 12 — « les résultats négatifs et conflits ne sont jamais
+supprimés pour rendre le graphe propre » — dit déjà ce que le module n'a pas le droit de faire.

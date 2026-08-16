@@ -9,8 +9,10 @@ import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "../../sr
 
 import { DEFAULT_MAX_ENTRIES, EventSpool, SPOOL_FILE } from "../../src/locus/event-spool.ts"
 import {
+  ATTEMPT_SCOPED_TYPES,
   COALESCIBLE_TYPES,
   NEVER_COALESCIBLE_TYPES,
+  REQUIRED_EVENT_FIELDS,
   coalesce,
   coalescencePolicyFindings,
   eventFieldFindings,
@@ -245,12 +247,33 @@ describe("champs d'événement — §18.2", () => {
     expect(eventFieldFindings(partial)).toHaveLength(1)
   })
 
+  test("`worker.registered` n'a pas à déclarer une tâche qu'il précède", () => {
+    // Correction apportée par W2.14 : exiger `task_id` sur tout événement faisait passer
+    // `worker.registered` pour non conforme alors qu'il n'a rien à déclarer — il précède toute
+    // tâche. Une vérification qui se trompe sur les cas normaux apprend surtout à ne plus être lue.
+    const registered = {
+      protocol: PROTOCOL_VERSION,
+      event_type: "worker.registered",
+      sequence: 1,
+      occurred_at: new Date(START).toISOString(),
+      idempotency_key: "registered-1",
+    } as unknown as Event
+    expect(eventFieldFindings(registered)).toEqual([])
+    expect(ATTEMPT_SCOPED_TYPES).not.toContain("worker.registered")
+    // Mais un événement d'attempt sans tâche reste un constat.
+    expect(ATTEMPT_SCOPED_TYPES).toContain("artifact.declared")
+  })
+
   test("aucun champ absent du schéma n'est inventé localement", () => {
-    // §18.2 cite `message_id` et `correlation_id`, que `lep/1.0` ne définit pas. Les ajouter ici
-    // serait dupliquer le contrat cross-repo : un champ inventé côté worker ne serait ni validé
-    // ni reconnu par un pair conforme. L'écart est écrit au ledger, pas comblé en douce.
+    // §18.2 cite `message_id`, que `lep/1.0` ne définit pas. L'ajouter ici serait dupliquer le
+    // contrat cross-repo : un champ inventé côté worker ne serait ni validé ni reconnu par un pair
+    // conforme. L'écart est écrit au ledger, pas comblé en douce.
     const source = readFileSync(join(import.meta.dir, "../../src/locus/event-bridge.ts"), "utf8")
     expect(source).toContain("message_id")
+    // `correlation_id`, lui, EXISTE dans le schéma — facultatif. C'est la couche qui émet qui le
+    // pose ; il n'a pas à être inventé, et il n'a pas non plus à être exigé de ce qui ne le pose
+    // pas encore.
+    expect(REQUIRED_EVENT_FIELDS).not.toContain("correlation_id")
     const spoolSource = readFileSync(join(import.meta.dir, "../../src/locus/event-spool.ts"), "utf8")
     for (const invented of ["correlation_id:", "message_id:"]) {
       expect(spoolSource).not.toContain(invented)

@@ -108,6 +108,27 @@ export const LocusContextRefused = NamedError.create(
   }),
 )
 
+/**
+ * L'artefact ne franchit pas la vérification de §19.1.
+ *
+ * Le hash déclaré est une **promesse** faite avant l'upload ; le hash reçu est la preuve. Quand
+ * les deux diffèrent, il n'y a rien à réparer localement : ni renvoyer, ni redéclarer avec le
+ * nouveau hash, ni « prendre celui du serveur ». §24.5 le dit pour tout le système — une
+ * incohérence déclenche quarantaine et diagnostic, jamais réparation silencieuse.
+ *
+ * Les deux hashes voyagent dans l'erreur parce que la première question qu'on se pose est laquelle
+ * des deux moitiés a bougé.
+ */
+export const LocusArtifactRejected = NamedError.create(
+  "LocusArtifactRejected",
+  z.object({
+    artifact_id: z.string(),
+    reason: z.string(),
+    declared_hash: z.string().optional(),
+    received_hash: z.string().optional(),
+  }),
+)
+
 /** Le serveur n'est pas acceptable : schéma, origine, TLS (§7.3). */
 export const LocusServerRejected = NamedError.create(
   "LocusServerRejected",

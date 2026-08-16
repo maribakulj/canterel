@@ -111,13 +111,17 @@ export function coalescencePolicyFindings(): readonly string[] {
 /**
  * Ce qu'un événement doit porter — §18.2.
  *
- * La liste du texte cite `message_id` et `correlation_id`, que le schéma épinglé `lep/1.0` ne
- * définit pas : `Event` y porte `idempotency_key` comme identité de message et n'a pas de champ de
- * corrélation. Les ajouter ici serait **dupliquer le contrat cross-repo**, ce que
- * `docs/locus/CLAUDE.md` interdit — le contrat est dans `locusolus/schemas/`, et un champ inventé
- * côté worker ne serait ni validé ni reconnu par un pair conforme. La vérification porte donc sur
- * ce que le schéma épinglé définit réellement, et l'écart est écrit au ledger plutôt que comblé en
- * douce.
+ * §18.2 cite `message_id`, que le schéma épinglé `lep/1.0` ne définit pas : `Event` y porte
+ * `idempotency_key` comme identité de message. L'ajouter ici serait **dupliquer le contrat
+ * cross-repo**, ce que `docs/locus/CLAUDE.md` interdit — le contrat est dans `locusolus/schemas/`,
+ * et un champ inventé côté worker ne serait ni validé ni reconnu par un pair conforme. L'écart est
+ * écrit au ledger plutôt que comblé en douce.
+ *
+ * `correlation_id`, en revanche, **existe** dans le schéma — avec `causation_id` — et y est
+ * facultatif. Il n'est donc pas dans cette liste : c'est la couche qui émet qui le pose, et exiger
+ * ici un champ que rien ne remplit encore ferait crier la vérification sur chaque événement
+ * conforme. (Une entrée de ledger antérieure disait le champ absent du schéma ; c'était faux, et
+ * corrigé au ledger de W2.14.)
  */
 export const REQUIRED_EVENT_FIELDS: readonly string[] = [
   "protocol",
@@ -125,13 +129,35 @@ export const REQUIRED_EVENT_FIELDS: readonly string[] = [
   "sequence",
   "occurred_at",
   "idempotency_key",
-  "task_id",
-  "attempt",
+]
+
+/**
+ * Les types d'événement qui appartiennent à un attempt.
+ *
+ * `worker.registered` n'en fait pas partie : il précède toute tâche. Exiger `task_id` partout le
+ * ferait passer pour non conforme alors qu'il n'a rien à déclarer — et une vérification qui se
+ * trompe sur les cas normaux apprend surtout à ne plus être lue.
+ */
+export const ATTEMPT_SCOPED_TYPES: readonly string[] = [
+  "attempt.started",
+  "attempt.completed",
+  "attempt.failed",
+  "attempt.orphaned",
+  "heartbeat",
+  "progress",
+  "tool.started",
+  "tool.completed",
+  "artifact.declared",
+  "artifact.uploaded",
+  "resource.sampled",
+  "human.input.requested",
+  "epistemic_commit.submitted",
 ]
 
 export function eventFieldFindings(event: Event): readonly string[] {
   const record = event as unknown as Record<string, unknown>
-  return REQUIRED_EVENT_FIELDS.filter((field) => record[field] === undefined).map(
-    (field) => `champ \`${field}\` absent (§18.2)`,
-  )
+  const required = ATTEMPT_SCOPED_TYPES.includes(event.event_type)
+    ? [...REQUIRED_EVENT_FIELDS, "task_id", "attempt"]
+    : REQUIRED_EVENT_FIELDS
+  return required.filter((field) => record[field] === undefined).map((field) => `champ \`${field}\` absent (§18.2)`)
 }
