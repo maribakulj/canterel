@@ -579,3 +579,66 @@ le corpus de fixtures de W0.7 est mergé côté `locusolus`. À noter : la fixtu
 `locusolus/schemas/examples/`, hors de ce dépôt ; il faudra soit l'épingler comme le SDK, soit
 reconstruire le cas depuis les types — la première voie est cohérente avec W2.5 et sera préférée
 sauf raison contraire.
+
+## 2026-08-16 — W2.8 — admission et refus structuré (§10.2/§10.3)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/admission.ts`, `test/locus/admission.test.ts`,
+quatre fixtures du corpus de W0.7 épinglées sous `test/locus/fixtures/`, réexports d'`index.ts`.
+**Un fichier amont touché** : `.prettierignore`, déjà justifié, qui gagne le répertoire de fixtures.
+
+**Tests exécutés.** `bun test test/locus/` : 155 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.8 — « la fixture de refus de W0.7 produit le bon code d'erreur » — passe :
+la paire `mission-envelope.json` × `capability-manifest.json` rend `sandbox_unavailable`, avec
+`required_level: "S3"` et `offered_levels: ["S1","S2"]` en détails structurés.
+
+Vérifié par mutation. Neutraliser le contrôle de sandbox : le test de sortie rougit, ainsi que le
+test croisé. Laisser la politique locale élargir : le test de §10.3 rougit.
+
+**Décisions prises.** Quatre.
+
+_Les fixtures du corpus sont épinglées, pas réécrites._ Même mécanisme et même raison qu'en W2.5 :
+ce sont les cas que `locusolus` a écrits pour définir ce qu'admettre veut dire. En produire une
+seconde version ici la ferait diverger le jour où l'originale changerait — et un test d'admission
+qui teste sa propre idée de l'admission ne teste rien. Un test vérifie en plus que la fixture porte
+toujours son marqueur `expect: "refused"` et son `pairs_with` : sans lui, le test de sortie
+passerait sur une fixture renommée ou remplacée.
+
+_L'ordre des contrôles est celui du coût de l'erreur, pas celui du texte._ Le protocole d'abord —
+ce qui rend le document ininterprétable ; puis la sécurité — sandbox, réseau, confidentialité ;
+puis ce qui n'engage que le succès — ressources, budget, délai. Un worker qui refuserait d'abord
+sur les ressources dirait « pas assez de CPU » d'une mission qu'il n'avait de toute façon pas le
+droit d'exécuter.
+
+_Le non-assouplissement de §10.3 est rendu impossible, pas vérifié._ `clampPolicy` intersecte la
+politique locale avec ce que le manifeste offre. Vérifier après coup qu'une politique n'élargit
+rien suppose que quelqu'un pense à vérifier ; l'intersection le garantit par construction. Le test
+le montre sur le cas gênant : une politique qui prétend autoriser `restricted` ne l'autorise pas,
+**et** le refus reste `confidentiality_unsupported` plutôt que `local_policy_denied`, parce que
+c'est le manifeste qui refuse — l'inverse laisserait croire qu'assouplir la politique suffirait.
+
+_Les champs facultatifs sont lus défensivement._ Le schéma est ouvert (docs/06) : une mission `1.0`
+peut ne pas porter ce que ce code sait lire, une `1.1` peut porter ce qu'il ignore. Supposer la
+présence ferait refuser une mission parfaitement valide.
+
+**Écart avec la spec.** Deux notes.
+
+_Quatre des quatorze codes ne sont pas encore produits._ `invalid_signature`, `model_unavailable`,
+`tool_forbidden` et `data_locality_violation` sont déclarés — ils sont le contrat — mais aucun
+chemin ne les lève : la vérification de signature appartient à la connexion, les modèles et outils
+à la couche d'adaptation de W2.11, la localité des données à une politique que §21.9 n'a pas encore
+donnée à ce worker. Les déclarer sans les produire est volontaire : la liste est le contrat de
+§10.2, et l'amputer la rendrait fausse. Écrit ici pour que leur absence soit un manque connu et non
+une découverte.
+
+_Une erreur de ma part dans le test, corrigée._ Le cas « mode réseau inapplicable » avait choisi
+`connector-only`, que le worker VM Linux annonce bel et bien : le test vérifiait donc un refus qui
+n'avait pas lieu d'être, et c'est le code qui avait raison. `full` est le seul mode absent de ce
+manifeste.
+
+**Prochain item.** W2.9 `[R]` — `lease.ts`, `attempt.ts`, heartbeats, perte de lease (§11). Test de
+sortie : « expiration et reprise contre le harness ». Ses dépendances sont satisfaites : le harnais
+épinglé vérifie déjà la règle de §12.3 que le schéma ne savait pas exprimer — battre à intervalle
+strictement inférieur au tiers du TTL — et l'admission de W2.8 dit maintenant quelles missions
+arrivent jusqu'à une lease.

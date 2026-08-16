@@ -21,6 +21,7 @@ backend/cli/src/locus/lep/generated.ts
 backend/cli/src/locus/lep/negotiate.ts
 backend/cli/src/locus/lep/canonical.ts
 backend/cli/test/locus/harness/
+backend/cli/test/locus/fixtures/
 .astro/
 
 # recorded live-API responses, replayed verbatim by the connector conformance

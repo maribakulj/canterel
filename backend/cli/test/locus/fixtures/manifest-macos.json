@@ -1,0 +1,51 @@
+{
+  "protocol": "lep/1.0",
+  "worker_id": "canterel-macbook-01",
+  "worker_kind": "canterel",
+  "platform": {
+    "os": "macos",
+    "arch": "arm64"
+  },
+  "models": [
+    {
+      "provider": "anthropic",
+      "auth": "oauth-local",
+      "remote_inference": true
+    }
+  ],
+  "toolchains": [
+    "python-science",
+    "browser",
+    "ml-mps"
+  ],
+  "resources": {
+    "cpu_cores": 8,
+    "memory_mb": 16384,
+    "disk_free_mb": 120000
+  },
+  "accelerators": [
+    {
+      "type": "mps",
+      "count": 1
+    }
+  ],
+  "sandbox": {
+    "levels": [
+      "S1",
+      "S2"
+    ],
+    "network_modes": [
+      "deny",
+      "allowlist"
+    ]
+  },
+  "data_classes": [
+    "public",
+    "internal"
+  ],
+  "_fixture": {
+    "name": "capability-macos-canterel-oauth-local",
+    "expect": "valid",
+    "note": "Worker macOS de confiance. Annonce le niveau de sandbox REEL: Seatbelt = S1/S2, jamais S3/S4. auth oauth-local admissible seulement sur worker local de confiance (docs/08)."
+  }
+}

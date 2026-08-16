@@ -1,0 +1,52 @@
+{
+  "_fixture": {
+    "name": "capability-vm-linux-rootless",
+    "expect": "valid",
+    "pairs_with": "mission-envelope-nominal.json",
+    "note": "Worker VM Linux rootless podman + locus-execd. Passe les self-tests S3."
+  },
+  "protocol": "lep/1.0",
+  "worker_id": "canterel-vm-linux-01",
+  "worker_kind": "canterel",
+  "platform": {
+    "os": "linux",
+    "arch": "x86_64"
+  },
+  "models": [
+    {
+      "provider": "anthropic",
+      "auth": "service-credential",
+      "remote_inference": true
+    }
+  ],
+  "toolchains": [
+    "base",
+    "python-science",
+    "math-formal"
+  ],
+  "resources": {
+    "cpu_cores": 8,
+    "memory_mb": 32768,
+    "disk_free_mb": 400000
+  },
+  "accelerators": [],
+  "sandbox": {
+    "levels": [
+      "S1",
+      "S2",
+      "S3"
+    ],
+    "network_modes": [
+      "deny",
+      "allowlist",
+      "connector-only"
+    ],
+    "backend": "rootless-oci",
+    "attestation": true
+  },
+  "data_classes": [
+    "public",
+    "internal",
+    "confidential"
+  ]
+}

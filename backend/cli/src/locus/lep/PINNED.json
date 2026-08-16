@@ -36,6 +36,26 @@
       "source": "tooling/lib/findings.ts",
       "sha256_source": "fa294c0929aadfc830a1b0a6c9cf438c77543d840720208840514ba86bc7b9e9",
       "sha256_vendored": "fa294c0929aadfc830a1b0a6c9cf438c77543d840720208840514ba86bc7b9e9"
+    },
+    "backend/cli/test/locus/fixtures/mission-refused.json": {
+      "source": "schemas/examples/mission-envelope.json",
+      "sha256_source": "14474e063482869c5a2215757c4f3e4878827e7db54a4a8972f9c78f20aabf27",
+      "sha256_vendored": "14474e063482869c5a2215757c4f3e4878827e7db54a4a8972f9c78f20aabf27"
+    },
+    "backend/cli/test/locus/fixtures/manifest-macos.json": {
+      "source": "schemas/examples/capability-manifest.json",
+      "sha256_source": "4835ef20b1561a03cd37445b55d1c172dda8e58c36ef27c0241ede025c5efbbb",
+      "sha256_vendored": "4835ef20b1561a03cd37445b55d1c172dda8e58c36ef27c0241ede025c5efbbb"
+    },
+    "backend/cli/test/locus/fixtures/mission-accepted.json": {
+      "source": "schemas/examples/mission-envelope-nominal.json",
+      "sha256_source": "d3b96b2c631bd7242b4846d30f02fdbe4706f0f47fa5ff62d14c036540322ba6",
+      "sha256_vendored": "d3b96b2c631bd7242b4846d30f02fdbe4706f0f47fa5ff62d14c036540322ba6"
+    },
+    "backend/cli/test/locus/fixtures/manifest-vm-linux.json": {
+      "source": "schemas/examples/capability-manifest-vm-linux.json",
+      "sha256_source": "2f95ca544e514242cd7581604cf6cfe1334933eaf4547b2b426d3f60b757204a",
+      "sha256_vendored": "2f95ca544e514242cd7581604cf6cfe1334933eaf4547b2b426d3f60b757204a"
     }
   }
 }

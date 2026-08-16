@@ -77,6 +77,20 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  REFUSAL_CODES,
+  admit,
+  clampPolicy,
+  hasBoundedBudget,
+  insufficientResources,
+  levelRank,
+  missingCapabilities,
+  type Admission,
+  type LocalPolicy,
+  type Refusal,
+  type RefusalCode,
+} from "./admission.ts"
+
+export {
   DEFAULT_DATA_CLASSES,
   TOOLCHAIN_PROBES,
   accelerators,
