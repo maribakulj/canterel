@@ -71,6 +71,14 @@ export const REWRITES: Readonly<Record<string, readonly Rewrite[]>> = {
     },
   ],
   "backend/cli/test/locus/harness/findings.ts": [],
+  // Le corpus de fixtures de W0.7. Épinglé comme le SDK, et pour la même raison : ce sont les cas
+  // que `locusolus` a écrits pour définir ce qu'admettre veut dire. Les réécrire ici en produirait
+  // une seconde version, qui divergerait le jour où l'originale changerait — et un test d'admission
+  // qui teste sa propre idée de l'admission ne teste rien.
+  "backend/cli/test/locus/fixtures/mission-refused.json": [],
+  "backend/cli/test/locus/fixtures/manifest-macos.json": [],
+  "backend/cli/test/locus/fixtures/mission-accepted.json": [],
+  "backend/cli/test/locus/fixtures/manifest-vm-linux.json": [],
 }
 
 /**

@@ -1,0 +1,42 @@
+{
+  "protocol": "lep/1.0",
+  "task_id": "task-example",
+  "attempt_id": "attempt-example",
+  "branch_id": "branch-example",
+  "objective": {
+    "statement": "Attempt to falsify claim C-184",
+    "success_conditions": [
+      "verified counterexample or bounded exhaustion"
+    ]
+  },
+  "context_view": {
+    "id": "ctx-example",
+    "hash": "sha256:b7a4c0cecbce5b62229f9852844bc84310aed6cd7e144f0b136da542ebbe53cc"
+  },
+  "environment": {
+    "environment_id": "math-formal-v1"
+  },
+  "sandbox": {
+    "minimum_level": "S3",
+    "network": "deny"
+  },
+  "resources": {
+    "cpu": 4,
+    "memory_mb": 8192,
+    "disk_mb": 12000,
+    "wall_time_seconds": 3600
+  },
+  "budget": {
+    "max_model_calls": 30,
+    "max_input_tokens": 300000,
+    "max_output_tokens": 80000
+  },
+  "output_contract": "epistemic-commit/1",
+  "_fixture": {
+    "name": "admission-refused-sandbox-level",
+    "expect": "refused",
+    "reason": "sandbox.minimum_level S3 > capability sandbox.levels [S1,S2]",
+    "pairs_with": "capability-manifest.json",
+    "note": "Paire de REFUS, pas un cas nominal. Le worker macOS de reference n'offre que S1/S2 (Seatbelt); une mission S3 exige locus-execd + VM/container. Voir capability-manifest-vm-linux.json / mission-envelope-nominal.json pour le cas accepte."
+  }
+}
