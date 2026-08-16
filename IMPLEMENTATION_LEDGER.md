@@ -834,3 +834,70 @@ sortie : « perte de connexion : rien perdu, rien dupliqué ». Ses dépendances
 harnais épinglé vérifie déjà la monotonie des séquences et la déduplication par clé d'idempotence,
 et §8.3 énumère ce que le worker doit persister — séquence serveur acquittée, séquence worker
 émise, messages non acquittés, leases actifs, uploads incomplets.
+
+## 2026-08-16 — W2.12 — event bridge, spool et coalescence (§18)
+
+**Périmètre.** Entièrement dans le périmètre Locus : `src/locus/{event-spool,event-bridge}.ts`,
+`test/locus/event-spool.test.ts`, réexports. **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 230 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.12 — « perte de connexion : rien perdu, rien dupliqué » — passe, et la
+reprise traverse le harnais épinglé sans constat. Vérifié par mutation : purger le spool au
+redémarrage fait rougir quatre tests dont celui de sortie ; rendre tout coalescible fait rougir la
+règle de §18.3.
+
+**Décisions prises.** Cinq.
+
+_Le nettoyage n'a lieu qu'à l'acquittement, et nulle part ailleurs._ §18.4 le dit littéralement. Un
+spool qui purge sur l'âge, la place ou un redémarrage perd exactement ce qu'il existe pour ne pas
+perdre, et le perd au moment où ça compte — quand la connexion vient de tomber. Trois redémarrages
+successifs sans acquittement laissent le spool intact.
+
+_L'écriture disque précède l'ajout mémoire._ Dans l'autre ordre, un plantage entre les deux
+laisserait un événement que le processus croit avoir spoolé et que le disque ignore : la perte
+silencieuse que §18.4 interdit.
+
+_La séquence est attribuée par le spool, jamais par l'appelant._ La lui laisser rendrait possibles
+deux événements de même rang, ce que le harnais de conformance refuse à juste titre. Un test passe
+une séquence forcée et vérifie qu'elle est ignorée.
+
+_À saturation, le spool refuse ; il ne jette pas._ « Backpressure plutôt que de perdre les
+événements canoniques » : refuser est bruyant, perdre est silencieux. Acquitter libère la place,
+puisque c'est le seul mécanisme de nettoyage.
+
+_La coalescence est écrite en deny-by-default._ §18.3 donne deux listes ; c'est la seconde qui
+compte. Un type est coalescible seulement s'il figure dans la courte liste des coalescibles.
+Prendre le problème par l'autre bout — « tout sauf ceci » — ferait qu'un type ajouté demain serait
+fusionnable par défaut, et un coût ou une alerte perdus dans une fusion sont perdus pour de bon. Un
+test vérifie que les deux listes ne se recoupent pas : c'est la seule façon de s'apercevoir qu'un
+type a été rangé du mauvais côté.
+
+**Écart avec la spec.** Trois notes.
+
+_§18.2 cite deux champs que `lep/1.0` ne définit pas._ `message_id` et `correlation_id` n'existent
+pas sur `Event` dans le schéma épinglé, qui porte `idempotency_key` comme identité de message et
+aucun champ de corrélation. Les ajouter côté worker serait **dupliquer le contrat cross-repo**, ce
+que `docs/locus/CLAUDE.md` interdit : un champ inventé ici ne serait ni validé ni reconnu par un
+pair conforme. La vérification porte donc sur ce que le schéma définit réellement, et un test
+garantit qu'aucun de ces deux noms n'est fabriqué dans le spool. **C'est un écart à porter côté
+`locusolus`** — soit le schéma les ajoute en `1.1`, soit §18.2 s'aligne sur le schéma ; le worker
+ne peut pas trancher seul.
+
+_Une coalescence ne franchit jamais un événement non coalescible._ Sans cette coupure, deux
+`progress` encadrant un `tool.completed` fusionneraient et feraient passer l'appel d'outil **après**
+une progression qui le précédait. L'ordre est ce que le harnais vérifie, et une coalescence qui
+réordonne est pire qu'une absence de coalescence. Deux attempts ne fusionnent pas non plus : ils
+racontent deux histoires, et les fondre en ferait une troisième qui n'a eu lieu nulle part.
+
+_Le scénario du test de sortie a été refait._ Ma première version rejouait la totalité du flux
+**après** l'événement terminal, et le harnais l'a refusée à raison — c'est un flux que personne
+n'émet. Le cas réaliste n'est pas « les événements se perdent » mais « l'acquittement se perd » :
+le serveur a reçu les trois premiers, son ack n'est jamais arrivé, le worker retransmet un préfixe
+déjà vu. C'est là que « rien dupliqué » se joue vraiment, et c'est ce que le test exerce désormais.
+
+**Prochain item.** W2.13 `[R]` — `usage-meter.ts`, budget local, dépassement (§17). Test de sortie :
+« arrêt propre au dépassement ». Ses dépendances sont satisfaites : l'admission de W2.8 refuse déjà
+un budget non borné (`budget_unenforceable`), et §11.4 a établi en W2.9 ce qu'« arrêter les appels
+coûteux » veut dire — la liste existe, il lui manquait un module qui sache compter.

@@ -77,6 +77,25 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  DEFAULT_MAX_ENTRIES,
+  EventSpool,
+  SPOOL_FILE,
+  type AppendResult,
+  type SpoolEntry,
+  type SpoolOptions,
+} from "./event-spool.ts"
+
+export {
+  COALESCIBLE_TYPES,
+  NEVER_COALESCIBLE_TYPES,
+  REQUIRED_EVENT_FIELDS,
+  coalesce,
+  coalescencePolicyFindings,
+  eventFieldFindings,
+  isCoalescible,
+} from "./event-bridge.ts"
+
+export {
   UNTOUCHABLE_UPSTREAM_DIRS,
   mapMission,
   type MapInput,
