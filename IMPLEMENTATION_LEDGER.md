@@ -380,3 +380,89 @@ W0.8, test de sortie « contract tests contre le harness ». Ses dépendances so
 SDK LEP et le harnais de conformance sont mergés côté `locusolus` (W0.8, W0.9), et l'identité que
 §8.2 demande de signer dans le `worker.hello` existe depuis cet item. §8.1 impose d'épingler le SDK
 **par commit Git** pendant la V1, pas par version npm publiée.
+
+## 2026-08-16 — W2.5 — protocole, SDK épinglé et transport
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/{protocol,schema-registry,connection}.ts`,
+la copie épinglée `src/locus/lep/{generated,negotiate,vendor}.ts` + `PINNED.json`, le harnais copié
+`test/locus/harness/*`, et `test/locus/{contract,pin,connection}.test.ts`. **Un fichier amont
+touché** : `.prettierignore`, déjà justifié depuis W0.1, dont la raison est étendue.
+
+**Tests exécutés.** `bun test test/locus/` : 102 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme. Suite complète : 1885 pass / 79 fail, tous du jeu préexistant lié à
+l'environnement, aucun ne mentionne Locus.
+
+La CI a rougi une fois sur `Migration (windows-latest)`, et **ce n'était pas cet item**. Quatre
+`ENOENT` sur des répertoires temporaires disparaissant en cours de test, dans
+`test/global/data-dir.test.ts` — un fichier amont que ce diff ne touche pas, dans un job qui
+n'exécute que ce fichier, dont le preload vise un préfixe temporaire différent. Aucun rerun n'étant
+possible avec les permissions disponibles, un commit vide a produit un second échantillon : 15/15
+vert sur le même contenu. Premier flake observé sur ce job en quatorze exécutions enregistrées ;
+écrit ici pour que le prochain qui le rencontre n'ait pas à refaire l'enquête.
+
+Le test de sortie de W2.5 — « contract tests contre le harnais » — passe : un worker Canterel bâti
+sur la couche protocole traverse `runConformance` sans constat. Et il ne vaut que parce que le test
+voisin rougit : le même worker qui accepte une mission S2 en n'offrant que S1 se fait prendre par
+la règle `admission`. Un harnais qui ne trouve jamais rien valide n'importe quoi.
+
+**Décisions prises.** Cinq.
+
+_Le SDK est copié et épinglé, pas déclaré en dépendance._ §8.1 impose d'épingler par commit Git
+plutôt que par version npm publiée. `@locus/lep` et `@locus/testing` vivent dans des
+sous-répertoires d'un monorepo et sont `private` : ni npm ni bun ne savent tirer un sous-répertoire
+d'un dépôt Git, et publier contredirait §8.1. Restait à toucher `package.json` et `bun.lock`, deux
+fichiers amont, donc un conflit à chaque synchronisation pour une dépendance dont seul Locus a
+besoin. La copie épinglée ne coûte rien à l'amont. Ce n'est **pas** une duplication du contrat : le
+contrat, ce sont les schémas JSON de `locusolus/schemas/` ; ceci en est une lecture générée,
+épinglée, vérifiée par empreinte, jamais retouchée.
+
+_La réécriture d'imports est déclarée et rejouable._ Deux fichiers copiés référencent `@locus/lep`,
+qui ne se résout pas ici. Plutôt que de corriger à la main — ce qui rendrait toute vérification
+circulaire — la règle vit dans `vendor.ts` avec sa raison, et le test la rejoue. Une copie retouchée
+puis réépinglée serait cohérente avec elle-même ; c'est exactement ce que la double vérification
+empêche : empreinte locale hors ligne d'un côté, reproduction depuis la source de l'autre.
+
+_Un mineur supérieur s'accepte, un majeur différent se refuse._ §8.2 dit « refuse une version
+inconnue plutôt que de poursuivre en compatibilité implicite », et `docs/06` fait du mineur un ajout
+de champs optionnels compatibles. Un worker `1.0` doit donc accepter un serveur `1.1` et ignorer ce
+qu'il ne connaît pas, tout en refusant `2.0`. Refuser trop large fige le protocole ; accepter trop
+large est la compatibilité implicite interdite. Le refus porte la liste de ce qui était offert —
+savoir que le serveur n'annonçait que `2.0` distingue une mise à jour à faire d'une mauvaise
+adresse.
+
+_La signature du `worker.hello` couvre les features et la séquence, pas seulement l'identité._
+Signer la seule identité laisserait un intermédiaire retirer une feature du message sans invalider
+la signature : le worker tiendrait un accord qu'il n'a pas passé. Le test le vérifie en altérant
+chacun des deux champs.
+
+_La gigue de reconnexion tire vers le bas seulement._ §6 donne `max_ms` ; giguer vers le haut le
+dépasserait, c'est-à-dire ignorer la seule limite que l'opérateur a écrite. Sans gigue du tout, un
+parc entier revient en même temps et remet le serveur par terre au moment où il se relève — le test
+le dit explicitement plutôt que de le supposer connu.
+
+**Écart avec la spec.** Trois, tous écrits plutôt que laissés à découvrir.
+
+_`schema-registry.ts` ne revalide pas les documents contre les schémas JSON._ Cela demanderait
+`ajv`, absent de ce dépôt, donc une dépendance ajoutée à `package.json` et payée à chaque
+synchronisation pour un besoin propre à Locus. Les schémas sont déjà validés là où ils sont le
+contrat : la CI de `locusolus` valide son corpus de fixtures à chaque commit (W0.7). Ici les types
+du SDK portent la forme, et ce que l'admission de W2.8 devra refuser se contrôle champ par champ —
+un schéma dirait « objet valide » d'une mission qu'on ne peut pas tenir.
+
+_La vérification contre la source amont sera toujours dégradée en CI._ `maribakulj/locusolus` est
+privé et la CI de ce fork n'a pas de quoi le lire. Elle le **dit** au lieu de passer en silence,
+comme le merge à blanc de W2.1. Ce qui tourne partout est l'empreinte locale, et c'est le contrôle
+qui compte tous les jours : personne n'a retouché la copie à la main.
+
+_`canterel worker enroll` n'est toujours pas exposé._ W2.4 disait qu'il attendait le transport ;
+le transport existe maintenant. Ce qui manque désormais est la dérivation du répertoire d'identité
+depuis la configuration, et la place naturelle de la surface CLI de §5.2 est W2.7
+(`registration.ts`, handshake complet), qui en aura besoin de toute façon. Le déplacer est une
+décision, pas un oubli.
+
+**Prochain item.** W2.6 `[R]` — `capability-manifest.ts` et `capability-watch.ts`, détection réelle
+des toolchains, modèles, accélérateurs **et du niveau de sandbox effectif**, test de sortie « sur
+macOS : annonce `["S1","S2"]` et `mps`, jamais plus ». Ses dépendances sont satisfaites. Attention
+signalée par `docs/locus/CLAUDE.md` : `src/sandbox/sandbox.ts` en amont est du containment en
+écriture, allow-by-default, sans cgroups ni quota — c'est S1/S2 au sens de `docs/03`, jamais S3/S4,
+et le manifeste doit annoncer le niveau réel et rien de plus.

@@ -15,6 +15,11 @@ backend/cli/skills/
 # Locus Solus handoff corpus, placed byte-identical and verified against its checksums;
 # reflowing a normative spec is a silent mutation of it
 docs/locus/
+# SDK LEP épinglé et harnais de conformance, copiés depuis locusolus à un commit et vérifiés
+# contre leurs empreintes (SPEC_V1 §8.1) ; les reformater casserait l'intégrité de la copie
+backend/cli/src/locus/lep/generated.ts
+backend/cli/src/locus/lep/negotiate.ts
+backend/cli/test/locus/harness/
 .astro/
 
 # recorded live-API responses, replayed verbatim by the connector conformance

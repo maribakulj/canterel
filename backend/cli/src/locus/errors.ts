@@ -64,6 +64,35 @@ export const LocusEnrollmentRefused = NamedError.create(
   }),
 )
 
+/**
+ * Le protocole annoncé par le serveur n'est pas utilisable — §8.2.
+ *
+ * Porte ce qui était offert, parce que « version refusée » sans la liste ne se diagnostique pas :
+ * savoir que le serveur n'annonçait que `2.0` est ce qui distingue une mise à jour à faire d'une
+ * mauvaise adresse.
+ */
+export const LocusProtocolRefused = NamedError.create(
+  "LocusProtocolRefused",
+  z.object({
+    offered: z.array(z.string()),
+    reason: z.string(),
+  }),
+)
+
+/**
+ * La copie locale du SDK LEP ne correspond plus à son épinglage — §8.1.
+ *
+ * Parler LEP avec un SDK retouché produirait des messages qu'un serveur conforme refuserait, en se
+ * plaignant du contenu plutôt que de la cause.
+ */
+export const LocusPinBroken = NamedError.create(
+  "LocusPinBroken",
+  z.object({
+    files: z.array(z.string()),
+    commit: z.string(),
+  }),
+)
+
 /** Le serveur n'est pas acceptable : schéma, origine, TLS (§7.3). */
 export const LocusServerRejected = NamedError.create(
   "LocusServerRejected",

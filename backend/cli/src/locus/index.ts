@@ -50,6 +50,41 @@ export {
 } from "./identity.ts"
 
 export {
+  PROTOCOL_MAJOR,
+  PROTOCOL_VERSION,
+  SUPPORTED_FEATURES,
+  acceptVersion,
+  buildHello,
+  completeHandshake,
+  granted,
+  helloSignedBody,
+  knownFeatures,
+  majorOf,
+  minorOf,
+  type Handshake,
+  type WorkerHello,
+} from "./protocol.ts"
+
+export {
+  describePin,
+  documents,
+  isDocument,
+  readPin,
+  requirePin,
+  verifyAgainstSource,
+  verifyPin,
+  type Pin,
+} from "./schema-registry.ts"
+
+export {
+  DEFAULT_TIMEOUT_MS,
+  attemptsToCeiling,
+  httpEnrollmentTransport,
+  reconnectDelay,
+  type FetchLike,
+} from "./connection.ts"
+
+export {
   assertEndpointAcceptable,
   enroll,
   forgetCredential,
