@@ -133,6 +133,29 @@ export {
 } from "./artifact-client.ts"
 
 export {
+  CHECKPOINT_FILE,
+  QUARANTINE_DIR,
+  ResumeStore,
+  type Checkpoint,
+  type LoadResult,
+  type UnserializableDependency,
+} from "./resume-store.ts"
+
+export {
+  leaseAfterRestart,
+  offlineVerdict,
+  partialSubmission,
+  restartDiagnostics,
+  restorabilityFindings,
+  resumeDecision,
+  type LeaseStanding,
+  type OfflineVerdict,
+  type PartialSubmission,
+  type RecoveryInput,
+  type ResumeDecision,
+} from "./recovery.ts"
+
+export {
   LOCUS_ONLY_STATUSES,
   PROPOSAL_STATUSES,
   addFindings,
