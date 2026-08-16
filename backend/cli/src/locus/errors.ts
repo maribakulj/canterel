@@ -93,6 +93,21 @@ export const LocusPinBroken = NamedError.create(
   }),
 )
 
+/**
+ * La vue de contexte n'est pas utilisable — §12.3.
+ *
+ * Une vue dont l'empreinte ne correspond pas n'est pas un contexte appauvri : c'est un contexte
+ * dont on ne sait pas ce qu'il est. Filtrer son contenu reviendrait à appliquer une politique
+ * d'isolation à un document qu'on n'a pas authentifié.
+ */
+export const LocusContextRefused = NamedError.create(
+  "LocusContextRefused",
+  z.object({
+    view_id: z.string(),
+    reason: z.string(),
+  }),
+)
+
 /** Le serveur n'est pas acceptable : schéma, origine, TLS (§7.3). */
 export const LocusServerRejected = NamedError.create(
   "LocusServerRejected",
