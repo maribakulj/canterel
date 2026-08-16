@@ -392,6 +392,14 @@ touché** : `.prettierignore`, déjà justifié depuis W0.1, dont la raison est 
 `prettier --check` : conforme. Suite complète : 1885 pass / 79 fail, tous du jeu préexistant lié à
 l'environnement, aucun ne mentionne Locus.
 
+La CI a rougi une fois sur `Migration (windows-latest)`, et **ce n'était pas cet item**. Quatre
+`ENOENT` sur des répertoires temporaires disparaissant en cours de test, dans
+`test/global/data-dir.test.ts` — un fichier amont que ce diff ne touche pas, dans un job qui
+n'exécute que ce fichier, dont le preload vise un préfixe temporaire différent. Aucun rerun n'étant
+possible avec les permissions disponibles, un commit vide a produit un second échantillon : 15/15
+vert sur le même contenu. Premier flake observé sur ce job en quatorze exécutions enregistrées ;
+écrit ici pour que le prochain qui le rencontre n'ait pas à refaire l'enquête.
+
 Le test de sortie de W2.5 — « contract tests contre le harnais » — passe : un worker Canterel bâti
 sur la couche protocole traverse `runConformance` sans constat. Et il ne vaut que parce que le test
 voisin rougit : le même worker qui accepte une mission S2 en n'offrant que S1 se fait prendre par
