@@ -39,7 +39,7 @@ export const JUSTIFIED_UPSTREAM_EDITS: readonly { path: string; reason: string }
   {
     path: ".prettierignore",
     reason:
-      "Exclut docs/locus/, placé byte-identique et vérifié contre ses checksums ; reformater une spec normative la mute en silence.",
+      "Exclut docs/locus/ et la copie épinglée du SDK LEP, tous vérifiés contre leurs empreintes ; reformater une spec normative la mute en silence, et reformater une copie épinglée en casse l'intégrité.",
   },
   {
     path: "backend/cli/src/index.ts",
