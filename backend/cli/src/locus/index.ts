@@ -77,6 +77,30 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  DEFAULT_DATA_CLASSES,
+  TOOLCHAIN_PROBES,
+  accelerators,
+  buildManifest,
+  hostProbe,
+  manifestHash,
+  networkModes,
+  sandboxBackend,
+  sandboxLevels,
+  toolchains,
+  type HostProbe,
+  type ManifestInput,
+} from "./capability-manifest.ts"
+
+export {
+  describeChange,
+  isRegression,
+  poll,
+  startWatch,
+  type CapabilityChange,
+  type WatchState,
+} from "./capability-watch.ts"
+
+export {
   DEFAULT_TIMEOUT_MS,
   attemptsToCeiling,
   httpEnrollmentTransport,

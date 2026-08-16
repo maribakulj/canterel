@@ -19,6 +19,7 @@ docs/locus/
 # contre leurs empreintes (SPEC_V1 §8.1) ; les reformater casserait l'intégrité de la copie
 backend/cli/src/locus/lep/generated.ts
 backend/cli/src/locus/lep/negotiate.ts
+backend/cli/src/locus/lep/canonical.ts
 backend/cli/test/locus/harness/
 .astro/
 

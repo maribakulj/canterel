@@ -466,3 +466,59 @@ macOS : annonce `["S1","S2"]` et `mps`, jamais plus ». Ses dépendances sont sa
 signalée par `docs/locus/CLAUDE.md` : `src/sandbox/sandbox.ts` en amont est du containment en
 écriture, allow-by-default, sans cgroups ni quota — c'est S1/S2 au sens de `docs/03`, jamais S3/S4,
 et le manifeste doit annoncer le niveau réel et rien de plus.
+
+## 2026-08-16 — W2.6 — manifeste de capacités et surveillance
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/{capability-manifest,capability-watch}.ts`,
+`test/locus/capability.test.ts`, et un déplacement de la copie épinglée — `canonical.ts` passe de
+`test/locus/harness/` à `src/locus/lep/`, parce que le hash du manifeste en a besoin côté `src`.
+**Un fichier amont touché** : `.prettierignore`, déjà justifié, qui gagne le nouveau chemin épinglé.
+
+**Tests exécutés.** `bun test test/locus/` : 123 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.6 — « sur macOS : annonce `["S1","S2"]` et `mps`, jamais plus » — passe, et
+il tourne **en CI Linux**, ce qui est tout l'intérêt de la sonde injectée : un test qui n'aurait pu
+s'exécuter que sur un Mac ne se serait jamais exécuté.
+
+Vérifié par mutation dans les deux sens du mensonge. Faire annoncer `S3` : quatre tests rouges dont
+le test de sortie. Faire annoncer `cuda` sur un Mac : deux rouges, dont le test de sortie. La faute
+que ce module existe pour empêcher est donc réellement attrapée.
+
+**Décisions prises.** Quatre.
+
+_La détection passe par une sonde injectée._ Deux raisons, et la seconde est la vraie : ça rend le
+module testable, et surtout ça rend **macOS testable depuis Linux**. Le reste du module est une
+fonction de données vers données ; seule `hostProbe` touche à l'extérieur.
+
+_S2 exige un backend qui **démarre**, pas un binaire présent._ Sur Ubuntu 24.04 la politique
+AppArmor de l'hôte bloque les namespaces utilisateur non privilégiés et `bwrap` échoue à
+l'exécution — le workflow amont le contourne explicitement pour ses propres tests. Annoncer S2 sur
+la seule présence du binaire promettrait une isolation que la machine refuse.
+
+_`allowlist` n'est jamais annoncé, et `deny` seulement avec isolation._ Ni Seatbelt tel que l'amont
+l'écrit, ni bubblewrap ne filtrent par hôte : couper le réseau, oui ; le filtrer, non. Sans backend,
+le worker n'annonce que `full` — une mauvaise nouvelle honnête plutôt qu'un `deny` qui ne dénierait
+rien. Une restriction qu'on croit appliquée est pire que pas de restriction du tout.
+
+_Les classes de données sont une politique, pas une détection._ Le défaut s'arrête à `internal` ;
+`confidential` et `restricted` demandent qu'on les écrive. Un worker qui les annonce par défaut se
+verra confier des données que personne n'a décidé de lui confier.
+
+**Écart avec la spec.** Deux notes.
+
+_Le hash du manifeste passe par la canonicalisation épinglée._ Il fallait donc `canonical.ts` sous
+`src/`, alors que W2.5 l'avait copié sous `test/` avec le harnais. Plutôt que d'en garder deux
+copies — ou pire, d'écrire un second canonicaliseur — la règle de réécriture pointe les deux
+consommateurs vers une copie unique. Une seule source, toujours épinglée, toujours vérifiée.
+
+_Le garde-fou d'intégrité a servi le jour même où il a été écrit._ En déplaçant `canonical.ts`,
+`prettier --write` l'a reformaté avant que `.prettierignore` ne le couvre, et le test d'empreinte
+de W2.5 est passé au rouge immédiatement. C'est exactement le cas qu'il existe pour attraper, et il
+l'a attrapé sur son auteur.
+
+**Prochain item.** W2.7 `[R]` — `registration.ts`, handshake complet, test de sortie « conformance
+§8.2 ». Ses dépendances sont satisfaites : identité (W2.4), `worker.hello` signé et négociation
+(W2.5), manifeste et son hash (W2.6). C'est aussi là qu'atterrit la surface CLI de §5.2 —
+`canterel worker enroll` — reportée depuis W2.4 puis W2.5, avec la dérivation du répertoire
+d'identité depuis la configuration qui lui manque encore.

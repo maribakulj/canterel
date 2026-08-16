@@ -35,6 +35,7 @@ export type Rewrite = {
 export const REWRITES: Readonly<Record<string, readonly Rewrite[]>> = {
   "backend/cli/src/locus/lep/generated.ts": [],
   "backend/cli/src/locus/lep/negotiate.ts": [],
+  "backend/cli/src/locus/lep/canonical.ts": [],
   "backend/cli/test/locus/harness/worker.ts": [
     {
       from: '"@locus/lep"',
@@ -54,13 +55,19 @@ export const REWRITES: Readonly<Record<string, readonly Rewrite[]>> = {
       reason:
         "`tooling/lib` est l'outillage de dépôt de locusolus, hors du SDK ; seul le type `Finding` sert, copié à côté.",
     },
+    {
+      from: '"./canonical.ts"',
+      to: '"../../../src/locus/lep/canonical.ts"',
+      reason:
+        "Le canonicaliseur sert aussi au hash du CapabilityManifest (W2.6) : une seule copie, sous src/, plutôt qu'une par consommateur.",
+    },
   ],
-  "backend/cli/test/locus/harness/canonical.ts": [],
   "backend/cli/test/locus/harness/index.ts": [
     {
-      from: '"./harness.ts"',
-      to: '"./harness.ts"',
-      reason: "Aucun changement — l'entrée est déclarée pour que la liste des fichiers soit complète.",
+      from: '"./canonical.ts"',
+      to: '"../../../src/locus/lep/canonical.ts"',
+      reason:
+        "Le canonicaliseur sert aussi au hash du CapabilityManifest (W2.6) : une seule copie, sous src/, plutôt qu'une par consommateur.",
     },
   ],
   "backend/cli/test/locus/harness/findings.ts": [],
