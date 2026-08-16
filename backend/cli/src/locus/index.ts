@@ -27,7 +27,41 @@ export {
   type LayerName,
 } from "./config.ts"
 
-export { LocusConfigInvalid, LocusNotConfigured } from "./errors.ts"
+export {
+  LocusConfigInvalid,
+  LocusEnrollmentRefused,
+  LocusIdentityUnusable,
+  LocusNotConfigured,
+  LocusServerRejected,
+} from "./errors.ts"
+
+export {
+  createIdentity,
+  describeIdentity,
+  isRevoked,
+  loadIdentity,
+  loadOrCreateIdentity,
+  revokeIdentity,
+  runtimeFingerprint,
+  sign,
+  verify,
+  type Identity,
+  type PublicIdentity,
+} from "./identity.ts"
+
+export {
+  assertEndpointAcceptable,
+  enroll,
+  forgetCredential,
+  isActionAllowed,
+  loadCredential,
+  REVOKED_ALLOWED_ACTIONS,
+  sameOrigin,
+  saveCredential,
+  type Credential,
+  type EnrollmentRequest,
+  type EnrollmentTransport,
+} from "./auth.ts"
 
 import { describeConfig, layerFromEnv, resolveConfig, type Layer, type LocusConfig } from "./config.ts"
 
