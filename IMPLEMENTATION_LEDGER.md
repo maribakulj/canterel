@@ -1121,3 +1121,75 @@ le scanner d'artefacts de W2.14 : un contrôle qui ne tourne pas ressemble à un
 satisfaites : le spool de W2.12 sait déjà survivre à un redémarrage sans rien perdre ni dupliquer,
 et §24.5 — « une incohérence déclenche quarantaine et diagnostic, jamais réparation silencieuse » —
 a déjà servi deux fois, en W2.14 et ici.
+
+## 2026-08-16 — W2.16 — redémarrage, offline et résultats partiels (§24)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/resume-store.ts`, `src/locus/recovery.ts`,
+`test/locus/recovery.test.ts`, réexports dans `src/locus/index.ts`. **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 316 pass, 0 fail (18 fichiers). `bun run typecheck` :
+7/7. `prettier --check` : conforme.
+
+Le test de sortie de W2.16 — « redémarrage du worker en cours de mission » — passe : après
+redémarrage, les événements non acquittés sont là, l'attempt est reconstruit depuis son
+checkpoint, et **rien ne reprend**. Vérifié par mutation, trois fois : traiter un lease relu comme
+valide fait rougir le test de sortie ; laisser passer une empreinte incohérente fait rougir §24.5 ;
+autoriser l'offline par défaut fait rougir §24.3.
+
+**Décisions prises.** Quatre.
+
+_Un lease relu sur disque vaut `unconfirmed`, et `unconfirmed` n'autorise rien._ C'est la deuxième
+obligation de §24.1 — « ne pas supposer les leases valides » — et c'est celle qui coûte cher quand
+elle manque. La tentation est évidente : le lease est sur le disque, son échéance est dans le
+futur, l'horloge locale est d'accord. Sauf que pendant l'arrêt, le serveur a très bien pu constater
+les heartbeats manquants, déclarer l'attempt orphelin et le réattribuer. Reprendre sur cette foi,
+c'est deux workers qui exécutent la même mission en croyant chacun être seul. `unconfirmed` n'est
+donc pas un état d'erreur : c'est l'état **normal** après un redémarrage, et le nommer empêche de
+le confondre avec `valid`. Seul `expired` se lit localement — une échéance dépassée l'est pour tout
+le monde.
+
+_L'ordre des questions au démarrage est l'ordre du coût d'une erreur._ Ce qui rend la reprise
+impossible d'abord, ce qui la rend inutile ensuite, l'autorisation en dernier. Demander
+l'autorisation avant de savoir si l'état est restaurable ferait autoriser une reprise qui ne peut
+pas avoir lieu.
+
+_Une dépendance non sérialisable et non reconstructible rend la session irrécupérable._ §24.2 range
+« dépendances non sérialisables signalées » en septième position, et c'est le champ qui décide si
+les six autres valent quelque chose. Un checkpoint qui laisse tomber en silence un sous-processus
+vivant ou un contexte GPU a exactement l'air d'un checkpoint complet ; la reprise repart alors d'un
+état qui n'a jamais existé, et elle repart avec confiance. Une dépendance **reconstructible**, en
+revanche, n'est pas bloquante : c'est du travail pour la reprise.
+
+_Un checkpoint corrompu est déplacé, jamais réparé ni supprimé._ §24.5 : « une incohérence
+déclenche quarantaine et diagnostic, jamais réparation silencieuse ». L'empreinte porte sur le JSON
+canonique — deux exécutions conformes n'ordonnent pas forcément les clés pareil — et l'écriture
+passe par un fichier temporaire puis un renommage, la seule opération que le système de fichiers
+rende indivisible. Un checkpoint à moitié écrit est précisément ce qu'une coupure de courant
+produit, et c'est aussi ce qu'un lecteur confiant traiterait comme un état valide.
+
+**Écart avec la spec.** Deux notes.
+
+_§24.3 exige une permission que `lep/1.0` ne porte pas._ « Le worker peut poursuivre hors ligne
+uniquement si la MissionEnvelope l'autorise » — or `MissionEnvelope` n'a aucun champ de permission
+offline. Comme pour `message_id` en §18.2, le champ n'est **pas inventé côté worker** : ce serait
+dupliquer le contrat cross-repo, et un champ inventé ici ne serait ni validé ni reconnu par un pair
+conforme. La lecture locale est **deny-by-default** — une mission qui n'autorise rien n'autorise
+pas — et la permission entre par un paramètre distinct en attendant que `locusolus` tranche : soit
+le schéma ajoute le champ en 1.1, soit §24.3 s'aligne. Deuxième arbitrage cross-repo ouvert, après
+celui de §18.2.
+
+_Le plafond offline ne dépasse jamais le lease._ §24.3 dit « jusqu'au plafond de lease/**offline
+budget** » ; le plus contraignant des deux gagne. Un budget offline plus long que le lease donnerait
+le droit de travailler après la fin du droit de travailler.
+
+**Une règle, trois endroits.** `partial: true` de §24.4 rejoint le `lateMarker` de §11.4 (W2.9) et
+le marqueur tardif du commit de §21.6 (W2.15) : ce qui est diminué le dit. Un commit partiel qui ne
+se déclare pas partiel est lu comme un commit complet dont les résultats manquants n'existent pas ;
+`lost` nomme les artefacts déclarés que la vérification n'a pas atteints, plutôt que de les laisser
+déduire d'une absence.
+
+**Prochain item.** W2.17 `[R]` — `human-input.ts` (§22). Test de sortie : « suspension sans
+processus coûteux maintenu ». Ses dépendances sont satisfaites : `waiting_human` est déjà un état
+de la table de transitions de W2.9, le checkpoint de W2.16 sait ce qu'il faut geler avant de
+suspendre, et §22.3 dit explicitement que « le worker ne garde pas un modèle ou processus actif
+pendant une longue attente sans nécessité ».
