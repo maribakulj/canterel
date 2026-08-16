@@ -522,3 +522,60 @@ l'a attrapé sur son auteur.
 (W2.5), manifeste et son hash (W2.6). C'est aussi là qu'atterrit la surface CLI de §5.2 —
 `canterel worker enroll` — reportée depuis W2.4 puis W2.5, avec la dérivation du répertoire
 d'identité depuis la configuration qui lui manque encore.
+
+## 2026-08-16 — W2.7 — enregistrement et handshake complet
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/registration.ts`,
+`test/locus/registration.test.ts`, réexports d'`index.ts`. **Un fichier hors périmètre** :
+`src/cli/cmd/worker.ts`, la couture déjà déclarée, qui gagne les sous-commandes `enroll` et
+`status` de §5.2. Aucun fichier amont modifié.
+
+**Tests exécutés.** `bun test test/locus/` : 136 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme. Le garde-fou de §28.8 reste vert alors que la couture a grossi de
+deux sous-commandes : `src/locus/**` n'entre toujours pas dans le graphe de démarrage.
+
+Le test de sortie de W2.7 — « conformance §8.2 » — passe. Exécuté aussi pour de vrai :
+`canterel worker status` rend « aucune identité : cette installation n'est pas enrôlée », et
+`canterel worker enroll --locus http://…` rend « serveur refusé — TLS obligatoire hors boucle
+locale (§7.3) » en code 1.
+
+**Décisions prises.** Trois.
+
+_L'ordre des étapes de l'enregistrement n'est pas indifférent, et il est écrit._ L'identité se
+charge avant le manifeste parce que le manifeste porte le `worker_id` ; le manifeste se hache avant
+le hello parce que le hello porte ce hash ; la version s'accepte avant que quoi que ce soit soit
+tenu pour acquis de la réponse, parce que §8.2 refuse une version inconnue plutôt que de poursuivre.
+
+_La liste des champs obligatoires de §8.2 vit dans le module, pas dans le test._ Un test qui porte
+sa propre liste finit par vérifier ce qu'il a écrit plutôt que ce que la spec demande.
+
+_`enroll` est une sous-commande séparée._ §7.2 dit « le premier enrôlement doit être explicite ».
+Le fondre dans `worker` ferait qu'un simple démarrage pourrait enrôler la machine, ce qui est
+exactement ce que « explicite » exclut. Le token reste un argument de ligne de commande et n'est
+jamais écrit.
+
+**Écart avec la spec.** Trois notes, dont deux corrections trouvées en écrivant les tests.
+
+_La signature du serveur rend trois valeurs, pas un booléen._ « Absente » et « invalide » appellent
+des décisions différentes : un déploiement local peut légitimement ne pas signer — `signed-events`
+se négocie — tandis qu'une signature présente et fausse n'est jamais un choix. Le corps signé lie
+les **deux** nonces, sans quoi une signature capturée sur un autre handshake se rejouerait ; un
+test l'établit en rejouant précisément cette capture.
+
+_`checkHelloConformance` levait au lieu de rendre un constat._ `verify` lève sur une clé publique
+illisible, et la fonction promet pourtant de rendre des constats. Elle mentait donc sur le worker
+le plus cassé, celui dont on a le plus besoin du rapport. Trouvé parce qu'un test lui a passé une
+clé vide.
+
+_Un enrôlement refusé ne laisse plus d'identité derrière lui._ La première version chargeait
+l'identité avant de valider l'endpoint : `worker enroll` vers une URL non TLS créait donc une
+identité puis refusait. Le transport valide à sa construction, il se construit maintenant en
+premier. Vérifié en exécutant la commande et en constatant qu'aucun répertoire n'est créé.
+
+**Prochain item.** W2.8 `[R]` — `admission.ts` : validation, refus structuré (§10.2), politique
+locale plus restrictive. Test de sortie : « la fixture de refus de W0.7 produit le bon code
+d'erreur ». Ses dépendances sont satisfaites — le manifeste de W2.6 dit ce que le worker offre, et
+le corpus de fixtures de W0.7 est mergé côté `locusolus`. À noter : la fixture de refus vit dans
+`locusolus/schemas/examples/`, hors de ce dépôt ; il faudra soit l'épingler comme le SDK, soit
+reconstruire le cas depuis les types — la première voie est cohérente avec W2.5 et sera préférée
+sauf raison contraire.

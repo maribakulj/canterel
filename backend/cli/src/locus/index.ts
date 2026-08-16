@@ -92,6 +92,17 @@ export {
 } from "./capability-manifest.ts"
 
 export {
+  HELLO_REQUIRED_FIELDS,
+  checkHelloConformance,
+  checkServerSignature,
+  locusStateDir,
+  register,
+  type HandshakeTransport,
+  type Registration,
+  type ServerHello,
+} from "./registration.ts"
+
+export {
   describeChange,
   isRegression,
   poll,

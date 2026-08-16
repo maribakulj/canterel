@@ -18,11 +18,116 @@ import { UI } from "../ui"
  * L'idiome n'est pas une invention locale : `src/index.ts` charge déjà ses routes de credentials
  * par import dynamique, avec la même raison écrite au-dessus.
  */
+/**
+ * `canterel worker enroll` — §7.2, l'enrôlement explicite.
+ *
+ * Sous-commande séparée exprès : §7.2 dit « le premier enrôlement doit être explicite ». Le fondre
+ * dans `worker` ferait qu'un simple démarrage pourrait enrôler la machine, ce qui est exactement
+ * ce que « explicite » exclut.
+ */
+export const WorkerEnrollCommand = cmd({
+  command: "enroll",
+  describe: "enroll this installation with a Locus Solus control plane (§7.2)",
+  builder: (yargs: Argv) =>
+    yargs
+      .option("locus", { type: "string", describe: "URL of the control plane", demandOption: true })
+      .option("enrollment-token", {
+        type: "string",
+        describe: "short-lived, single-use enrollment token (§7.2)",
+        demandOption: true,
+      }),
+  handler: async (args) => {
+    const locus = await import("@/locus")
+    const { Global } = await import("@/global")
+
+    const endpoint = String(args.locus)
+    const stateDir = locus.locusStateDir(Global.Path.data)
+
+    try {
+      // Le transport valide l'endpoint (§7.3) à sa construction. Le construire **avant** de
+      // charger l'identité évite qu'une commande refusée laisse une identité derrière elle : un
+      // effet de bord sur un refus est une surprise, même bénigne.
+      const transport = locus.httpEnrollmentTransport({ endpoint, fetch: globalThis.fetch })
+      const identity = await locus.loadOrCreateIdentity(stateDir)
+      const credential = await locus.enroll({
+        identity,
+        endpoint,
+        // Le token vient de la ligne de commande et n'est jamais écrit : §7.2 dit qu'il « ne
+        // devient pas le secret permanent du worker ».
+        token: String(args["enrollment-token"]),
+        transport,
+      })
+      await locus.saveCredential(stateDir, credential)
+      UI.println(`enrôlé : ${identity.public.worker_id}`)
+      UI.println(`scope : ${credential.scope.join(", ") || "(aucun)"}`)
+    } catch (error) {
+      if (!reportLocusError(locus, error)) throw error
+      process.exitCode = 1
+    }
+  },
+})
+
+/** `canterel worker status` — ce que cette installation est, sans rien contacter. */
+export const WorkerStatusCommand = cmd({
+  command: "status",
+  describe: "show this worker's identity and advertised capabilities (§5.2)",
+  builder: (yargs: Argv) => yargs,
+  handler: async () => {
+    const locus = await import("@/locus")
+    const { Global } = await import("@/global")
+
+    const stateDir = locus.locusStateDir(Global.Path.data)
+    const identity = await locus.loadIdentity(stateDir)
+    if (!identity) {
+      UI.println("aucune identité : cette installation n'est pas enrôlée")
+      return
+    }
+    const manifest = locus.buildManifest({ probe: realProbe(locus), workerId: identity.public.worker_id })
+    UI.println(JSON.stringify({ identity: locus.describeIdentity(identity), manifest }, null, 2))
+  },
+})
+
+/** La sonde réelle, construite ici parce que c'est ici que vit l'accès à la machine. */
+function realProbe(locus: typeof import("@/locus")) {
+  return locus.hostProbe({
+    which: (binary: string) => Bun.which(binary),
+    // La sandbox amont sait déjà répondre : lui redemander éviterait de dupliquer sa sonde, mais
+    // elle est synchrone et coûteuse ; l'appel direct suffit pour l'inventaire.
+    bubblewrapWorks: () => Bun.which("bwrap") !== null,
+    cpuCores: navigator.hardwareConcurrency,
+    memoryMb: Math.round(require("node:os").totalmem() / 1024 / 1024),
+    diskFreeMb: 0,
+  })
+}
+
+/** Rendre une erreur Locus lisible. Vrai quand elle a été reconnue et affichée. */
+function reportLocusError(locus: typeof import("@/locus"), error: unknown): boolean {
+  if (locus.LocusConfigInvalid.isInstance(error)) {
+    UI.error(`configuration Locus invalide — ${error.data.field} : ${error.data.reason}`)
+    return true
+  }
+  if (locus.LocusEnrollmentRefused.isInstance(error)) {
+    UI.error(`enrôlement refusé — ${error.data.reason}`)
+    return true
+  }
+  if (locus.LocusServerRejected.isInstance(error)) {
+    UI.error(`serveur refusé — ${error.data.endpoint} : ${error.data.reason}`)
+    return true
+  }
+  if (locus.LocusIdentityUnusable.isInstance(error)) {
+    UI.error(`identité inutilisable — ${error.data.path} : ${error.data.reason}`)
+    return true
+  }
+  return false
+}
+
 export const WorkerCommand = cmd({
   command: "worker",
   describe: "run this installation as a Locus Solus worker",
   builder: (yargs: Argv) =>
     yargs
+      .command(WorkerEnrollCommand)
+      .command(WorkerStatusCommand)
       .option("locus", {
         type: "string",
         describe: "URL of the Locus Solus control plane (locus.endpoint)",
