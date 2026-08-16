@@ -12,6 +12,11 @@
       "sha256_source": "f55b25cf5a503816ff06cf2b09c432cc90a4840299329ea63bf402a8995195c0",
       "sha256_vendored": "f55b25cf5a503816ff06cf2b09c432cc90a4840299329ea63bf402a8995195c0"
     },
+    "backend/cli/src/locus/lep/canonical.ts": {
+      "source": "packages/testing/src/canonical.ts",
+      "sha256_source": "37442de31394ef6b508b2ccedf201fc2cd204b6c93f6c9b70047937684382dca",
+      "sha256_vendored": "37442de31394ef6b508b2ccedf201fc2cd204b6c93f6c9b70047937684382dca"
+    },
     "backend/cli/test/locus/harness/worker.ts": {
       "source": "packages/testing/src/worker.ts",
       "sha256_source": "696879ba7ad93b7265256130d6ebdfe65ca4435a132d0ee49b04f8fc261da94e",
@@ -20,17 +25,12 @@
     "backend/cli/test/locus/harness/harness.ts": {
       "source": "packages/testing/src/harness.ts",
       "sha256_source": "54678d415ae90d51a93d9f36564eff5b0b6688f0ce2aceb9d445f0411720fcc0",
-      "sha256_vendored": "10edd9130085e667d54716851fd91f811c8987edf828ccead0ac7dbce13ff95c"
-    },
-    "backend/cli/test/locus/harness/canonical.ts": {
-      "source": "packages/testing/src/canonical.ts",
-      "sha256_source": "37442de31394ef6b508b2ccedf201fc2cd204b6c93f6c9b70047937684382dca",
-      "sha256_vendored": "37442de31394ef6b508b2ccedf201fc2cd204b6c93f6c9b70047937684382dca"
+      "sha256_vendored": "98321fea11526f02abfb90ac05f358194c142e8b789a2db95a7c7d0abc18bef4"
     },
     "backend/cli/test/locus/harness/index.ts": {
       "source": "packages/testing/src/index.ts",
       "sha256_source": "429032a6e08aed73c6969e7a7bed691ac3395ac6c8193622eb3e8089b1aa07ce",
-      "sha256_vendored": "429032a6e08aed73c6969e7a7bed691ac3395ac6c8193622eb3e8089b1aa07ce"
+      "sha256_vendored": "576cdbf7ce3787d6d1827923415e0b9837f5579591ad2db44c5a8dfb30bdfe8b"
     },
     "backend/cli/test/locus/harness/findings.ts": {
       "source": "tooling/lib/findings.ts",

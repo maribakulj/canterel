@@ -5,6 +5,6 @@
  * Canterel s'écrit, pour que le protocole doive être suffisant avant que `locusd` puisse
  * compenser ses lacunes.
  */
-export { canonicalize, payloadHash } from "./canonical.ts";
+export { canonicalize, payloadHash } from "../../../src/locus/lep/canonical.ts";
 export { runConformance, VERIFICATIONS, type Verification } from "./harness.ts";
 export type { Session, WorkerUnderTest } from "./worker.ts";

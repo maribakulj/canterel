@@ -1,7 +1,7 @@
 import type { Event, Lease, MissionEnvelope } from "../../../src/locus/lep/generated.ts";
 import type { Finding } from "./findings.ts";
 import type { Session, WorkerUnderTest } from "./worker.ts";
-import { payloadHash } from "./canonical.ts";
+import { payloadHash } from "../../../src/locus/lep/canonical.ts";
 
 /**
  * Le harnais de conformance LEP — il joue le SERVEUR.
