@@ -94,3 +94,49 @@ export async function dryRunMerge(cwd: string): Promise<DryRun> {
 
   return { ok: true, verdict: classify(paths), conflicts }
 }
+
+/**
+ * Les fichiers que ce fork a changés depuis son point de fork — le test de sortie de W2.11.
+ *
+ * « Mission → session **sans modifier `src/session/`** » est une propriété négative, et une
+ * propriété négative ne se démontre pas en relisant le code : elle se mesure. `git diff` contre la
+ * base de fusion amont dit exactement ce que ce fork a touché, sans dépendre de ce que quelqu'un
+ * a pensé à déclarer.
+ *
+ * Rend `ok: false` avec sa raison quand la mesure est impossible — même posture qu'en W2.1, parce
+ * qu'un contrôle qu'on croit avoir lancé est pire qu'un contrôle absent.
+ */
+export async function forkModifiedFiles(
+  cwd: string,
+): Promise<{ ok: false; reason: string } | { ok: true; files: readonly string[] }> {
+  const remote = await ensureUpstream(cwd)
+  if (remote) return { ok: false, reason: remote }
+
+  const fetched = await git(["fetch", "--quiet", "upstream", UPSTREAM_BRANCH], cwd)
+  if (fetched.code !== 0) {
+    return { ok: false, reason: `amont injoignable : ${fetched.out.trim().split("\n")[0] ?? ""}` }
+  }
+
+  const base = await git(["merge-base", "HEAD", `upstream/${UPSTREAM_BRANCH}`], cwd)
+  if (base.code !== 0) {
+    const shallow = await git(["rev-parse", "--is-shallow-repository"], cwd)
+    return {
+      ok: false,
+      reason:
+        shallow.out.trim() === "true"
+          ? "clone superficiel : la base de fusion est hors de la frontière (fetch-depth: 0)"
+          : "aucun ancêtre commun avec l'amont",
+    }
+  }
+
+  const diff = await git(["diff", "--name-only", base.out.trim(), "HEAD"], cwd)
+  if (diff.code !== 0) return { ok: false, reason: `diff impossible : ${diff.out}` }
+
+  return {
+    ok: true,
+    files: diff.out
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  }
+}
