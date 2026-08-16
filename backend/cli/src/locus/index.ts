@@ -77,6 +77,22 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  BUDGET_DIMENSIONS,
+  ESCALATION_STAGES,
+  STAGE_THRESHOLDS,
+  UsageMeter,
+  budgetUsagePayload,
+  confidenceOf,
+  stageFor,
+  type Budget,
+  type BudgetDimension,
+  type Divergence,
+  type EscalationStage,
+  type MeterReport,
+  type Usage,
+} from "./usage-meter.ts"
+
+export {
   DEFAULT_MAX_ENTRIES,
   EventSpool,
   SPOOL_FILE,

@@ -901,3 +901,62 @@ déjà vu. C'est là que « rien dupliqué » se joue vraiment, et c'est ce que 
 « arrêt propre au dépassement ». Ses dépendances sont satisfaites : l'admission de W2.8 refuse déjà
 un budget non borné (`budget_unenforceable`), et §11.4 a établi en W2.9 ce qu'« arrêter les appels
 coûteux » veut dire — la liste existe, il lui manquait un module qui sache compter.
+
+## 2026-08-16 — W2.13 — budget local et mesure d'usage (§17)
+
+**Périmètre.** Entièrement dans le périmètre Locus : `src/locus/usage-meter.ts`,
+`test/locus/usage-meter.test.ts`, réexports. **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 245 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.13 — « arrêt propre au dépassement » — passe : au plafond exactement,
+`allowsNewSpend()` rend faux et l'échelle de §17.4 est montée marche par marche, sans saut.
+Vérifié par mutation : supprimer l'arrêt fait rougir le test de sortie, masquer les divergences
+fait rougir §17.3.
+
+**Décisions prises.** Cinq.
+
+_Le worker n'écrit aucun solde._ §17.2 : « Locus Solus conserve le ledger canonique. Canterel émet
+des observations signées, pas des écritures directes de solde. » Il n'existe donc aucune fonction
+qui écrive un solde, et un test vérifie l'absence de `setBalance`, `debit`, `credit`,
+`applyLedger`. Ce module compte pour **décider localement** ; ce qui sort vers le serveur s'appelle
+`observations()`, et le nom n'est pas décoratif.
+
+_Une divergence est rendue, jamais réconciliée._ §17.3 : « les divergences sont signalées, jamais
+masquées ». Prendre le plus grand, moyenner ou préférer le facturé ferait disparaître
+l'information qui dit que la mesure est fausse quelque part. Le rapport `budget.usage` les
+transporte, parce qu'un rapport qui tairait un écart transmettrait un chiffre en laissant croire
+qu'il est sûr.
+
+_Le facturé remplace l'estimé sur une même requête fournisseur, et seulement là._ Les additionner
+compterait deux fois la même dépense. Sans identifiant de requête, les deux s'additionnent : deux
+chiffres sans lien ne parlent pas forcément de la même dépense, et sous-compter un budget est pire
+que le sur-compter.
+
+_Une confiance absente vaut 0.5, pas 1._ Un chiffre sans confiance déclarée est un chiffre dont
+personne n'a dit ce qu'il vaut ; le traiter comme certain ferait décider un arrêt sur une mesure
+que rien n'étaye.
+
+_`nominal` est un état nommé._ Le représenter par l'absence de marche rendrait « rien à faire » et
+« je ne sais pas » identiques — la même raison qui fait rendre `null` plutôt que `0` au taux d'une
+dimension sans plafond.
+
+**Écart avec la spec.** Deux notes.
+
+_Les seuils intermédiaires sont une politique, pas une lecture._ §17.4 dit « à l'approche du
+plafond » sans chiffrer. `STAGE_THRESHOLDS` pose 0,75 / 0,85 / 0,95 et vit en table pour être
+discutée et changée d'un seul endroit plutôt que dispersée dans des comparaisons. **Seul `stop` est
+imposé par le texte** — « arrêt sûr **au** plafond », donc exactement 1, et un test le verrouille.
+C'est un détail d'implémentation dans le cadre : tranché, écrit, non bloquant.
+
+_« Arrêt sûr » ne veut pas dire « rien ne bouge plus »._ `allowsNewSpend()` gouverne ce qui
+**engage** une dépense ; ce qui est déjà engagé doit se terminer proprement, et §11.4 a déjà défini
+en W2.9 ce qui reste permis après une perte de droit d'exécuter. Les deux listes se rejoignent :
+clôturer, checkpointer, déclarer tardif — jamais démarrer.
+
+**Prochain item.** W2.14 `[R]` — `artifact-client.ts`, `artifact-scanner.ts`, déclaration avant
+upload (§19.1). Test de sortie : « hash déclaré ≠ hash reçu → rejet ». Ses dépendances sont
+satisfaites : le canonicaliseur épinglé sait déjà produire un `ContentHash` préfixé par son
+algorithme, et le SDK impose ce préfixe — « un hash nu ne dit pas comment le recalculer, et une
+vérification d'intégrité qui devine son algorithme n'en est pas une ».
