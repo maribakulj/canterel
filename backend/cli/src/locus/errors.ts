@@ -129,6 +129,26 @@ export const LocusArtifactRejected = NamedError.create(
   }),
 )
 
+/**
+ * Le commit épistémique refuse ce qu'on lui demande — §2.3, §21.4.
+ *
+ * Le refus qui compte est celui de la promotion : « Canterel NE DOIT PAS promouvoir un claim
+ * au-delà de `staged` ». `attempted` porte le statut demandé plutôt qu'un message, parce que la
+ * question qu'on se pose en lisant l'erreur est **lequel** a été tenté — un `validated` écrit par
+ * un worker est une auto-validation, un `late` est une confusion entre un statut et un marqueur.
+ *
+ * Sert aussi aux échecs de la validation locale de §21.4 : `findings` les porte tous d'un coup,
+ * parce qu'un commit rendu invalide une raison à la fois se corrige une soumission à la fois.
+ */
+export const LocusCommitRefused = NamedError.create(
+  "LocusCommitRefused",
+  z.object({
+    reason: z.string(),
+    attempted: z.string().optional(),
+    findings: z.array(z.string()).optional(),
+  }),
+)
+
 /** Le serveur n'est pas acceptable : schéma, origine, TLS (§7.3). */
 export const LocusServerRejected = NamedError.create(
   "LocusServerRejected",
