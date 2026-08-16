@@ -40,3 +40,35 @@ export const LocusNotConfigured = NamedError.create(
     missing: z.string(),
   }),
 )
+
+/**
+ * L'identité locale existe mais ne se laisse pas utiliser.
+ *
+ * Toujours une demande d'intervention, jamais une invitation à repartir de zéro : régénérer
+ * perdrait le `worker_id` et tout ce que `locusd` a enregistré dessous. `path` dit lequel des
+ * fichiers pose problème.
+ */
+export const LocusIdentityUnusable = NamedError.create(
+  "LocusIdentityUnusable",
+  z.object({
+    path: z.string(),
+    reason: z.string(),
+  }),
+)
+
+/** L'enrôlement a été refusé — par nous avant l'envoi, ou par le serveur (§7.2). */
+export const LocusEnrollmentRefused = NamedError.create(
+  "LocusEnrollmentRefused",
+  z.object({
+    reason: z.string(),
+  }),
+)
+
+/** Le serveur n'est pas acceptable : schéma, origine, TLS (§7.3). */
+export const LocusServerRejected = NamedError.create(
+  "LocusServerRejected",
+  z.object({
+    endpoint: z.string(),
+    reason: z.string(),
+  }),
+)

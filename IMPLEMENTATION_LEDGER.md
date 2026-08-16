@@ -317,3 +317,66 @@ configuration, les erreurs structurées et la couture existent. Il apportera le 
 du dépôt (le token d'enrôlement de §7.2) — le test qui interdit un champ de secret dans la
 configuration est là pour qu'il aille ailleurs qu'en configuration, et §7.1 dit où : une clé privée
 locale protégée, qui ne quitte jamais la machine.
+
+## 2026-08-13 — W2.4 — identité persistante, enrôlement et révocation (§7)
+
+**Périmètre.** Entièrement dans le périmètre Locus : `src/locus/{identity,auth}.ts`,
+`test/locus/identity.test.ts`, quatre erreurs ajoutées à `errors.ts` et les réexports d'`index.ts`.
+**Aucun fichier amont touché** : aucune justification ADR 0010 n'est due pour cet item.
+
+**Tests exécutés.** `bun test test/locus/` : 71 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme. Le test de sortie de W2.4 — « identité persistante après
+redémarrage » — passe, et il vérifie la clé plutôt que les octets : une signature produite après
+relecture se vérifie avec la clé publique d'avant. Comparer les chaînes n'aurait prouvé que
+l'égalité des fichiers.
+
+**Décisions prises.** Quatre.
+
+_La clé privée vit dans un fichier `0600`, pas dans un trousseau système._ Un trousseau serait
+mieux gardé sur macOS et inexistant ailleurs ; `docs/locus/CLAUDE.md` interdit « toute dépendance
+implicite à une machine de développeur », et un worker doit s'enrôler identiquement sur un runner
+Linux sans session graphique. Le fichier est créé en `wx` avec le mode `0600` puis synchronisé —
+exactement ce que `src/util/secret-file.ts` fait déjà en amont, dont la posture (« refusing to
+replace it ») est reprise telle quelle.
+
+_Jamais de régénération silencieuse._ C'est la propriété la plus importante du module. Une identité
+qu'on remplace parce qu'on n'a pas su la relire est une identité perdue, et avec elle tout ce que
+`locusd` a enregistré sous ce `worker_id`. Clé illisible, couple incohérent, fichier tronqué,
+moitié d'identité présente : tous produisent une `LocusIdentityUnusable` qui demande une
+intervention.
+
+_Un worker révoqué garde son identité._ §7.4 : il ne l'oublie pas, il la sait révoquée. L'effacer
+le ferait repartir avec un `worker_id` neuf au prochain démarrage — c'est-à-dire contourner la
+révocation en redémarrant. Ce qui reste permis est **énuméré** (`REVOKED_ALLOWED_ACTIONS`) plutôt
+que ce qui est interdit : une liste d'interdits oublie toujours l'action ajoutée le mois suivant,
+et l'oubli penche du mauvais côté.
+
+_Le transport d'enrôlement est un port injecté._ `locusd` n'existe pas encore et
+`docs/locus/CLAUDE.md` demande les interfaces avant le branchement. Conséquence utile : tout le
+module se teste sans réseau, refus compris. §7.3 est appliqué avant tout envoi — TLS obligatoire
+hors boucle locale, et « localhost » n'est **pas** une boucle locale, parce qu'un nom résolu par
+DNS peut désigner autre chose que la machine locale. Seuls les littéraux de bouclage passent.
+
+**Écart avec la spec.** Un manque assumé et une découverte.
+
+_`canterel worker enroll` n'existe pas encore._ §7.2 écrit la commande, et elle demande un
+transport HTTP réel que W2.5 apporte avec `connection.ts`. Une commande qui ne peut pas aboutir
+serait pire qu'une commande absente. Le module est prêt et testé ; il lui manque son appelant.
+Dans le même esprit, rien ne calcule encore **où** vit le répertoire d'identité : `loadOrCreateIdentity`
+prend son chemin en paramètre, et c'est W2.5 qui le dérivera de la configuration. C'est écrit ici
+plutôt que laissé à découvrir.
+
+_Un trou dans mes propres tests, trouvé par mutation._ En mutant `loadOrCreateIdentity` pour qu'il
+retombe sur la création en cas d'erreur de lecture — la régression exacte que le module existe pour
+empêcher — la suite est **restée verte**. Cause : je testais la moitié d'identité dans un seul
+sens, métadonnées effacées et clé conservée, où la création échoue de toute façon sur `EEXIST`. Le
+sens inverse, clé effacée et métadonnées conservées, est le dangereux : rien n'empêche
+techniquement d'écrire une clé neuve à côté, ce qui écraserait le `worker_id` enregistré. Le test
+couvre désormais les deux sens et la même mutation le fait rougir. La seconde mutation — persister
+le token d'enrôlement avec la créance — était bien attrapée du premier coup.
+
+**Prochain item.** W2.5 `[R]` — `protocol.ts`, `schema-registry.ts`, `connection.ts` sur le SDK de
+W0.8, test de sortie « contract tests contre le harness ». Ses dépendances sont satisfaites : le
+SDK LEP et le harnais de conformance sont mergés côté `locusolus` (W0.8, W0.9), et l'identité que
+§8.2 demande de signer dans le `worker.hello` existe depuis cet item. §8.1 impose d'épingler le SDK
+**par commit Git** pendant la V1, pas par version npm publiée.
