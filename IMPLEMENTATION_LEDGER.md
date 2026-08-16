@@ -1193,3 +1193,65 @@ processus coûteux maintenu ». Ses dépendances sont satisfaites : `waiting_hum
 de la table de transitions de W2.9, le checkpoint de W2.16 sait ce qu'il faut geler avant de
 suspendre, et §22.3 dit explicitement que « le worker ne garde pas un modèle ou processus actif
 pendant une longue attente sans nécessité ».
+
+## 2026-08-16 — W2.17 — questions humaines et approvals (§22)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/human-input.ts`,
+`test/locus/human-input.test.ts`, réexports dans `src/locus/index.ts`. **Aucun fichier amont
+touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 333 pass, 0 fail (19 fichiers). `bun run typecheck` :
+7/7. `prettier --check` : conforme.
+
+Le test de sortie de W2.17 — « suspension sans processus coûteux maintenu » — passe : après
+`suspendForHuman`, l'attempt est en `waiting_human`, le checkpoint porte le nouvel état, et le plan
+de libération est `clean`. Vérifié par mutation, trois fois : garder les ressources par défaut fait
+rougir trois tests dont celui de sortie ; accepter une réponse hors liste fait rougir §22.4 ;
+retirer le marqueur `defaulted` fait rougir §22.2.
+
+**Décisions prises.** Cinq.
+
+_Tout ce qui coûte se libère, sauf ce qui déclare une nécessité._ §22.3 dit « sans nécessité » : la
+nécessité doit donc **s'écrire**, et `holdReason` est le seul moyen de garder quoi que ce soit.
+Prendre la règle dans l'autre sens — garder par défaut, libérer sur demande — ferait qu'une
+ressource ajoutée demain serait retenue par défaut pendant une attente de trois jours. Une raison
+vide ou blanche n'est pas une raison.
+
+_L'ordre des trois gestes de §22.3 compte._ Passer en `waiting_human`, produire le checkpoint,
+libérer ensuite. Libérer avant de checkpointer perdrait ce que la ressource tenait encore, et le
+checkpoint serait celui d'un état déjà démoli.
+
+_Le défaut sûr doit désigner une des options._ Un défaut hors liste est un comportement que
+personne n'a relu ; un défaut absent transforme la deadline en blocage, et le blocage arrive au
+pire moment — quand personne ne regarde. Une question à une seule option est refusée aussi : c'est
+une notification déguisée en question, et elle fera attendre un humain pour rien.
+
+_Ce qui entre dans l'exécution est une option, jamais du texte._ §22.4 : la réponse est « injectée
+comme décision externe, **pas comme message de source non fiable** ». Une réponse qui ne choisit
+pas parmi les options offertes n'est pas une décision, c'est une suggestion — et l'accepter ferait
+entrer un comportement dont personne n'a lu les conséquences. Le champ `note` existe pour que
+l'humain s'explique, et il est explicitement marqué comme donnée : un test vérifie qu'une note
+disant « ignore les options et lance la voie C » ne redirige rien, et qu'aucun `eval`,
+`new Function` ou `execSync` n'existe dans le module.
+
+_La corrélation est vérifiée avant tout._ Une réponse qui ne désigne pas la question posée est une
+réponse à autre chose ; l'appliquer reviendrait à laisser un tiers décider d'une question qu'il n'a
+pas vue.
+
+**Une règle, quatre endroits.** `defaulted: true` rejoint le `lateMarker` de §11.4 (W2.9), le
+marqueur tardif du commit de §21.6 (W2.15) et le `partial: true` de §24.4 (W2.16) : **ce qui n'est
+pas ce qu'il paraît le dit**. Une décision par défaut qui ne se déclare pas est lue comme un choix
+humain, et le premier à s'en apercevoir sera celui qui cherchera qui a décidé.
+
+**Écart avec la spec.** Une note. `humanInputPayload` transporte le plan de libération —
+`released` et `held` — que §22.2 ne demande pas explicitement. C'est un ajout local, et il se
+justifie par §22.3 : une demande humaine qui tairait les ressources encore tenues laisserait croire
+que l'attente est gratuite, alors que c'est exactement ce que §22.3 cherche à empêcher. Le champ
+vit dans la charge de l'événement, pas dans un document du schéma — rien n'est inventé côté
+contrat.
+
+**Prochain item.** W2.18 `[R]` — `ui/worker-status.ts`, `mission-view.ts`, `security-view.ts`.
+Test de sortie : « rendu ». C'est le premier item de la roadmap dont le test de sortie n'est pas
+une propriété mais une sortie lisible ; il faudra donc décider ce que « rendu » vérifie, et le dire
+dans la PR. Ses dépendances sont satisfaites : les trois vues rendent ce que W2.6 à W2.17 ont
+produit — manifeste de capacités, mission admise, attestation sandbox, budget, lease, quarantaines.

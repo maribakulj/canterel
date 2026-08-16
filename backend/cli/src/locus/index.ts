@@ -133,6 +133,24 @@ export {
 } from "./artifact-client.ts"
 
 export {
+  QUESTION_CATEGORIES,
+  acceptResponse,
+  applyDeadline,
+  humanInputPayload,
+  questionFindings,
+  releasePlan,
+  suspendForHuman,
+  type CostlyResource,
+  type ExternalDecision,
+  type HumanQuestion,
+  type QuestionCategory,
+  type QuestionOption,
+  type ReleasePlan,
+  type ResponseResult,
+  type SuspensionResult,
+} from "./human-input.ts"
+
+export {
   CHECKPOINT_FILE,
   QUARANTINE_DIR,
   ResumeStore,
