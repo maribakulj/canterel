@@ -1053,3 +1053,71 @@ sortie : « tentative de promotion → erreur structurée ». Ses dépendances s
 épinglé définit déjà `EpistemicCommit` avec ses claims, objections, inférences, décisions locales
 et résultats négatifs, et l'invariant 12 — « les résultats négatifs et conflits ne sont jamais
 supprimés pour rendre le graphe propre » — dit déjà ce que le module n'a pas le droit de faire.
+
+## 2026-08-16 — W2.15 — commit épistémique : jamais au-delà de `staged` (§2.3, §21)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/epistemic-commit.ts`,
+`test/locus/epistemic-commit.test.ts`, une erreur ajoutée à `src/locus/errors.ts`, réexports dans
+`src/locus/index.ts`. **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 296 pass, 0 fail (17 fichiers). `bun run typecheck` :
+7/7. `prettier --check` : conforme.
+
+Le test de sortie de W2.15 — « tentative de promotion → erreur structurée » — passe. Vérifié par
+mutation, trois fois : ramener silencieusement un statut interdit à `staged` fait rougir trois
+tests du groupe de sortie ; supprimer le marqueur tardif fait rougir §21.6 ; laisser la validation
+locale ne plus bloquer fait rougir §21.4.
+
+**Décisions prises.** Cinq.
+
+_Le refus existe à l'exécution, pas seulement dans le type._ Le schéma épinglé rend déjà la
+promotion indéfaisable — `status` n'y vaut que `draft` ou `staged`. Mais un type ne survit pas à la
+frontière du processus : ce qui traverse le fil est du JSON, et du JSON ne porte aucun type.
+`assertProposable` est le point d'entrée unique, et tout chemin qui pose un statut y passe.
+
+_Une erreur structurée plutôt qu'un booléen._ Un appelant qui ignore un `false` produit un commit
+promu ; un appelant qui ignore une exception ne produit rien du tout. `attempted` porte le statut
+demandé, parce que la question qu'on se pose en lisant l'erreur est lequel a été tenté.
+
+_Les verdicts de l'institution sont nommés._ `LOCUS_ONLY_STATUSES` liste `validated`,
+`under_review`, `merged`, `promoted`… Les nommer coûte une constante et rend le refus lisible :
+« `validated` est un verdict de l'institution » se corrige, là où « statut invalide » envoie relire
+un schéma. Un statut inconnu du schéma reçoit un message distinct — ce n'est pas la même erreur.
+
+_`draft` est le défaut, `stage` est la seule transition, et elle ne revient pas._ `staged` est ce
+qu'on soumet : l'atteindre doit être un geste, pas une valeur par défaut. Il n'existe pas
+d'`unstage` — revenir à `draft` laisserait croire qu'on peut retirer une proposition déjà partie.
+
+_Objections et résultats négatifs ne font que s'ajouter._ Invariant 12 : « les résultats négatifs
+et conflits ne sont jamais supprimés pour rendre le graphe propre ». Une fonction qui retirerait
+une objection serait le moyen exact de le violer, donc elle n'existe pas, et un test verrouille
+l'absence de `dropObjection`, `clearNegativeResults`, `pruneObjections` — la seule façon de garder
+vraie une phrase que personne ne relit. De même, aucune fonction ne dérive un statut d'une
+confiance : §21.5 dit que « le champ `confidence` d'un agent ne remplace jamais la validation
+Locus Solus ».
+
+**Écart avec la spec.** Trois notes, toutes dans le cadre.
+
+_`late` n'est pas un statut._ §21.6 dit qu'« un commit produit après expiration porte le statut
+`late` », mais `status` est déjà pris par §2.3 et ne connaît que `draft` et `staged`. Le marqueur
+vit donc à côté du document, exactement comme le `lateMarker` d'un résultat tardif en §11.4 (W2.9),
+et il voyage dans la charge de `epistemic_commit.submitted`. Le taire ferait traiter un commit
+tardif comme un commit normal, ce qui est le contournement que la quarantaine de §12.3 existe pour
+empêcher.
+
+_La validation locale de §21.4 rend des constats ; seule la soumission lève._ Un commit se corrige
+mieux avec la liste complète de ce qui cloche qu'une raison à la fois. `submitCommit` fait porter
+tous les constats par l'erreur, pour la même raison.
+
+_Deux des dix contrôles de §21.4 ne tournent pas ici, et le disent._ « Absence de secret »
+appartient à l'admission (§21.8) et n'est pas refait ; la résolution des références exige un
+catalogue d'artefacts déclarés, absent en l'absence d'appelant. Chaque contrôle rend son état —
+`enforced` / `not-applicable` / `skipped` — et un rapport `ok` avec `complete: false` veut dire
+« rien trouvé sur ce que j'ai pu regarder », pas « conforme ». Même vocabulaire et même raison que
+le scanner d'artefacts de W2.14 : un contrôle qui ne tourne pas ressemble à un contrôle qui passe.
+
+**Prochain item.** W2.16 `[R]` — `recovery.ts`, `resume-store.ts`, offline et résultats partiels
+(§24). Test de sortie : « redémarrage du worker en cours de mission ». Ses dépendances sont
+satisfaites : le spool de W2.12 sait déjà survivre à un redémarrage sans rien perdre ni dupliquer,
+et §24.5 — « une incohérence déclenche quarantaine et diagnostic, jamais réparation silencieuse » —
+a déjà servi deux fois, en W2.14 et ici.

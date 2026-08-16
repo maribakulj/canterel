@@ -133,6 +133,25 @@ export {
 } from "./artifact-client.ts"
 
 export {
+  LOCUS_ONLY_STATUSES,
+  PROPOSAL_STATUSES,
+  addFindings,
+  assertProposable,
+  buildCommit,
+  commitSubmittedPayload,
+  isProposalStatus,
+  stage,
+  submitCommit,
+  validateCommit,
+  type CommitCheck,
+  type CommitInput,
+  type ProposalStatus,
+  type SignedCommit,
+  type ValidationInput,
+  type ValidationReport,
+} from "./epistemic-commit.ts"
+
+export {
   MAX_ARCHIVE_EXPANSION_RATIO,
   SCAN_CHECKS,
   TEXT_SNIFF_BYTES,
