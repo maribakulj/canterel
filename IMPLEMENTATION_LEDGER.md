@@ -766,3 +766,71 @@ W2 : toute la difficulté est d'adapter sans toucher. `docs/locus/CLAUDE.md` pr�
 `src/session/`, `src/agent/` et `src/permission/` existent en amont avec un sens local, et
 `model_unavailable` / `tool_forbidden` — deux des quatre codes déclarés sans être levés en W2.8 —
 y trouveront leur producteur.
+
+## 2026-08-16 — W2.11 — couche d'adaptation vers l'amont
+
+**Périmètre.** Entièrement dans le périmètre Locus : `src/locus/{session-map,agent-overlay,
+model-policy,tool-policy}.ts`, `forkModifiedFiles` ajouté à `upstream-merge.ts`,
+`test/locus/session-map.test.ts`, réexports. **Aucun fichier amont touché** — ce qui est
+précisément l'objet de l'item.
+
+**Tests exécutés.** `bun test test/locus/` : 214 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.11 — « mission → session **sans modifier `src/session/`** » — passe, et il
+s'exécute réellement plutôt que de se dégrader : `git diff` contre la base de fusion amont rend
+**53 fichiers** modifiés par ce fork, dont **0** sous `src/session/`, `src/agent/`,
+`src/permission/`, `src/provider/` ou `src/tool/`. Vérifié par mutation : déclarer `src/cli/`
+intouchable — un répertoire que le fork touche réellement — fait rougir le test.
+
+**Décisions prises.** Cinq.
+
+_Une propriété négative se **mesure**, elle ne se relit pas._ « Sans modifier `src/session/` » ne
+se démontre pas en inspectant le code : `forkModifiedFiles` demande à git ce que ce fork a changé
+depuis son point de fork, sans dépendre de ce que quelqu'un a pensé à déclarer. Même posture de
+dégradation qu'en W2.1 quand la mesure est impossible.
+
+_Le module rend un **plan**, pas une session._ De la donnée : quel agent amont viser, quel overlay
+poser, quels modèles et outils sont permis. Rien n'instancie, rien n'importe `src/session/`. Ce
+n'est pas de la timidité — un plan se teste sans démarrer de session, et il survit à une refonte
+amont de `src/session/`, ce qu'un adaptateur appelant ses fonctions internes ne ferait pas. Un test
+vérifie qu'aucun des quatre modules n'importe `@/session`, `@/agent`, `@/permission`, `@/provider`
+ni `@/tool` : adapter sans toucher vaut aussi pour les imports.
+
+_L'overlay est additif par construction._ Il choisit un agent amont et pose des instructions
+supplémentaires ; aucun champ ne remplace un prompt, et il n'en existe volontairement pas. Un
+overlay qui le pourrait serait un agent local déguisé, que le prochain merge amont écraserait ou
+contredirait sans que personne s'en aperçoive. Une revue **indépendante** vise `reviewer` quel que
+soit le domaine : c'est l'invariant 11 qui décide, pas la discipline scientifique — confier une
+revue indépendante à l'agent `biology` parce que la mission parle de biologie ferait relire le
+travail par le même profil que celui qui l'a produit.
+
+_`remote_inference` absent vaut **distant**._ Le champ est optionnel dans le schéma. Supposer
+« local » par défaut ferait envoyer des données confidentielles à un fournisseur au premier
+manifeste incomplet : le défaut prudent coûte au pire un modèle inutilisé, le défaut commode coûte
+une fuite. La raison du refus distingue « aucun modèle » de « tous distants », parce que la seconde
+dit à l'opérateur quoi installer.
+
+_La politique d'outils raisonne sur des **facultés**, pas sur des noms._ Réseau, écriture hors
+workspace, exécution. Nommer les outils de `src/tool/` créerait une liste à maintenir au rythme de
+l'amont, donc fausse dès la première synchronisation — et un outil ajouté en amont serait autorisé
+par défaut simplement parce que personne n'a pensé à l'interdire.
+
+**Écart avec la spec.** Deux notes.
+
+_Les deux derniers codes orphelins de W2.8 ont trouvé leur producteur._ `model_unavailable` et
+`tool_forbidden` sont désormais levés. Restent `invalid_signature` — qui appartient à la connexion
+— et `data_locality_violation`, qui attend la politique de localité que §21.9 n'a pas encore donnée
+à ce worker. Deux orphelins sur quatorze, et leur absence reste écrite.
+
+_Une substitution d'identité rattrapée par le typecheck._ Mon `SessionPlan` portait `attempt`
+(le rang) là où `MissionEnvelope` porte `attempt_id` (l'identité). §11.1 est explicite : « aucune de
+ces identités ne doit être substituée aux autres ». Le compilateur a refusé avant que le test ne
+puisse le faire — c'est exactement le genre d'erreur que les types stricts existent pour attraper,
+et je l'ai notée dans le code plutôt que corrigée en silence.
+
+**Prochain item.** W2.12 `[R]` — `event-bridge.ts`, `event-spool.ts`, coalescence (§18). Test de
+sortie : « perte de connexion : rien perdu, rien dupliqué ». Ses dépendances sont satisfaites : le
+harnais épinglé vérifie déjà la monotonie des séquences et la déduplication par clé d'idempotence,
+et §8.3 énumère ce que le worker doit persister — séquence serveur acquittée, séquence worker
+émise, messages non acquittés, leases actifs, uploads incomplets.

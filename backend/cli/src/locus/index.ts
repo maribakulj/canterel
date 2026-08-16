@@ -77,6 +77,37 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  UNTOUCHABLE_UPSTREAM_DIRS,
+  mapMission,
+  type MapInput,
+  type MapResult,
+  type SessionPlan,
+} from "./session-map.ts"
+
+export {
+  AGENT_BY_CAPABILITY,
+  DEFAULT_AGENT,
+  UPSTREAM_AGENTS,
+  selectOverlay,
+  type AgentOverlay,
+  type UpstreamAgent,
+} from "./agent-overlay.ts"
+
+export { REMOTE_INFERENCE_CEILING, modelUnavailableReason, usableModels, type ModelChoice } from "./model-policy.ts"
+
+export {
+  TOOL_FACULTIES,
+  judgeTool,
+  partitionTools,
+  type ToolContext,
+  type ToolDescriptor,
+  type ToolFaculty,
+  type ToolVerdict,
+} from "./tool-policy.ts"
+
+export { forkModifiedFiles } from "./upstream-merge.ts"
+
+export {
   applyRedactions,
   assertBranchScope,
   assertViewIntegrity,
