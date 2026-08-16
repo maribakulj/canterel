@@ -642,3 +642,67 @@ sortie : « expiration et reprise contre le harness ». Ses dépendances sont sa
 épinglé vérifie déjà la règle de §12.3 que le schéma ne savait pas exprimer — battre à intervalle
 strictement inférieur au tiers du TTL — et l'admission de W2.8 dit maintenant quelles missions
 arrivent jusqu'à une lease.
+
+## 2026-08-16 — W2.9 — leases, attempts, heartbeats et perte de lease (§11)
+
+**Périmètre.** Entièrement dans le périmètre Locus : `src/locus/{lease,attempt}.ts`,
+`test/locus/lease.test.ts`, réexports d'`index.ts`. **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 176 pass, 0 fail. `bun run typecheck` : 7/7.
+`prettier --check` : conforme.
+
+Le test de sortie de W2.9 — « expiration et reprise contre le harness » — passe, et il passe
+**contre le harnais épinglé**, pas contre une reformulation locale de ses règles : un attempt qui
+rend 100 s après son échéance traverse `runConformance` sans constat parce qu'il se déclare
+tardif ; une reprise qui rejoue un événement à l'identique passe aussi.
+
+Vérifié par mutation. Supprimer le marqueur tardif : le test de sortie rougit. Autoriser toute
+transition d'état : les deux tests de §11.2 rougissent.
+
+**Décisions prises.** Cinq.
+
+_L'horloge est un paramètre, jamais lue._ `isExpired`, `heartbeatDue`, `remainingMs` et
+`lateMarker` reçoivent l'instant. Sans ça, ces règles ne se testeraient qu'en dormant — et un test
+qui dort finit désactivé.
+
+_Une échéance illisible est traitée comme expirée._ « Je ne sais pas lire la date, donc je
+continue » est exactement la posture qui fait produire un résultat après la fin d'un droit
+d'exécuter.
+
+_Le premier battement est dû immédiatement._ Traiter « jamais battu » comme « battu à l'instant »
+ferait attendre un intervalle complet avant le premier signe de vie, soit un cinquième de TTL de
+retard pour rien.
+
+_La machine à états de §11.2 est une **donnée**._ Une table, pas une suite de `if` : c'est ce qui
+permet de répondre « depuis `running`, où peut-on aller ? », et surtout de refuser une transition
+que personne n'a autorisée au lieu de la laisser passer parce qu'aucun `if` ne la mentionnait. Le
+refus **nomme les sorties possibles** — dire seulement « transition invalide » obligerait à relire
+le diagramme alors que la réponse est déjà dans la table. Deux tests de structure interdisent qu'un
+état existe sans entrée, ou qu'une entrée pointe vers un état inexistant.
+
+_Une perte de lease donne `lease_lost`, jamais `failed`._ Un attempt échoué a produit un verdict ;
+un attempt qui a perdu sa lease a perdu le **droit** d'en produire un. Les confondre ferait passer
+une panne d'infrastructure pour un résultat scientifique négatif, ce que l'invariant 12 interdit
+précisément de brouiller. Côté protocole il devient `orphaned`, pas `failed`.
+
+**Écart avec la spec.** Deux notes.
+
+_Le vocabulaire d'états est traduit, pas aligné._ `Attempt.state` du SDK est un sous-ensemble des
+états de tâche de §5, et son commentaire généré dit pourquoi : `accepted`, `rejected` et
+`superseded` en sont absents exprès, parce que ce sont des **verdicts de Locus Solus** sur un
+attempt terminé, pas des états qu'un worker s'attribue. `toProtocolState` rend donc `null` pour
+`offered`, `accepted` et `rejected` : un worker ne s'auto-décerne pas un verdict.
+
+_Les gestes de §11.4 sont rendus comme données, pas exécutés._ `LEASE_LOST_ACTIONS` énumère ce que
+le texte impose — arrêter les appels coûteux, révoquer les secrets, bloquer les écritures externes,
+checkpointer si permis, déclarer les artefacts tardifs — mais ce module ne sait ni révoquer un
+secret ni arrêter un appel. Prétendre le contraire mettrait la politique et sa mise en œuvre au
+même endroit ; l'exécution appartient aux items qui possèdent ces ressources (W2.13 pour les coûts,
+W2.14 pour les artefacts). Ce qui est acquis ici est que la liste se relit et se teste, et que
+`present-commit-as-applicable` n'est **pas** dans ce qui reste permis — §11.4 est catégorique.
+
+**Prochain item.** W2.10 `[R]` — `context-materializer.ts` et isolation informationnelle (§12.4).
+Test de sortie : « un contexte de branche A n'atteint jamais une mission de branche B ». Ses
+dépendances sont satisfaites. C'est l'item qui porte l'invariant 11 du projet — les reviewers
+indépendants ne reçoivent pas le raisonnement privé du générateur — et §12.3 y ajoute que le hash
+de la vue doit être vérifié **avant** démarrage.

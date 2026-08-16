@@ -77,6 +77,33 @@ export {
 } from "./schema-registry.ts"
 
 export {
+  ALLOWED_AFTER_LOSS,
+  HEARTBEAT_TTL_RATIO,
+  LEASE_LOST_ACTIONS,
+  deadlineOf,
+  heartbeatDue,
+  isAllowedAfterLoss,
+  isExpired,
+  lateMarker,
+  leaseTimingFindings,
+  remainingMs,
+  type LeaseLostAction,
+} from "./lease.ts"
+
+export {
+  ATTEMPT_STATES,
+  TERMINAL_STATES,
+  TRANSITIONS,
+  canTransition,
+  isTerminal,
+  onLeaseLost,
+  toProtocolState,
+  transition,
+  type AttemptState,
+  type TransitionResult,
+} from "./attempt.ts"
+
+export {
   REFUSAL_CODES,
   admit,
   clampPolicy,
