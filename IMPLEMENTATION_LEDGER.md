@@ -1255,3 +1255,60 @@ Test de sortie : « rendu ». C'est le premier item de la roadmap dont le test d
 une propriété mais une sortie lisible ; il faudra donc décider ce que « rendu » vérifie, et le dire
 dans la PR. Ses dépendances sont satisfaites : les trois vues rendent ce que W2.6 à W2.17 ont
 produit — manifeste de capacités, mission admise, attestation sandbox, budget, lease, quarantaines.
+
+## 2026-08-16 — W2.18 — les trois vues (§23.4, §25.4, ADR 0004)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/ui/format.ts`, `src/locus/ui/mission-view.ts`,
+`src/locus/ui/worker-status.ts`, `src/locus/ui/security-view.ts`, `test/locus/ui.test.ts`,
+réexports dans `src/locus/index.ts`. **Aucun fichier amont touché.**
+
+**Tests exécutés.** `bun test test/locus/` : 350 pass, 0 fail (20 fichiers). `bun run typecheck` :
+7/7. `prettier --check` : conforme.
+
+**Ce que « rendu » vérifie — l'arbitrage de ce sprint.** C'est le premier item dont le test de
+sortie de `docs/10` n'est pas une propriété mais un mot : « rendu ». Pris au pied de la lettre, il
+serait satisfait par une fonction qui renvoie une chaîne vide. Le critère retenu est donc : **le
+rendu conserve les distinctions que le code a payé cher à établir**. Trois, chacune vérifiée et
+chacune mutée :
+
+1. `not-run` ne ressemble pas à `blocked` (ADR 0004) ;
+2. l'inférence distante se distingue du calcul local (§23.4) ;
+3. une valeur inconnue se rend `inconnu`, jamais par un défaut plausible.
+
+Vérifié par mutation, trois fois : rendre `not-run` avec la marque de `blocked` fait rougir la
+première ; supprimer l'étiquette de provenance fait rougir la deuxième ; rendre `undefined` par
+`0` fait rougir la troisième.
+
+**Décisions prises.** Quatre.
+
+_Une vue est de la télémétrie qui s'affiche._ §25.4 : « prompts, sources et sorties ne sont pas
+exportés par défaut dans la télémétrie. Les logs utilisent identifiants et hashes ». Ce qui ne doit
+pas sortir dans un log ne doit pas non plus finir dans un terminal partagé, un ticket ou une copie
+d'écran. Les vues rendent donc des identifiants, des hashes tronqués et des états — jamais du
+contenu. `leakFindings` est un **filet**, pas la politique : la politique est de ne pas mettre de
+secret dans une vue, et le filet existe pour le jour où quelqu'un en met un quand même. Un test
+vérifie que le filet attrape — sans lui, une fonction rendant toujours la liste vide passerait.
+
+_La troncature d'un hash conserve son préfixe d'algorithme._ Un digest abrégé sans son algorithme
+n'identifie plus rien. La troncature est un confort de lecture, pas une permission d'oublier quoi
+recalculer.
+
+_`unconfirmed` ne se rend pas « oui »._ Le rendre ainsi parce que l'échéance n'est pas passée
+redirait à l'écran exactement l'erreur que `recovery.ts` refuse de faire dans le code. Quatre états
+de lease, quatre phrases, aucune abrégeable en « ok ».
+
+_Une section vide se lit comme une section sans problème._ D'où « aucun artefact en quarantaine »
+plutôt qu'une absence de ligne, et `inconnu` plutôt qu'un blanc. C'est la même famille de règle que
+`not-applicable` face à `skipped` dans le scanner d'artefacts : l'absence d'information et
+l'absence de problème ont la même apparence si on ne les écrit pas.
+
+**Écart avec la spec.** Une note. §23.4 énumère ce que l'UI affiche sans dire comment ; les marques
+`✔ / ✘ / ?`, les seuils de troncature et l'ordre des sections sont une **présentation**, pas une
+lecture de la spec. Elles vivent en constantes (`MARKS`, `shortHash(keep)`) pour être changées d'un
+seul endroit. Ce qui n'est pas négociable et qui est verrouillé par des tests, c'est que trois
+états distincts aient trois marques distinctes.
+
+**Prochain item.** W2.19 `[R]` — suite de conformance complète + consumer-driven contracts
+(§28.2/28.3). Test de sortie : « verte contre le harness ». C'est le **dernier item de W2**. Ses
+dépendances sont satisfaites : le harnais épinglé de W0.9 est en place depuis W2.5, et les dix-sept
+modules de `src/locus/` qu'il doit exercer sont écrits.
