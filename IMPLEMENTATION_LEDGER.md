@@ -1312,3 +1312,59 @@ seul endroit. Ce qui n'est pas négociable et qui est verrouillé par des tests,
 (§28.2/28.3). Test de sortie : « verte contre le harness ». C'est le **dernier item de W2**. Ses
 dépendances sont satisfaites : le harnais épinglé de W0.9 est en place depuis W2.5, et les dix-sept
 modules de `src/locus/` qu'il doit exercer sont écrits.
+
+## 2026-08-17 — W2.19 — suite de conformance complète et consumer-driven contracts (§28.2, §28.3)
+
+**Périmètre.** Dans le périmètre Locus : `src/locus/conformance.ts`,
+`test/locus/conformance.test.ts`, réexports dans `src/locus/index.ts`. **Aucun fichier amont
+touché.** Dernier item de W2.
+
+**Tests exécutés.** `bun test test/locus/` : 368 pass, 0 fail (21 fichiers). `bun run typecheck` :
+7/7. `prettier --check` : conforme.
+
+Le test de sortie de W2.19 — « verte contre le harness » — passe : les onze contract tests de §28.2
+s'exécutent, le harnais épinglé ne rend aucun constat sur les cas conformes et en rend sur les cas
+fautifs. Vérifié par mutation, trois fois : neutraliser le compteur d'items manquants fait rougir
+§28.2 ; laisser passer une entrée hors du pin fait rougir §28.3 ; retirer l'enregistrement d'un des
+onze cas fait rougir le test de sortie.
+
+**Décisions prises.** Quatre.
+
+_L'absence d'un contract test est un échec, pas une absence._ §28.2 énumère onze noms, et une liste
+dans une spécification ne teste rien par elle-même. Les cas s'enregistrent donc eux-mêmes, et un
+dernier test relit le compte : une suite à laquelle il manquerait « revocation » serait verte, et
+sa vertu serait un artefact de ce qu'elle ne fait pas. C'est la règle « jamais silencieux » du
+projet retournée vers la suite elle-même.
+
+_Le compteur signale les deux sens._ Un item **manquant** est un pan de §28.2 non couvert ; un cas
+**inconnu** est un nom qui a dérivé, ou une spec qui a bougé. Dans les deux cas la correspondance
+entre suite et spec a cessé d'être vérifiable, et c'est ce que la fonction existe pour dire. Un
+test vérifie que le compteur attrape — sans lui, une fonction rendant toujours la liste vide
+passerait le test principal. Même précaution que pour `leakFindings` en W2.18.
+
+_Toutes les entrées LEP viennent du pin._ §28.3 : « les tests ne doivent pas dépendre d'un dépôt
+Locus Solus local mutable ». La liste des entrées autorisées est **lue depuis `PINNED.json`**
+plutôt qu'énumérée à la main — une liste écrite deux fois se désynchronise une fois. Un fichier LEP
+lu hors du pin porte une version que rien ne dit : la suite passerait ou échouerait selon l'état
+d'un répertoire voisin, ce qui n'est plus une conformance mais une coïncidence.
+
+_Un constat attendu est nommé, pas compté._ Les cas fautifs — séquence qui recule, résultat tardif
+muet — vérifient la **règle** du constat (`sequence`, `late-result`) et non son nombre. « Il y a des
+constats » passerait sur n'importe quel autre problème, y compris un que le test n'a pas voulu
+provoquer.
+
+**Écart avec la spec.** Une note. §28.3 parle de vérifier la compatibilité « avec une version
+publiée de Locus Solus » ; il n'y en a pas encore, le monorepo est privé et non publié. Le mode
+nominal est donc `pinned` — hors ligne, reproductible, empreintes dans le dépôt — et
+`verified-against-source` reste un bonus quand le dépôt d'origine est joignable. `SourceStanding`
+nomme les trois états pour que « la vérification croisée n'a pas eu lieu » soit dicible plutôt que
+supposé. Rien n'est bloqué : la suite est valide en `pinned`, simplement moins étayée.
+
+**État de W2.** Les dix-neuf items de W2 sont faits. La couche `src/locus/` compte vingt-deux
+modules et 368 tests. Trois arbitrages cross-repo restent ouverts pour `locusolus`, tous trois
+écrits ici et aucun bloquant : `message_id` de §18.2 absent de `lep/1.0` ; la permission offline de
+§24.3 absente de `MissionEnvelope` ; le code de refus `data_locality_violation` sans producteur en
+attente de la politique de localité de §21.9.
+
+**Prochain item.** W1 (locusolus) — domain, event store, ports purs. Ouvert et débloqué depuis le
+début, jamais commencé, et c'est désormais le seul chantier ouvert de la roadmap.
