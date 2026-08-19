@@ -195,6 +195,24 @@ export const VERIFICATIONS: readonly Verification[] = [
     },
   },
   {
+    id: "attempt-rank-matches-the-lease",
+    statement: "Le rang d'attempt d'un événement est celui de la lease, jamais un autre nombre.",
+    check: (session, lease) =>
+      substitutions(session.events, "attempt", lease.attempt, (event) => event.attempt),
+  },
+  {
+    id: "worker-id-matches-the-manifest",
+    statement: "Le `worker_id` d'un événement est celui annoncé au handshake.",
+    check: (session) =>
+      substitutions(session.events, "worker_id", session.manifest.worker_id, (e) => e.worker_id),
+  },
+  {
+    id: "task-id-matches-the-mission",
+    statement: "Le `task_id` d'un événement est celui de la mission acceptée.",
+    check: (session) =>
+      substitutions(session.events, "task_id", session.mission.task_id, (e) => e.task_id),
+  },
+  {
     id: "late-result-declares-itself",
     statement:
       "Un attempt qui rend après l'expiration de sa lease le déclare, au lieu de le laisser deviner.",
@@ -242,6 +260,54 @@ export async function runConformance(
   }
   return { findings, ran };
 }
+
+/**
+ * Les événements qui portent une identité **différente** de celle attendue.
+ *
+ * # Trois vérifications et non une
+ *
+ * §11.1 : « aucune de ces identités ne doit être substituée aux autres. » Une vérification unique
+ * qui dirait « identités incohérentes » enverrait comparer trois paires à la main, et c'est
+ * précisément le travail que la substitution rend difficile — les trois valeurs se ressemblent, ce
+ * sont toutes des identifiants préfixés. Chaque identité a donc sa vérification, et chaque constat
+ * **nomme** celle qui a été substituée.
+ *
+ * # Absent n'est pas substitué
+ *
+ * Les trois champs sont facultatifs dans le schéma de l'événement. Un champ absent n'est donc pas
+ * une substitution : c'est une absence, et exiger sa présence ici ferait du harnais un vérificateur
+ * de complétude que LEP ne demande pas. Les deux fautes ne se réparent pas pareil — l'une en
+ * corrigeant une valeur, l'autre en décidant si le champ doit devenir obligatoire, ce qui est un
+ * mineur de protocole.
+ */
+function substitutions<T>(
+  events: readonly Event[],
+  field: "attempt" | "worker_id" | "task_id",
+  expected: T,
+  read: (event: Event) => T | undefined,
+): readonly Finding[] {
+  const findings: Finding[] = [];
+  for (const event of events) {
+    const actual = read(event);
+    if (actual === undefined || actual === expected) continue;
+    findings.push(
+      finding(
+        "identity",
+        `${field} vaut ${String(actual)} alors que ${SOURCE[field]} dit ${String(expected)} — ` +
+          "§11.1 : aucune de ces identités ne doit être substituée aux autres",
+        event,
+      ),
+    );
+  }
+  return findings;
+}
+
+/** D'où vient l'identité de référence, pour que le constat dise où aller la relire. */
+const SOURCE = {
+  attempt: "la lease",
+  worker_id: "le manifeste",
+  task_id: "la mission",
+} as const;
 
 /**
  * `payload` est volontairement opaque dans le schéma — `{ "type": "object" }`, sans propriétés —

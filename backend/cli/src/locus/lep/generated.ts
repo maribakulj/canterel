@@ -43,6 +43,8 @@ export type LimitResult = "enforced" | "unenforced" | "not-run";
  */
 export type Refs = readonly RefsItem[];
 
+export type Hash = string;
+
 /**
  * Le GPU est une capability, pas une dépendance globale (invariant 8) : absent veut dire « aucun n'est requis », jamais « n'importe lequel fera l'affaire ».
  */
@@ -521,6 +523,10 @@ export type MissionEnvelope = {
    */
   readonly review_policy?: "none" | "self" | "independent" | "independent-blind" | undefined;
   /**
+   * Le rôle de l'instance d'agent, au sens de `SPEC_V1.md` §7.1 (`AgentTemplate.role`) et §20 (`- role: logical-reviewer`). Optionnel : un document `1.0` le laisse absent, et absent ne se remplit pas d'un défaut. Chaîne libre et non énumération, parce qu'un mineur ajoute des champs et jamais des valeurs (ADR 0017, interdit 3) — un rôle nouveau dans une énumération fermée ferait échouer la désérialisation chez tout consommateur `1.0`. Ne prend jamais le pas sur `review_policy` : l'invariant 11 décide avant le rôle.
+   */
+  readonly role?: string | undefined;
+  /**
    * Ce que l'attempt doit rendre. `epistemic-commit/1` n'a aucune autorité de validation avant traitement par Locus Solus (§15.7).
    */
   readonly output_contract: string;
@@ -788,9 +794,154 @@ export type EpistemicCommit = {
 };
 
 /**
+ * Ce que le run a constaté. Le hash du snapshot est ce qui prouve la reproduction ; celui de la ressource live, quand il est connu, ne sert qu'à constater l'évolution.
+ */
+export type RemoteArtifactRefExpected = {
+  readonly snapshot_hash: Hash;
+  readonly live_hash_at_run?: Hash | undefined;
+  readonly captured_at?: string | undefined;
+};
+
+/**
+ * Comment atteindre la ressource. §19 en nomme cinq et n'en autorise qu'un : deux locators laisseraient au viewer le soin de choisir, donc de choisir différemment d'une fois sur l'autre.
+ */
+export type RemoteArtifactRefLocator = {
+  readonly manifest_url?: string | undefined;
+  readonly canvas_id?: string | undefined;
+  readonly content_state?: string | undefined;
+  readonly annotation_target?: string | undefined;
+  readonly local_snapshot?: string | undefined;
+};
+
+export type RemoteArtifactRef = {
+  /**
+   * L'identité canonique de l'artefact côté Locus. §19 exige qu'elle s'affiche séparément de la ressource distante : c'est elle qui ne bouge pas.
+   */
+  readonly artifact_id: string;
+  readonly media_type: string;
+  /**
+   * Ce que le run a constaté. Le hash du snapshot est ce qui prouve la reproduction ; celui de la ressource live, quand il est connu, ne sert qu'à constater l'évolution.
+   */
+  readonly expected: RemoteArtifactRefExpected;
+  /**
+   * Comment atteindre la ressource. §19 en nomme cinq et n'en autorise qu'un : deux locators laisseraient au viewer le soin de choisir, donc de choisir différemment d'une fois sur l'autre.
+   */
+  readonly locator: RemoteArtifactRefLocator;
+  /**
+   * Ce que l'artefact suggère, jamais ce qu'il impose : xiiif n'est pas requis par les agents (invariant 10).
+   */
+  readonly viewer_hint?: "iiif" | "image" | "pdf" | "none" | undefined;
+};
+
+export type DeploymentAdaptersItem = {
+  readonly role: string;
+  readonly implementation: string;
+};
+
+export type DeploymentSecretRefsItem = {
+  readonly name: string;
+  readonly reference: string;
+};
+
+export type Deployment = {
+  /**
+   * Lequel des cinq profils obligatoires de §27.1.
+   */
+  readonly profile:
+    "personal-local" | "personal-node" | "single-node-vm" | "cloud-platform" | "distributed-hybrid";
+  /**
+   * L'URL Locus à laquelle les clients se connectent. C'est tout ce qu'ils voient de la topologie.
+   */
+  readonly endpoint: string;
+  /**
+   * Quel rôle est tenu par quelle implémentation. Une liste plutôt qu'un objet : le domaine refuse un rôle déclaré deux fois, ce qu'un objet JSON rendrait indétectable — le second écraserait le premier en silence.
+   */
+  readonly adapters: readonly DeploymentAdaptersItem[];
+  /**
+   * Les limites du déploiement, déclarées plutôt que contournées (§27.1).
+   */
+  readonly capabilities?: readonly string[] | undefined;
+  /**
+   * Où trouver un secret, jamais le secret. Le motif refuse une valeur en clair : `hunter2` n'est pas une référence.
+   */
+  readonly secret_refs?: readonly DeploymentSecretRefsItem[] | undefined;
+};
+
+export type ViewNodesItem = {
+  readonly id: string;
+  readonly kind: string;
+  readonly label: string;
+};
+
+export type ViewEdgesItem = {
+  readonly from: string;
+  readonly to: string;
+  readonly kind: string;
+};
+
+export type View = {
+  /**
+   * Laquelle des huit projections de §23.3.
+   */
+  readonly kind:
+    | "graph_2d"
+    | "argument_map"
+    | "provenance"
+    | "dependencies"
+    | "disagreements"
+    | "semantic_space"
+    | "branch_landscape"
+    | "agent_society";
+  /**
+   * Le point du journal auquel la vue a été prise. Un viewer qui l'ignore ne peut pas dire s'il montre l'état d'aujourd'hui.
+   */
+  readonly watermark: number;
+  /**
+   * Le condensat de la vue dont celle-ci est un cadrage ou un filtre. Absent pour une projection ; présent sans exception pour une vue dérivée, y compris quand le filtre n'a rien retiré.
+   */
+  readonly derived_from?: string | undefined;
+  /**
+   * Le condensat de la forme canonique. Le consommateur la reconstruit et compare : ce qui prouve ne peut pas être ce qui est demandé.
+   */
+  readonly digest: string;
+  readonly nodes: readonly ViewNodesItem[];
+  readonly edges: readonly ViewEdgesItem[];
+};
+
+export type HumanReviewFinding = {
+  /**
+   * Le ReviewDossier auquel ce finding s'attache. §20 : la revue humaine « produit un finding attachable à un ReviewDossier », donc elle en nomme un.
+   */
+  readonly dossier_id: string;
+  /**
+   * La révision revue. Le domaine refuse une cible que le dossier ne couvre pas : sans cela une revue humaine élargirait le dossier en silence.
+   */
+  readonly target: string;
+  /**
+   * Qui a regardé. Une identité humaine, pas un agent : elle ne passe pas par l'attestation d'indépendance de §17.4, parce que ce n'est pas une revue indépendante.
+   */
+  readonly reviewer: string;
+  /**
+   * L'un des quatre de §20, sous son nom. `accept` ne dit pas que la revendication tient : il dit que le relecteur humain n'a pas d'objection, ce qui n'est pas une preuve.
+   */
+  readonly verdict?: "accept" | "needs-correction" | "wrong-target" | "source-changed" | undefined;
+  /**
+   * Le commentaire libre, cinquième forme d'enregistrement de §20. Un finding qui ne porte ni verdict ni commentaire ne dit rien, et `anyOf` le refuse.
+   */
+  readonly comment?: string | undefined;
+  /**
+   * Les révisions sur lesquelles le relecteur s'appuie. §17.5 : un finding sans preuve concrète est un commentaire non bloquant — la règle vaut pour un humain comme pour un agent, et c'est elle, pas la qualité du relecteur, qui décide si le finding est opposable.
+   */
+  readonly evidence?: readonly string[] | undefined;
+  readonly recorded_at?: string | undefined;
+};
+
+/**
  * Les documents qu'un pair peut envoyer ou recevoir, dans l'ordre du registre.
  */
 export const LEP_DOCUMENTS = [
+  "ArtifactManifest",
+  "RunManifest",
   "CapabilityManifest",
   "MissionEnvelope",
   "SandboxAttestation",
@@ -798,6 +949,10 @@ export const LEP_DOCUMENTS = [
   "Attempt",
   "Lease",
   "EpistemicCommit",
+  "RemoteArtifactRef",
+  "Deployment",
+  "View",
+  "HumanReviewFinding",
 ] as const;
 
 export type LepDocument = (typeof LEP_DOCUMENTS)[number];

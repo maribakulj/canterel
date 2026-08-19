@@ -1,11 +1,11 @@
 {
   "repo": "https://github.com/maribakulj/locusolus",
-  "commit": "7860150db19003bb91bb09f3103106a3292a082c",
+  "commit": "9ea9f0d5863d0c2cb1689347ed0a019957cb95cb",
   "files": {
     "backend/cli/src/locus/lep/generated.ts": {
       "source": "packages/lep/src/generated.ts",
-      "sha256_source": "270a55f57eb268ad817ff0e5839c747d15b19c16d811c974c4ed9fac214a3066",
-      "sha256_vendored": "270a55f57eb268ad817ff0e5839c747d15b19c16d811c974c4ed9fac214a3066"
+      "sha256_source": "aab1e6ba3c687e8b4e548171246d35e9c7cadcd022b48ab7cda60876977abb4e",
+      "sha256_vendored": "aab1e6ba3c687e8b4e548171246d35e9c7cadcd022b48ab7cda60876977abb4e"
     },
     "backend/cli/src/locus/lep/negotiate.ts": {
       "source": "packages/lep/src/index.ts",
@@ -24,8 +24,8 @@
     },
     "backend/cli/test/locus/harness/harness.ts": {
       "source": "packages/testing/src/harness.ts",
-      "sha256_source": "54678d415ae90d51a93d9f36564eff5b0b6688f0ce2aceb9d445f0411720fcc0",
-      "sha256_vendored": "98321fea11526f02abfb90ac05f358194c142e8b789a2db95a7c7d0abc18bef4"
+      "sha256_source": "f5e778f67ecd8cd786f39f6059d3f27082c449e830b02f47f1a2b9275c400f7e",
+      "sha256_vendored": "54d2a992679bb10ca0981916068fd648fb0a82020f909d2b47da4a20d636f5f9"
     },
     "backend/cli/test/locus/harness/index.ts": {
       "source": "packages/testing/src/index.ts",

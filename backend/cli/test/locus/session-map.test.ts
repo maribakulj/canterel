@@ -223,12 +223,8 @@ describe("overlay d'agent — additif, jamais remplaçant", () => {
     // `mapMission` — c'est-à-dire par le chemin que le worker emprunte réellement. Un test qui
     // n'appellerait que `selectOverlay` prouverait que la table existe, pas qu'un rôle reçu sur le
     // fil l'atteint.
-    // Le `as` n'est pas une commodité : le SDK épinglé ici est celui d'avant la tranche 1, donc le
-    // type ne connaît pas encore `role`. C'est littéralement la situation qu'un mineur décrit — un
-    // document `1.1` chez un consommateur `1.0` — et le lecteur doit s'en tirer. Il disparaîtra au
-    // prochain re-vendoring, quand le champ sera dans le type.
     const avec = mapMission({
-      mission: { ...MISSION(), role: "provenance-reviewer" } as MissionEnvelope,
+      mission: { ...MISSION(), role: "provenance-reviewer" },
       manifest: MANIFEST(),
       tools: TOOLS,
       containedWrites: true,
