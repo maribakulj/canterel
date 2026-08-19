@@ -295,11 +295,7 @@ describe("offline — §24.3, et la tranche 3 du mineur `lep/1.1`", () => {
   test("autorisé, le plafond ne dépasse jamais le lease", () => {
     // Un budget offline plus long que le lease donnerait le droit de travailler après la fin du
     // droit de travailler.
-    const generous = offlineVerdict(
-      permise({ offline_allowed: true, offline_budget_ms: 99_999_999 }),
-      LEASE,
-      START,
-    )
+    const generous = offlineVerdict(permise({ offline_allowed: true, offline_budget_ms: 99_999_999 }), LEASE, START)
     expect(generous.allowed).toBe(true)
     if (generous.allowed) expect(generous.untilMs).toBe(1_800_000)
 
