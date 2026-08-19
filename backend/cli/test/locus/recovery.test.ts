@@ -262,7 +262,12 @@ describe("corruption locale — §24.5", () => {
   })
 })
 
-describe("offline — §24.3", () => {
+describe("offline — §24.3, et la tranche 3 du mineur `lep/1.1`", () => {
+  /** Une mission qui porte la permission, sous le nom que l'enveloppe lui donne. */
+  function permise(permission: Partial<MissionEnvelope>): MissionEnvelope {
+    return { ...MISSION, ...permission }
+  }
+
   test("sans autorisation de la mission, le worker checkpoint et suspend", () => {
     // Deny-by-default : continuer parce que rien ne l'interdit ferait travailler hors ligne sur
     // la mission dont l'auteur n'a jamais imaginé qu'on le lui demanderait.
@@ -271,26 +276,59 @@ describe("offline — §24.3", () => {
     if (verdict.allowed) return
     expect(verdict.action).toBe("checkpoint-and-suspend")
 
-    const explicit = offlineVerdict(MISSION, LEASE, START, { offline_allowed: false })
+    const explicit = offlineVerdict(permise({ offline_allowed: false }), LEASE, START)
     expect(explicit.allowed).toBe(false)
+  })
+
+  test("la permission vient de l'enveloppe, et de nulle part ailleurs", () => {
+    // Le sujet du branchement. `offlineVerdict` prenait la permission en quatrième paramètre,
+    // faute de champ sur le fil ; un appelant pouvait donc accorder une dispense que la mission
+    // n'avait jamais donnée — exactement le trou que le refus par défaut protégeait. La signature
+    // ne l'accepte plus, et un test qui compterait ses arités le dirait mieux qu'un commentaire.
+    expect(offlineVerdict.length).toBe(3)
+
+    const source = readFileSync(join(import.meta.dir, "../../src/locus/recovery.ts"), "utf8")
+    const bloc = source.slice(source.indexOf("export function offlineVerdict"))
+    expect(bloc.slice(0, bloc.indexOf("}\n\n"))).not.toContain("permission")
   })
 
   test("autorisé, le plafond ne dépasse jamais le lease", () => {
     // Un budget offline plus long que le lease donnerait le droit de travailler après la fin du
     // droit de travailler.
-    const generous = offlineVerdict(MISSION, LEASE, START, {
-      offline_allowed: true,
-      offline_budget_ms: 99_999_999,
-    })
+    const generous = offlineVerdict(
+      permise({ offline_allowed: true, offline_budget_ms: 99_999_999 }),
+      LEASE,
+      START,
+    )
     expect(generous.allowed).toBe(true)
     if (generous.allowed) expect(generous.untilMs).toBe(1_800_000)
 
-    const tight = offlineVerdict(MISSION, LEASE, START, { offline_allowed: true, offline_budget_ms: 60_000 })
+    const tight = offlineVerdict(permise({ offline_allowed: true, offline_budget_ms: 60_000 }), LEASE, START)
     if (tight.allowed) expect(tight.untilMs).toBe(60_000)
   })
 
+  test("un budget sans permission n'autorise rien", () => {
+    // Un budget n'est pas une permission. Le lire comme telle ferait d'un plafond une dispense,
+    // c'est-à-dire d'une borne une autorisation — la même confusion que `network_mode` face à
+    // `offline_allowed`, à un cran de plus.
+    const verdict = offlineVerdict(permise({ offline_budget_ms: 60_000 }), LEASE, START)
+    expect(verdict.allowed).toBe(false)
+  })
+
+  test("le confinement réseau ne décide pas de la dispense", () => {
+    // Les quatre combinaisons, côté lecteur cette fois : `network` contraint, la permission
+    // dispense, et aucune des deux ne se déduit de l'autre. Une mission en `deny` sans dispense
+    // n'a jamais eu de réseau à perdre ; une mission en `full` sans dispense doit échouer s'il
+    // tombe. Si le lecteur dérivait l'une de l'autre, la seconde disparaîtrait.
+    for (const network of ["deny", "full"] as const) {
+      const sandbox = { ...MISSION.sandbox, network }
+      expect(offlineVerdict(permise({ sandbox }), LEASE, START).allowed).toBe(false)
+      expect(offlineVerdict(permise({ sandbox, offline_allowed: true }), LEASE, START).allowed).toBe(true)
+    }
+  })
+
   test("sans lease valide, aucun offline", () => {
-    const verdict = offlineVerdict(MISSION, LEASE, START + 2_000_000, { offline_allowed: true })
+    const verdict = offlineVerdict(permise({ offline_allowed: true }), LEASE, START + 2_000_000)
     expect(verdict.allowed).toBe(false)
   })
 })

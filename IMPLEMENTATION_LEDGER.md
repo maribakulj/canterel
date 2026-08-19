@@ -1482,3 +1482,52 @@ chaque synchronisation (ADR 0010).
 
 **Prochain item.** `W19.a` dans `locusolus` — les motifs de refus d'admission sur le fil. Instruit :
 le générateur de SDK ne sait pas produire d'union discriminée, ce qui en fait un item préalable.
+
+---
+
+## 2026-08-19 — W19.b — La permission hors ligne vient de l'enveloppe, et de nulle part ailleurs
+
+**Périmètre.** `backend/cli/src/locus/recovery.ts` (`offlineVerdict` perd son quatrième paramètre),
+`backend/cli/test/locus/recovery.test.ts` (deux tests de plus, les autres réécrits),
+`backend/cli/src/locus/lep/{generated.ts,PINNED.json}` (re-vendorés sur `08c68ab`),
+`IMPLEMENTATION_LEDGER.md`. Rien hors de `src/locus/**` ni `test/locus/**`.
+
+**Le sujet n'est pas d'ajouter une lecture, c'est d'en retirer une.** `offlineVerdict` prenait la
+permission en **quatrième paramètre**, faute de champ sur le fil — un compromis honnête, écrit et
+consigné par `W2.16`. Mais un paramètre hors bande laisse un appelant accorder une dispense que la
+mission n'a jamais donnée, et c'est exactement le trou que le refus par défaut protégeait. La
+tranche 3 du mineur ayant posé `offline_allowed` sur l'enveloppe, le paramètre disparaît : la
+permission vient d'un seul endroit, celui que l'émetteur signe.
+
+**Un test compte les arités.** `offlineVerdict.length === 3` dit mieux qu'un commentaire qu'aucune
+quatrième source ne peut revenir, et une lecture du corps refuse le mot `permission` — la même
+technique que `W18.a`, qui lit le source pour prouver une absence.
+
+**Les quatre combinaisons, côté lecteur cette fois.** `W19.b` les a testées sur le schéma ; elles le
+sont maintenant sur le verdict. `deny` sans dispense refuse, `deny` avec dispense autorise, `full`
+sans dispense refuse, `full` avec dispense autorise. Si le lecteur dérivait l'une de l'autre, la
+mission en `full` qui **doit** échouer quand le réseau tombe disparaîtrait — c'est celle qui se perd
+toujours en premier quand on confond le confinement et l'autorisation.
+
+**Un budget n'est pas une permission**, et un test le tient : `offline_budget_ms` seul n'autorise
+rien. Le lire autrement ferait d'une borne une dispense.
+
+**Le pin a failli désigner le mauvais commit.** `git rev-parse HEAD` dans `locusolus` rendait le
+commit de **branche**, pas celui que le squash a posé sur `main`. L'arbre est le même, donc les
+empreintes auraient été justes et la référence fausse — un pin qui désigne un commit absent de
+`main` est un pin qu'on ne peut pas rejouer. Corrigé sur `08c68ab`.
+
+**Tests exécutés.** `bun test test/locus/` — **376 conformes, zéro échec**, dont `pin.test.ts` et
+`verifyAgainstSource`, qui rejoue la réécriture déclarée. `bun run typecheck` — sept paquets, verts.
+
+**Ce qui reste rouge, et pourquoi ce n'est pas ce sprint.** `Truncate > cleanup`, défaut amont daté :
+`Identifier.create` empaquette environ 53 bits dans six octets, l'horodatage relu se replie tous les
+795 jours, et le dernier repli date du 14 août 2026. Le test redeviendra vert seul le 24. Arbitré :
+on avance par-dessus plutôt que de retoucher `src/id/id.ts`, payé à chaque synchronisation
+(ADR 0010).
+
+**Écart avec la spec.** Aucun. `SPEC_V1.md` §1.2 pose l'invariant, §24.3 décrit le verdict, et le
+worker les relie désormais sans intermédiaire.
+
+**Prochain item.** `W20.a` dans `locusolus` — le `CommandEnvelope` de §22.2 et les huit familles
+d'erreurs typées de §22.5, sans transport. Premier item d'un `apps/locusd` encore vide.
