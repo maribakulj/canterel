@@ -1445,3 +1445,40 @@ entrée où elle doit être, à côté de `Bloqué` et `Reporté`.
 
 **Prochain item.** `W15.f` (2/3), dans `locusolus` : le champ `role` avec `x-since: "1.1"`,
 `SET_ROLE` dans `packages/coordination`, et les deux tests qui définissent « mineur ».
+
+---
+
+## 2026-08-19 — W15.f — Le SDK épinglé rattrape la tranche 1
+
+**Périmètre.** `backend/cli/src/locus/lep/PINNED.json` (commit et empreintes),
+`backend/cli/src/locus/lep/generated.ts` et `backend/cli/test/locus/harness/harness.ts` (recopiés),
+`backend/cli/test/locus/session-map.test.ts` (un `as` retiré), `IMPLEMENTATION_LEDGER.md`.
+
+**Le troisième et dernier pas.** `PINNED.json` référence un commit de `locusolus` : il ne pouvait
+pas être mis à jour avant que la tranche 1 y soit mergée. Elle l'est (`9ea9f0d`), donc le SDK
+épinglé porte désormais `role?: string`, et le test de bout en bout n'a plus besoin de forcer le
+type. Le `as MissionEnvelope` qu'il portait décrivait littéralement la situation d'un mineur — un
+document `1.1` chez un consommateur `1.0` — et il disparaît maintenant que le consommateur a
+rattrapé.
+
+**Ce que le re-vendoring a révélé au passage.** Deux fichiers avaient dérivé, pas un :
+`generated.ts` à cause de la tranche 1, et `harness.ts` d'une modification amont **antérieure** que
+personne n'avait recopiée. Le pin était donc déjà périmé avant ce sprint, et le seul test qui
+l'aurait dit — `verifyAgainstSource` — ne tourne qu'avec une copie de travail de `locusolus` à côté,
+ce que la CI de ce fork n'a jamais. Le contrôle est dégradé par construction et son propre
+commentaire le dit ; ce sprint est la première fois qu'il a servi.
+
+**Tests exécutés.** `bun test test/locus/` — **373 conformes, zéro échec**, dont
+`verifyAgainstSource`, qui rejoue la réécriture déclarée et confirme que rien n'a été retouché à la
+main. `bun run typecheck` — sept paquets, verts.
+
+**Ce qui reste rouge, et pourquoi ce n'est pas ce sprint.** `Truncate > cleanup` échoue toujours :
+`Identifier.create` empaquette environ 53 bits dans six octets, l'horodatage relu se replie tous les
+795 jours, et le dernier repli date du 14 août 2026 — le test redeviendra vert seul le 24. Défaut
+**amont**, arbitré : on avance par-dessus plutôt que de retoucher `src/id/id.ts`, qui serait payé à
+chaque synchronisation (ADR 0010).
+
+**Écart avec la spec.** Aucun.
+
+**Prochain item.** `W19.a` dans `locusolus` — les motifs de refus d'admission sur le fil. Instruit :
+le générateur de SDK ne sait pas produire d'union discriminée, ce qui en fait un item préalable.
