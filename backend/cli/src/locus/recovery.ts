@@ -154,23 +154,24 @@ function major(version: string): string {
  * « Le worker peut poursuivre hors ligne **uniquement si la MissionEnvelope l'autorise** et
  * jusqu'au plafond de lease/offline budget. Sinon il checkpoint et suspend. »
  *
- * Le schéma épinglé `lep/1.0` ne porte aucun champ de permission offline. La lecture est donc
- * **deny-by-default** : une mission qui n'autorise rien n'autorise pas. L'inverse — continuer
- * parce que rien ne l'interdit — ferait travailler hors ligne sur la mission la plus sensible du
- * lot, celle dont l'auteur n'a jamais imaginé qu'on le lui demanderait. L'écart est écrit au
- * ledger plutôt que comblé par un champ inventé côté worker.
+ * La permission vient de l'**enveloppe**, depuis la tranche 3 du mineur `lep/1.1` (ADR 0017 §5.3) :
+ * `offline_allowed` et `offline_budget_ms`. Elle ne se passe plus à côté, et c'est le sujet de ce
+ * changement — un paramètre hors bande aurait laissé un appelant accorder une dispense que la
+ * mission n'a jamais donnée, ce qui est exactement le trou que le refus par défaut protégeait.
+ *
+ * La lecture reste **deny-by-default** : une mission qui n'autorise rien n'autorise pas. L'inverse
+ * — continuer parce que rien ne l'interdit — ferait travailler hors ligne sur la mission la plus
+ * sensible du lot, celle dont l'auteur n'a jamais imaginé qu'on le lui demanderait. Et « absente »
+ * ne devient pas « refusée » : le champ vaut `undefined` dans un document `1.0`, `false` dans un
+ * document qui refuse, et le verdict est le même — mais ce n'est pas le même fait, et rien ici ne
+ * les confond.
  */
 export type OfflineVerdict =
   | { readonly allowed: true; readonly untilMs: number }
   | { readonly allowed: false; readonly reason: string; readonly action: "checkpoint-and-suspend" }
 
-export function offlineVerdict(
-  mission: MissionEnvelope,
-  lease: Lease | null,
-  now: number,
-  permission?: { readonly offline_allowed?: boolean; readonly offline_budget_ms?: number },
-): OfflineVerdict {
-  if (permission?.offline_allowed !== true) {
+export function offlineVerdict(mission: MissionEnvelope, lease: Lease | null, now: number): OfflineVerdict {
+  if (mission.offline_allowed !== true) {
     return {
       allowed: false,
       reason: `la mission \`${mission.task_id}\` n'autorise pas le travail hors ligne : checkpoint et suspension (§24.3)`,
@@ -187,7 +188,7 @@ export function offlineVerdict(
   // Le plus contraignant des deux plafonds. Un budget offline plus long que le lease donnerait le
   // droit de travailler après la fin du droit de travailler.
   const leaseRemaining = Date.parse(lease.expires_at) - now
-  const budget = permission.offline_budget_ms ?? leaseRemaining
+  const budget = mission.offline_budget_ms ?? leaseRemaining
   return { allowed: true, untilMs: Math.min(leaseRemaining, budget) }
 }
 

@@ -45,6 +45,53 @@ export type Refs = readonly RefsItem[];
 
 export type Hash = string;
 
+export type Reason =
+  /**
+   * L'hôte ne sait pas confiner aussi fort que la mission l'exige. **Distinct de `level_not_attested`** : « l'hôte ne sait pas faire » envoie chercher une autre machine ; « l'hôte l'annonce sans l'avoir prouvé » envoie faire tourner une campagne de self-tests. Les fondre ferait acheter du matériel pour un problème d'attestation.
+   */
+  | {
+      readonly code: "level_unavailable";
+      readonly required: SandboxLevel;
+      readonly best: SandboxLevel;
+    }
+  /**
+   * La réservation dépasse la capacité de l'hôte. Le seul motif sans donnée : ce qui manque est du volume, et la réservation refusée est déjà dans la mission.
+   */
+  | { readonly code: "capacity_exceeded" }
+  /**
+   * L'accélérateur demandé n'est pas sur cet hôte.
+   */
+  | { readonly code: "accelerator_unavailable"; readonly kind: string }
+  /**
+   * L'hôte ne sait pas **borner** l'espace disque, quel qu'il en reste. Distinct de `capacity_exceeded`, et la distinction n'est pas cosmétique : « la capacité manque » envoie libérer de la place ou réduire la réservation ; « la borne n'est pas applicable ici » envoie changer de système de fichiers, ou de machine. Les fondre ferait réduire une réservation qui aurait échoué de la même façon à un octet. Né avec W5.g et W5.j, après l'écriture d'ADR 0017 §5.2 — qui en nommait six.
+   */
+  | {
+      readonly code: "disk_quota_not_enforceable";
+      readonly requested: number;
+      readonly why: string;
+    }
+  /**
+   * L'hôte ne sait pas appliquer ce mode réseau.
+   */
+  | { readonly code: "network_mode_unsupported"; readonly mode: NetworkMode }
+  /**
+   * L'hôte annonce ce niveau mais ne l'a jamais prouvé — §12.2 demande une sandbox « disponible **et attestée** ». `proven` est **absent** quand aucune campagne n'a conclu, et ce n'est pas la même ignorance qu'un niveau prouvé trop bas : l'une envoie lancer les self-tests, l'autre dit que l'hôte a échoué à les passer.
+   */
+  | {
+      readonly code: "level_not_attested";
+      readonly required: SandboxLevel;
+      readonly proven?: SandboxLevel | undefined;
+    }
+  /**
+   * L'accélérateur **est** sur cet hôte, mais pas là où la mission veut être confinée. Distinct d'`accelerator_unavailable` : le dire « absent » enverrait chercher du matériel au lieu de choisir entre le conteneur et l'accélérateur.
+   */
+  | {
+      readonly code: "accelerator_outside_sandbox";
+      readonly kind: string;
+      readonly required: SandboxLevel;
+      readonly native_level: SandboxLevel;
+    };
+
 /**
  * Le GPU est une capability, pas une dépendance globale (invariant 8) : absent veut dire « aucun n'est requis », jamais « n'importe lequel fera l'affaire ».
  */
@@ -527,6 +574,14 @@ export type MissionEnvelope = {
    */
   readonly role?: string | undefined;
   /**
+   * La permission de poursuivre **hors ligne** — `SPEC_V1.md` §1.2 (dernier invariant) et §24.3. Distincte de `sandbox.network_mode`, et les deux ne se dérivent jamais l'une de l'autre : `network_mode: deny` est une **contrainte** imposée au worker, qui lui retire le réseau ; cette permission est une **dispense**, qui l'autorise à ne pas échouer quand le réseau manque. Une mission peut exiger `full` et n'avoir aucune dispense — elle échoue si le réseau tombe ; une autre peut être en `deny` sans dispense — elle n'a jamais eu de réseau à perdre. Les confondre ferait d'un confinement une autorisation, ce qu'ADR 0004 sépare partout ailleurs. Absente, elle ne s'accorde pas : un document `1.0` ne demande pas cette dispense, il n'en parle pas.
+   */
+  readonly offline_allowed?: boolean | undefined;
+  /**
+   * Le plafond de travail hors ligne, en millisecondes. Sans effet sans `offline_allowed` : un budget n'est pas une permission. Le lecteur retient de toute façon le plus contraignant de ce budget et du lease restant — un budget plus long que le lease donnerait le droit de travailler après la fin du droit de travailler.
+   */
+  readonly offline_budget_ms?: number | undefined;
+  /**
    * Ce que l'attempt doit rendre. `epistemic-commit/1` n'a aucune autorité de validation avant traitement par Locus Solus (§15.7).
    */
   readonly output_contract: string;
@@ -937,6 +992,19 @@ export type HumanReviewFinding = {
 };
 
 /**
+ * Pourquoi une mission n'a pas été admise sur un hôte — SPEC_V1 §10.2, ADR 0017 §5.2, tranche 2 du mineur `lep/1.1`. Document **nouveau** : aucune énumération existante ne gagne un membre, ce que l'interdit 3 de l'ADR refuse. Il porte des données et pas seulement des codes — le niveau exigé, le meilleur niveau prouvé, le genre d'accélérateur — donc un membre de plus sur une énumération n'aurait de toute façon pas suffi.
+ */
+export type AdmissionRefusal = {
+  readonly protocol: ProtocolVersion;
+  readonly task_id: string;
+  readonly attempt_id: string;
+  /**
+   * **Toutes** les conditions manquantes, jamais la première seule. `admit` les accumule et rend `Refused { reasons }` au pluriel ; un fil qui n'en transmettrait qu'une ferait corriger une condition pour retomber aussitôt sur la suivante, autant de fois qu'il en manque. `minItems: 1` parce qu'un refus sans motif n'est pas un refus.
+   */
+  readonly reasons: readonly Reason[];
+};
+
+/**
  * Les documents qu'un pair peut envoyer ou recevoir, dans l'ordre du registre.
  */
 export const LEP_DOCUMENTS = [
@@ -953,6 +1021,7 @@ export const LEP_DOCUMENTS = [
   "Deployment",
   "View",
   "HumanReviewFinding",
+  "AdmissionRefusal",
 ] as const;
 
 export type LepDocument = (typeof LEP_DOCUMENTS)[number];
