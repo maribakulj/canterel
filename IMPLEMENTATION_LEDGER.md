@@ -1368,3 +1368,80 @@ attente de la politique de localité de §21.9.
 
 **Prochain item.** W1 (locusolus) — domain, event store, ports purs. Ouvert et débloqué depuis le
 début, jamais commencé, et c'est désormais le seul chantier ouvert de la roadmap.
+
+---
+
+## 2026-08-19 — W15.f — Partiel : le lecteur du rôle, avant l'opération qui l'écrit
+
+**Périmètre.** `backend/cli/src/locus/agent-overlay.ts` (la table `AGENT_BY_ROLE` et l'ordre de
+choix), `backend/cli/src/locus/session-map.ts` (la lecture du champ), `backend/cli/test/locus/
+session-map.test.ts` (cinq tests), `IMPLEMENTATION_LEDGER.md`. Rien hors de `src/locus/**` ni de
+`test/locus/**`.
+
+**Pourquoi ce dépôt d'abord.** `W15.f` traverse `locusolus` et `canterel`, et l'ordre n'est pas
+libre. ADR 0016 décision 4 dit qu'une opération attributaire n'entre dans l'énumération que lorsque
+son consommateur existe : livrer `SET_ROLE` avant ce lecteur laisserait, le temps d'un merge, une
+opération que rien n'honore — exactement ce que la décision refuse. Le pin du SDK impose le même
+sens dans l'autre direction : `PINNED.json` référence un **commit** de `locusolus`, qui doit exister
+avant d'être épinglé. D'où trois pas : le lecteur ici, le champ et l'opération là-bas, le
+re-vendoring ici ensuite.
+
+**L'ordre de choix, et la contrainte qu'il porte.** `selectOverlay` choisit désormais par
+**politique de revue, puis rôle, puis capacités**. La première place n'est pas négociable et ADR
+0017 §5.1 le dit : « un `role` qui pourrait renvoyer une revue indépendante vers le profil du
+générateur reconstruirait exactement le trou que ce test bouche ». Il le reconstruirait en pire,
+puisqu'il le rendrait **demandable par l'émetteur**. Un test parcourt les deux politiques
+indépendantes contre quatre rôles, dont un qui vise `biology`, et exige `reviewer` dans les huit cas.
+
+**Pourquoi le rôle passe devant les capacités.** C'est là qu'il sert : une mission qui exige
+`biology` et dont le rôle est `provenance-reviewer` demande une vérification de provenance sur un
+sujet de biologie, pas un biologiste. Derrière les capacités, il n'aurait jamais rien changé, et
+l'item aurait été livré sans effet.
+
+**Un rôle inconnu ne casse rien.** Il retombe sur les capacités, puis sur le défaut. C'est
+l'interdit 3 d'ADR 0017 vu du lecteur : un mineur ajoute des champs, jamais des valeurs, donc un
+rôle qu'un émetteur plus récent enverrait ne doit pas arrêter un worker plus ancien — sinon le
+mineur suivant serait une rupture pour tout le monde sauf sur le papier.
+
+**Deux rôles dans la table, pas dix.** `logical-reviewer` et `provenance-reviewer` sont ceux que
+`SPEC_V1.md` §20 nomme. En inventer d'autres donnerait une table plus fournie et pas plus vraie.
+
+**Tests exécutés.** `bun test test/locus/` — 372 conformes, et **une** défaillance :
+`pin.test.ts` constate que le SDK épinglé a dérivé de la copie de travail de `locusolus`, où le
+champ `role` vient d'être généré. C'est le pas 3, pas une régression : le pin ne peut pas référencer
+un commit qui n'existe pas encore. `bun run typecheck` — sept paquets, verts. Le test de sortie
+côté worker, nommément : un rôle voyage **de la mission jusqu'à l'agent choisi** par `mapMission`,
+et la même mission sans rôle ne va pas au même endroit — sinon le test passerait pour une raison
+étrangère au rôle.
+
+**Ce qui n'a pas été fait passer pour vert, et comment ça a été vérifié.** La suite complète rend
+80 défaillances **dans ce conteneur** (`test/science/**`, mesures de mémoire et de CPU) et **une**
+en CI : `Truncate > cleanup > deletes files older than 7 days`. Une première « vérification » les a
+attribuées à la base en remisant les modifications — mais l'arbre était déjà commité, donc le
+remisage n'a rien remisé et la comparaison portait sur le même arbre. Elle ne valait rien.
+
+La vérification qui vaut est **mécanique** : `git diff origin/main...HEAD --name-only` rend quatre
+fichiers, dont trois sous `src/locus/**` et `test/locus/**`. Le test qui échoue importe
+`src/tool/truncation` et `src/id/id`, qui importent `global`, `id`, `permission`, `agent` et
+`scheduler`. Aucune intersection : ce diff n'est pas atteignable depuis ce test, qui échoue d'ailleurs
+**exécuté seul**.
+
+**Et la cause, trouvée en la cherchant.** `Identifier.create` empaquette `timestamp * 0x1000` —
+environ 53 bits — dans **six octets**. Les bits de poids fort tombent, et l'horodatage relu se replie
+tous les 2^36 ms, soit **795 jours**. Le dernier repli date du 14 août 2026, cinq jours avant ce
+sprint : c'est pourquoi le test était vert le 17 et rouge le 19, à graphe d'import identique au
+bit près. Vérifié en rejouant l'arithmétique sur les deux dates du test — « il y a 3 jours » se relit
+comme vieux de vingt mille jours, donc le fichier « récent » est supprimé, ce qu'affirme la ligne 156.
+
+C'est un défaut **amont**, dans `src/id/id.ts`. Le corriger d'ici serait payé à chaque
+synchronisation (ADR 0010), et rien de ce sprint ne le touche.
+
+**Écart avec la spec.** Aucun.
+
+**Ce que ce titre dit.** « Partiel » n'est pas une coquetterie : la garde de roadmap de `locusolus`
+lit les titres du registre, et une entrée nommée `W15.f` sans plus la compterait comme la livraison
+de l'item entier — le tableau porterait **fait** sur un tiers de travail. Le préfixe range cette
+entrée où elle doit être, à côté de `Bloqué` et `Reporté`.
+
+**Prochain item.** `W15.f` (2/3), dans `locusolus` : le champ `role` avec `x-since: "1.1"`,
+`SET_ROLE` dans `packages/coordination`, et les deux tests qui définissent « mineur ».

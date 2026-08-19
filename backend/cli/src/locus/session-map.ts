@@ -100,6 +100,9 @@ export function mapMission(input: MapInput): MapResult {
   }
 
   const reviewPolicy = typeof mission["review_policy"] === "string" ? (mission["review_policy"] as string) : undefined
+  // `role` est absent d'un document `lep/1.0`, et absent le reste : aucune valeur par défaut ne se
+  // substitue à ce qu'un émetteur n'a pas demandé (ADR 0017 §5.1).
+  const role = typeof mission["role"] === "string" ? (mission["role"] as string) : undefined
 
   return {
     ok: true,
@@ -110,6 +113,7 @@ export function mapMission(input: MapInput): MapResult {
       overlay: selectOverlay({
         requiredCapabilities: readStrings(mission["required_capabilities"]),
         ...(reviewPolicy === undefined ? {} : { reviewPolicy }),
+        ...(role === undefined ? {} : { role }),
       }),
       models: usableModels(input.manifest, klass),
       tools: allowed,

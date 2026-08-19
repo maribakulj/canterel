@@ -189,6 +189,68 @@ describe("overlay d'agent — additif, jamais remplaçant", () => {
     expect(selectOverlay({ requiredCapabilities: ["biology"] }).agent).toBe("biology")
   })
 
+  test("le rôle choisit l'agent quand la politique de revue n'a rien à dire", () => {
+    // W15.f, tranche 1 du mineur `lep/1.1`. C'est là que le rôle sert : une mission qui exige
+    // `biology` et dont le rôle est `provenance-reviewer` demande une vérification de provenance
+    // sur un sujet de biologie, pas un biologiste. Sans le rôle, seul le sujet se voyait.
+    expect(selectOverlay({ requiredCapabilities: ["biology"], role: "provenance-reviewer" }).agent).toBe("reviewer")
+    expect(selectOverlay({ role: "logical-reviewer" }).agent).toBe("reviewer")
+  })
+
+  test("le rôle ne passe jamais devant l'invariant 11", () => {
+    // La contrainte qu'ADR 0017 §5.1 pose et que le sprint d'implémentation ne peut pas contourner.
+    // Un `role` qui pourrait renvoyer une revue indépendante vers le profil du générateur
+    // reconstruirait exactement le trou que le test au-dessus bouche — en le rendant *demandable
+    // par l'émetteur*, ce qui est pire qu'un oubli.
+    for (const policy of ["independent", "independent-blind"]) {
+      for (const role of ["biology", "logical-reviewer", "research", "n'importe quoi"]) {
+        expect(selectOverlay({ requiredCapabilities: ["biology"], reviewPolicy: policy, role }).agent).toBe("reviewer")
+      }
+    }
+  })
+
+  test("un rôle inconnu retombe sur les capacités, il n'arrête rien", () => {
+    // Interdit 3 d'ADR 0017, côté lecteur : un mineur ajoute des champs, jamais des valeurs. Un
+    // rôle qu'un émetteur plus récent enverrait ne doit pas arrêter un worker plus ancien — sinon
+    // le mineur suivant serait une rupture pour tout le monde sauf sur le papier.
+    expect(selectOverlay({ requiredCapabilities: ["biology"], role: "archiviste" }).agent).toBe("biology")
+    expect(selectOverlay({ role: "archiviste" }).agent).toBe(DEFAULT_AGENT)
+  })
+
+  test("de bout en bout : le rôle voyage de la mission jusqu'à l'overlay", () => {
+    // Le test de sortie de W15.f demande un lecteur **exercé**, pas une fonction qui saurait lire.
+    // Celui-ci part d'une enveloppe de mission et arrive à l'agent choisi, en passant par
+    // `mapMission` — c'est-à-dire par le chemin que le worker emprunte réellement. Un test qui
+    // n'appellerait que `selectOverlay` prouverait que la table existe, pas qu'un rôle reçu sur le
+    // fil l'atteint.
+    // Le `as` n'est pas une commodité : le SDK épinglé ici est celui d'avant la tranche 1, donc le
+    // type ne connaît pas encore `role`. C'est littéralement la situation qu'un mineur décrit — un
+    // document `1.1` chez un consommateur `1.0` — et le lecteur doit s'en tirer. Il disparaîtra au
+    // prochain re-vendoring, quand le champ sera dans le type.
+    const avec = mapMission({
+      mission: { ...MISSION(), role: "provenance-reviewer" } as MissionEnvelope,
+      manifest: MANIFEST(),
+      tools: TOOLS,
+      containedWrites: true,
+    })
+    expect(avec.ok).toBe(true)
+    if (avec.ok) expect(avec.plan.overlay.agent).toBe("reviewer")
+
+    // Et la même mission sans rôle ne va pas au même endroit : sinon le test passerait pour une
+    // raison qui n'a rien à voir avec le rôle.
+    const sans = mapMission({ mission: MISSION(), manifest: MANIFEST(), tools: TOOLS, containedWrites: true })
+    expect(sans.ok).toBe(true)
+    if (sans.ok) expect(sans.plan.overlay.agent).not.toBe("reviewer")
+  })
+
+  test("un document sans rôle n'en reçoit pas un par défaut", () => {
+    // « Absent » et « demandé explicitement » sont deux faits différents. Un document `lep/1.0`
+    // n'en porte aucun, et lui en inventer un ferait croire qu'un émetteur ancien a demandé
+    // quelque chose.
+    expect(selectOverlay({ requiredCapabilities: ["ml"] }).agent).toBe("ml")
+    expect(selectOverlay({}).agent).toBe(DEFAULT_AGENT)
+  })
+
   test("une revue aveugle ajoute sa consigne", () => {
     // Elle ne remplace pas la protection de W2.10 : elle la double, parce qu'une consigne oubliée
     // par le modèle ne doit pas suffire à faire fuiter, et qu'un filtre sans consigne laisse le

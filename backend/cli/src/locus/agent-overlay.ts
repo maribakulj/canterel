@@ -30,6 +30,24 @@ export const AGENT_BY_CAPABILITY: readonly { readonly capability: string; readon
   { capability: "python-science", agent: "research" },
 ]
 
+/**
+ * Le choix par **rôle** — `SPEC_V1.md` §7.1 (`AgentTemplate.role`) et §20, tranche 1 du mineur
+ * `lep/1.1` (ADR 0017 §5.1).
+ *
+ * Table déclarée comme donnée, pour la raison qui vaut pour `AGENT_BY_CAPABILITY` : le choix se
+ * relit au lieu de dépendre de l'ordre d'un `if`. Les deux rôles sont ceux que §20 nomme dans sa
+ * politique de revue, et il n'y en a pas d'autres — inventer des rôles que personne n'écrit
+ * donnerait une table plus fournie et pas plus vraie.
+ *
+ * **Un rôle inconnu n'est pas une erreur.** Il retombe sur les capacités, puis sur le défaut. C'est
+ * l'interdit 3 d'ADR 0017 côté lecteur : un mineur ajoute des champs, jamais des valeurs, donc un
+ * rôle qu'un émetteur plus récent enverrait ne doit pas arrêter un worker plus ancien.
+ */
+export const AGENT_BY_ROLE: readonly { readonly role: string; readonly agent: UpstreamAgent }[] = [
+  { role: "logical-reviewer", agent: "reviewer" },
+  { role: "provenance-reviewer", agent: "reviewer" },
+]
+
 /** L'agent par défaut : celui que l'amont désigne lui-même comme harnais par défaut. */
 export const DEFAULT_AGENT: UpstreamAgent = "research"
 
@@ -50,16 +68,31 @@ export type OverlayInput = {
   readonly requiredCapabilities?: readonly string[]
   /** §12.4 : une revue aveugle interdit le raisonnement privé du générateur. */
   readonly reviewPolicy?: string
+  /**
+   * Le rôle de l'instance, absent d'un document `lep/1.0`.
+   *
+   * `undefined` veut dire « le document n'en portait pas », jamais « le rôle est vide » : un
+   * document ancien ne demande pas un rôle par défaut, il n'en demande aucun.
+   */
+  readonly role?: string
   readonly maxSteps?: number
 }
 
 /**
  * Choisir l'agent et composer l'overlay.
  *
- * Une revue **indépendante** vise `reviewer`, quelles que soient les capacités demandées : c'est
- * l'invariant 11 qui décide, pas le domaine scientifique. Confier une revue indépendante à l'agent
- * `biology` parce que la mission parle de biologie ferait relire le travail par le même profil que
- * celui qui l'a produit.
+ * L'ordre est **politique de revue, puis rôle, puis capacités**, et il n'est pas négociable.
+ *
+ * Une revue **indépendante** vise `reviewer`, quelles que soient les capacités demandées et quel
+ * que soit le rôle : c'est l'invariant 11 qui décide, pas le domaine scientifique. Confier une
+ * revue indépendante à l'agent `biology` parce que la mission parle de biologie ferait relire le
+ * travail par le même profil que celui qui l'a produit — et un `role` qui pourrait passer devant
+ * reconstruirait exactement ce trou, en le rendant demandable par l'émetteur. ADR 0017 §5.1 pose la
+ * contrainte dans ces termes ; elle est ici, et un test la tient.
+ *
+ * Le rôle passe **devant les capacités** parce que c'est là qu'il sert : une mission qui exige
+ * `biology` et dont le rôle est `provenance-reviewer` demande une vérification de provenance sur un
+ * sujet de biologie, pas un biologiste. Sans le rôle, seul le sujet se voyait.
  */
 export function selectOverlay(input: OverlayInput): AgentOverlay {
   const blind = input.reviewPolicy === "independent-blind"
@@ -67,7 +100,8 @@ export function selectOverlay(input: OverlayInput): AgentOverlay {
 
   const agent = independent
     ? "reviewer"
-    : (AGENT_BY_CAPABILITY.find((entry) => input.requiredCapabilities?.includes(entry.capability))?.agent ??
+    : (AGENT_BY_ROLE.find((entry) => entry.role === input.role)?.agent ??
+      AGENT_BY_CAPABILITY.find((entry) => input.requiredCapabilities?.includes(entry.capability))?.agent ??
       DEFAULT_AGENT)
 
   const extraInstructions: string[] = []
