@@ -371,7 +371,22 @@ import { describeConfig, layerFromEnv, resolveConfig, type Layer, type LocusConf
 
 /** Ce que le worker rend quand on le lance — aujourd'hui, un constat. */
 export type WorkerOutcome = {
-  /** `inert` tant que W2.4 n'a pas donné d'identité au worker. Le mot est explicite exprès. */
+  /**
+   * `inert` : ce worker ne tient pas encore de mission. Le mot est explicite exprès.
+   *
+   * La raison invoquée ici a longtemps été celle-ci :
+   *
+   * > tant que W2.4 n'a pas donné d'identité au worker
+   *
+   * et `W2.4` est livré depuis le 2026-08-13. L'inertie, elle, est restée vraie — c'est la
+   * **raison** qui avait cessé de l'être, et une raison fausse envoie chercher ailleurs que là où le
+   * travail manque. La citation ci-dessus est en bloc parce qu'elle **rapporte** ce qui était écrit
+   * au lieu de l'affirmer, ce que la garde de `coherence.ts` distingue.
+   *
+   * Ce qui manque réellement est la **boucle** : offre, lease, mission, session, résultat. Ce sera
+   * `W2.20`, et cet item-là n'est pas livré — le dire reste donc exact aujourd'hui, et la garde de
+   * `coherence.ts` le redira le jour où ça cessera de l'être.
+   */
   readonly status: "inert"
   /** La configuration résolue, rédigée — la seule forme qui a le droit d'être affichée. */
   readonly config: Record<string, unknown>
