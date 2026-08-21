@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import {
-  buildManifest,
-  sandboxBackend,
-  sandboxLevels,
-  type HostProbe,
-} from "../../src/locus/capability-manifest.ts"
+import { buildManifest, sandboxBackend, sandboxLevels, type HostProbe } from "../../src/locus/capability-manifest.ts"
 import { LocusInventoryUnmeasured } from "../../src/locus/errors.ts"
 import {
   bubblewrapCommand,
@@ -233,9 +228,7 @@ describe("W22.e — la sonde réelle", () => {
 
     expect(probe.diskFreeMb).toBeGreaterThan(0)
     expect(probe.cpuCores).toBeGreaterThan(0)
-    expect(buildManifest({ probe, workerId: "w-reel" }).resources.disk_free_mb).toBe(
-      probe.diskFreeMb as number,
-    )
+    expect(buildManifest({ probe, workerId: "w-reel" }).resources.disk_free_mb).toBe(probe.diskFreeMb as number)
   })
 
   /**
@@ -246,9 +239,7 @@ describe("W22.e — la sonde réelle", () => {
    * qu'aucun test ne peut atteindre est une sonde qui dérivera.
    */
   test("le point d'appel délègue au module local", async () => {
-    const source = await Bun.file(
-      new URL("../../src/cli/cmd/worker.ts", import.meta.url).pathname,
-    ).text()
+    const source = await Bun.file(new URL("../../src/cli/cmd/worker.ts", import.meta.url).pathname).text()
 
     expect(source).toContain("locus.realProbe()")
     expect(source).not.toContain("bubblewrapWorks")

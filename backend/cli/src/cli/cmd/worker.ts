@@ -87,7 +87,6 @@ export const WorkerStatusCommand = cmd({
   },
 })
 
-
 /** Rendre une erreur Locus lisible. Vrai quand elle a été reconnue et affichée. */
 function reportLocusError(locus: typeof import("@/locus"), error: unknown): boolean {
   if (locus.LocusConfigInvalid.isInstance(error)) {
