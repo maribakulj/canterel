@@ -1,3 +1,4 @@
+import { LocusInventoryUnmeasured } from "./errors.ts"
 import { payloadHash } from "./lep/canonical.ts"
 import type {
   CapabilityManifest,
@@ -30,11 +31,26 @@ export type HostProbe = {
   readonly release?: string
   /** Le chemin d'un exécutable du PATH, ou `null`. */
   which(binary: string): string | null
-  /** Vrai quand `bwrap` démarre réellement — l'existence du binaire ne suffit pas. */
-  bubblewrapWorks(): boolean
+  /**
+   * Vrai quand `bwrap` démarre réellement — l'existence du binaire ne suffit pas.
+   *
+   * `undefined` quand la sonde **n'a pas pu conclure**. Ce n'est ni un oui ni un non, et l'absence
+   * ne donne jamais la capacité : une sonde non exécutée n'est pas une sonde réussie. Le type porte
+   * la distinction parce que le premier adaptateur réel l'avait perdue — il rendait `true` dès que
+   * le binaire existait, ce qui, `sandboxBackend` appelant `which` avant lui, en faisait une
+   * tautologie incapable de refuser.
+   */
+  bubblewrapWorks(): boolean | undefined
   readonly cpuCores: number
   readonly memoryMb: number
-  readonly diskFreeMb: number
+  /**
+   * L'espace libre mesuré, ou `undefined` quand la mesure n'a pas abouti.
+   *
+   * **Zéro n'est pas l'absence.** Un disque plein et un disque non mesuré mènent au même refus de
+   * placement, et pas au même geste de réparation ; les confondre fait chercher de la place là où
+   * il fallait réparer une sonde. Le premier adaptateur réel écrivait `0` en dur.
+   */
+  readonly diskFreeMb: number | undefined
 }
 
 /**
@@ -79,7 +95,11 @@ export function sandboxBackend(probe: HostProbe): "seatbelt" | "bubblewrap" | "n
     if (!probe.which("bwrap")) return "none"
     // Le binaire existe ; reste à savoir s'il démarre. Sur Ubuntu 24.04 la politique AppArmor de
     // l'hôte bloque les namespaces utilisateur non privilégiés, et bwrap échoue à l'exécution.
-    return probe.bubblewrapWorks() ? "bubblewrap" : "none"
+    //
+    // La comparaison est stricte : `undefined` — la sonde n'a pas conclu — ne donne pas la capacité.
+    // Écrit `probe.bubblewrapWorks() ? …`, une ignorance se rangerait du bon côté par accident,
+    // ce qui est vrai aujourd'hui et cesserait de l'être au premier changement de convention.
+    return probe.bubblewrapWorks() === true ? "bubblewrap" : "none"
   }
   return "none"
 }
@@ -142,9 +162,26 @@ export type ManifestInput = {
   readonly dataClasses?: readonly DataClass[]
 }
 
-/** Construire le manifeste. Aucune valeur n'y entre sans venir de la sonde ou d'une décision écrite. */
+/**
+ * Construire le manifeste. Aucune valeur n'y entre sans venir de la sonde ou d'une décision écrite.
+ *
+ * # Une ressource non mesurée fait **refuser**, elle ne devient pas zéro
+ *
+ * `disk_free_mb` est requis par le protocole : l'absence ne peut donc pas partir sur le fil, et il
+ * faut choisir entre inventer un nombre et ne pas annoncer. Inventer `0` ferait lire « ce worker n'a
+ * plus de place » là où il fallait lire « ce worker ne sait pas mesurer sa place » — deux causes
+ * opposées pour la même conséquence, et une seule des deux se répare en libérant du disque.
+ *
+ * Le refus nomme la grandeur, ce qui est la différence entre un exploitant qui corrige en une
+ * minute et un exploitant qui cherche.
+ *
+ * @throws {LocusInventoryUnmeasured}
+ */
 export function buildManifest(input: ManifestInput): CapabilityManifest {
   const probe = input.probe
+  if (probe.diskFreeMb === undefined) {
+    throw new LocusInventoryUnmeasured({ quantity: "disk_free_mb" })
+  }
   return {
     protocol: PROTOCOL_VERSION,
     worker_id: input.workerId,
