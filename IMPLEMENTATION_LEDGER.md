@@ -1531,3 +1531,71 @@ worker les relie désormais sans intermédiaire.
 
 **Prochain item.** `W20.a` dans `locusolus` — le `CommandEnvelope` de §22.2 et les huit familles
 d'erreurs typées de §22.5, sans transport. Premier item d'un `apps/locusd` encore vide.
+
+## 2026-08-21 — W22.e — La sonde d'isolation qui ne pouvait pas refuser
+
+**Périmètre.** `backend/cli/src/locus/host-probe.ts` (neuf),
+`backend/cli/src/locus/capability-manifest.ts`, `backend/cli/src/locus/errors.ts`,
+`backend/cli/src/locus/index.ts`, `backend/cli/test/locus/host-probe.test.ts` (neuf),
+`backend/cli/src/cli/cmd/worker.ts` (réduit à un appel).
+
+**Tests exécutés.** `bun test test/locus/` → 390 conformes, dont 14 neufs. `bun run typecheck` →
+propre. `test/locus/upstream.test.ts` → 9 conformes, le périmètre tient. Vérifié **rouge sur
+l'ancien adaptateur** — trois tests échouent quand on le réinjecte — puis vert après retrait.
+Mutation : douze mutants, **douze tués**, après réparation d'un survivant.
+
+**Ce que le défaut était, et pourquoi « imprécis » est trop doux.** `capability-manifest.ts`
+déclare : « Vrai quand `bwrap` **démarre réellement** — l'existence du binaire ne suffit pas. »
+L'adaptateur de production écrivait `bubblewrapWorks: () => Bun.which("bwrap") !== null`, soixante
+lignes sous ce contrat, avec un arbitrage écrit à côté : « l'appel direct suffit pour l'inventaire ».
+
+Mais `sandboxBackend` appelle `which("bwrap")` **puis** `bubblewrapWorks()`. Avec cet adaptateur, la
+seconde barrière ne pouvait être atteinte que si la première était passée — elle rendait donc
+toujours vrai. **Elle ne pouvait pas refuser.** Le contrat annonçait deux vérifications ; il n'y en
+avait qu'une, et le port était impeccablement testé contre une sonde injectée pendant que son unique
+implémentation réelle était inerte.
+
+C'est le seul des quatre défauts de l'audit qui porte sur un **niveau d'isolation**. Le manifeste
+remonte jusqu'à l'admission, où `place` de `W4.g` choisit un hôte sur ce qu'il a **prouvé** ; une
+preuve qui n'en est pas une y devient une décision de placement.
+
+**Trois issues, pas deux.** `true` — la sandbox démarre. `false` — elle ne démarre pas, soit que le
+binaire manque, soit que l'hôte le refuse : sur Ubuntu 24.04, AppArmor bloque les namespaces
+utilisateur non privilégiés et `bwrap` échoue alors qu'il est installé. `undefined` — on n'a pas pu
+essayer. L'absence ne donne jamais la capacité, et la comparaison est **stricte** (`=== true`) :
+écrite en test de véracité, une ignorance se rangerait du bon côté par accident, ce qui est vrai
+aujourd'hui et cesserait de l'être au premier changement de convention.
+
+**L'invocation exerce ce qu'elle prétend prouver.** `--unshare-user` est le point : c'est ce
+namespace-là qu'AppArmor refuse, donc une invocation qui ne le demanderait pas réussirait sur la
+machine même où la sandbox échoue. Un mutant qui le retire meurt.
+
+**Le disque non mesuré fait refuser, il ne devient pas zéro.** `disk_free_mb` est requis par le
+protocole : l'absence ne peut pas partir sur le fil, et il faut choisir entre inventer un nombre et
+ne pas annoncer. Inventer `0` ferait lire « ce worker n'a plus de place » là où il faut lire « ce
+worker ne sait pas mesurer sa place » — deux causes opposées pour la même conséquence, et une seule
+des deux se répare en libérant du disque. `LocusInventoryUnmeasured` nomme la grandeur.
+
+**L'adaptateur réel est exercé, pas seulement le port.** C'est la décision 2 de l'ADR 0025 : un port
+parfaitement testé dont l'unique implémentation réelle ment ne vaut rien, et le déséquilibre est
+invisible parce que la CI est verte. Trois tests touchent la vraie machine — le disque est mesuré,
+`bwrap` reçoit un verdict, et un lancement qui lève est distingué d'un lancement refusé.
+
+**Le survivant de mutation, et ce qu'il a ouvert.** Rien n'exerçait le `catch` de `launch`.
+`Bun.spawnSync` **lève** quand l'exécutable est introuvable : le cas est donc atteignable sur
+n'importe quelle machine, et un `refused` là ferait annoncer « l'hôte refuse la sandbox » sur un hôte
+qu'on n'a pas interrogé. Sondé plutôt que supposé, puis tenu par un test.
+
+**Où le code vit désormais.** La sonde est passée de `src/cli/cmd/worker.ts` à `src/locus/`. C'est ce
+qui rend le fichier de tests possible : le défaut vivait hors du périmètre local, donc hors des tests
+de `test/locus/`, et **une sonde qu'aucun test ne peut atteindre est une sonde qui dérivera**. Le
+point d'appel amont se réduit à `locus.realProbe()`.
+
+**Vu en passant, non corrigé.** `backend/cli/src/cli/cmd/worker.ts` est un fichier que ce projet a
+**créé** (W2.3), sous un répertoire amont. Il n'est donc ni du code amont — un merge ne peut pas le
+toucher, il n'existe pas là-bas — ni dans `LOCAL_PATHS`. Ça ne coûte rien aujourd'hui ; le jour où
+l'amont créerait un `worker.ts`, la collision serait silencieuse. À traiter quand ce sera un fait et
+non une hypothèse.
+
+**Écart avec la spec.** Aucun. §15.3 tient mieux qu'avant : le worker n'annonce plus un niveau de
+sandbox qu'il n'a pas éprouvé.

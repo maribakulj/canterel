@@ -82,23 +82,10 @@ export const WorkerStatusCommand = cmd({
       UI.println("aucune identité : cette installation n'est pas enrôlée")
       return
     }
-    const manifest = locus.buildManifest({ probe: realProbe(locus), workerId: identity.public.worker_id })
+    const manifest = locus.buildManifest({ probe: locus.realProbe(), workerId: identity.public.worker_id })
     UI.println(JSON.stringify({ identity: locus.describeIdentity(identity), manifest }, null, 2))
   },
 })
-
-/** La sonde réelle, construite ici parce que c'est ici que vit l'accès à la machine. */
-function realProbe(locus: typeof import("@/locus")) {
-  return locus.hostProbe({
-    which: (binary: string) => Bun.which(binary),
-    // La sandbox amont sait déjà répondre : lui redemander éviterait de dupliquer sa sonde, mais
-    // elle est synchrone et coûteuse ; l'appel direct suffit pour l'inventaire.
-    bubblewrapWorks: () => Bun.which("bwrap") !== null,
-    cpuCores: navigator.hardwareConcurrency,
-    memoryMb: Math.round(require("node:os").totalmem() / 1024 / 1024),
-    diskFreeMb: 0,
-  })
-}
 
 /** Rendre une erreur Locus lisible. Vrai quand elle a été reconnue et affichée. */
 function reportLocusError(locus: typeof import("@/locus"), error: unknown): boolean {

@@ -157,3 +157,16 @@ export const LocusServerRejected = NamedError.create(
     reason: z.string(),
   }),
 )
+
+/**
+ * Une grandeur d'inventaire que la sonde n'a pas su mesurer.
+ *
+ * Le manifeste ne se construit pas sans elle. Le protocole exige `disk_free_mb`, donc l'absence ne
+ * peut pas partir sur le fil : reste à choisir entre inventer un nombre et refuser d'annoncer.
+ * Inventer ferait lire « plus de place » là où il faut lire « pas de mesure », et une seule des deux
+ * causes se répare en libérant du disque.
+ */
+export const LocusInventoryUnmeasured = NamedError.create(
+  "LocusInventoryUnmeasured",
+  z.object({ quantity: z.string() }),
+)

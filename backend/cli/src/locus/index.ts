@@ -403,3 +403,4 @@ export function runWorker(config: LocusConfig): WorkerOutcome {
   if (!config.identity) missing.push("locus.identity")
   return { status: "inert", config: describeConfig(config), missing }
 }
+export * from "./host-probe.ts"
