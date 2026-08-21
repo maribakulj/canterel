@@ -1599,3 +1599,80 @@ non une hypothèse.
 
 **Écart avec la spec.** Aucun. §15.3 tient mieux qu'avant : le worker n'annonce plus un niveau de
 sandbox qu'il n'a pas éprouvé.
+
+## 2026-08-21 — W22.f — Citer n'est pas affirmer, et la garde a mordu sur elle-même
+
+**Périmètre.** `backend/cli/src/locus/coherence.ts` (neuf),
+`backend/cli/test/locus/coherence.test.ts` (neuf), `backend/cli/src/locus/index.ts`.
+
+**Tests exécutés.** `bun test test/locus/` → 407 conformes, dont 17 neufs. `bun run typecheck` →
+propre. Mutation : treize mutants, **treize tués**, après réparation de **quatre** survivants et de
+cinq motifs mal échappés dans le harnais.
+
+**Le défaut.** `index.ts` portait « `inert` tant que W2.4 n'a pas donné d'identité au worker ».
+`W2.4` est livré depuis le 2026-08-13 et le registre le dit. Le worker est toujours inerte — ça,
+c'est vrai — mais la **raison invoquée** avait cessé de l'être, et une raison fausse envoie chercher
+ailleurs que là où le travail manque. Ce qui manque réellement est la boucle, et c'est `W2.20`.
+
+**Ce qui est interdit est étroit.** Invoquer un item **comme condition non satisfaite** alors que le
+registre l'atteste livré. Citer un item pour dire d'où vient un morceau de code — « l'identifiant de
+la vue à matérialiser (W2.10) » — reste licite : c'est de la provenance, pas une affirmation sur
+l'état du système.
+
+**Quatre faux positifs sur cinq, à la première rédaction.** Une règle qui cherchait des marqueurs
+d'attente n'importe où autour de l'identifiant a rendu, sur l'arbre réel :
+
+|                                                                          |                                      |
+| ------------------------------------------------------------------------ | ------------------------------------ |
+| `` `locusd` n'existe pas encore (W2.5 apporte `connection.ts`) ``        | le « pas encore » porte sur `locusd` |
+| « le worker n'a pas de quoi le lire […] comme le merge à blanc de W2.1 » | une comparaison                      |
+| « une mission qu'on n'a pas le droit d'exécuter »                        | sans rapport avec le `W2.8` voisin   |
+| « L'autoriser **reviendrait** à… la faute que W2.6 empêche »             | « reviendrait » contient « viendra » |
+
+Une garde qui crie sur ce qui est juste se fait désactiver, et c'est ainsi qu'on perd celles qui
+avaient raison — la leçon de `W22.d`, rencontrée deux items plus loin. La règle regarde donc la
+**direction** et l'adjacence : un marqueur qui **subordonne** doit précéder l'identifiant
+immédiatement, un marqueur qui **nie** doit le suivre de près, et les frontières de mot sont
+obligatoires.
+
+**Dixième morsure, et l'échappement qui la clôt.** Ce fichier a déclenché sa propre garde au premier
+passage, en recopiant le commentaire fautif pour l'expliquer. Puis ma **correction** d'`index.ts` l'a
+déclenchée à son tour, parce qu'elle citait l'ancien texte en ligne.
+
+La réparation n'est ni une exemption nominative, ni « faire attention » : **un bloc de citation
+Markdown rapporte les mots d'autrui**. Il n'affirme rien sur l'état du système. La garde l'ignore, et
+n'importe quel fichier peut désormais exhiber la forme interdite pour l'expliquer — sans trou, parce
+que la distinction est sémantique et pas cosmétique. Même issue que `W4.c` chez `locusolus`, où une
+garde signalait le paquet qui **écrivait** la politique de sécurité.
+
+La correction d'`index.ts` s'en sert pour de vrai : la citation de l'ancienne raison y est en bloc.
+
+**Quatre survivants de mutation, et trois de mes tests passaient par le mauvais chemin.**
+
+- Le **couple** n'était pas exercé : tous mes tests de défaut passaient par `invokedAsPending`, qui
+  reçoit des positions et ne consulte ni le registre ni le motif. On pouvait retirer le constat
+  entier, cesser de lire le registre ou vider le décompte sans qu'un test proteste. Corrigé par des
+  fixtures qui traversent `inspectCoherence`.
+- Le test « citation voisine » séparait les deux lignes de trop : la fenêtre de quarante caractères
+  n'atteignait plus le `>`, donc il passait **quelle que soit la règle**.
+- Le test « condition repliée » mettait « n'a pas » juste après l'identifiant : il passait par le
+  côté qui **nie**, jamais par le recollage des lignes qu'il prétendait éprouver.
+- Le test sur la forme à deux points passait par `invokedAsPending`, invisible à une troncature du
+  motif. Il fallait le prendre par la garde entière.
+
+Trois tests verts qui ne prouvaient rien, trouvés uniquement par mutation. C'est le même motif que
+`W21.a` relève depuis le début — une propriété décrite sans être testée est une propriété qu'on croit
+tenir — cette fois sous sa forme la plus trompeuse : un test **existe**, il est **vert**, et il
+n'éprouve pas ce que son nom annonce.
+
+**Cinq motifs de harnais mal échappés.** Mes chaînes Python doublaient les antislashs des littéraux
+d'expression régulière. Le harnais l'a **dit** — `MOTIF ABSENT` — au lieu de compter cinq kills, et
+la passe a été refaite. « Un compteur qui n'a rien lu ne vaut pas zéro », troisième usage de la règle
+dans cette session.
+
+**Ce que la garde ne verra jamais.** Un item livré **ailleurs** que dans ce registre. Ce dépôt lit le
+sien, `locusolus` porte le sien, et une absence de lecture ne conclut pas — même limite que la garde
+de roadmap de `locusolus` déclare pour ses registres voisins.
+
+**Écart avec la spec.** Aucun. L'inertie du worker n'est **pas** levée ici : seule la raison invoquée
+est rendue vraie, et confondre les deux ferait passer une correction de vérité pour une livraison.
