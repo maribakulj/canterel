@@ -200,7 +200,24 @@ describe("le worker inerte — le test de sortie de W2.3", () => {
     // « Vide » ne veut pas dire prêt : la liste dit ce qui manque pour se connecter. `ports` s'y
     // ajoute depuis `W2.20` — un worker à qui personne n'a donné de quoi agir ne doit pas rendre
     // « rien à faire », ce qui enverrait chercher un ordonnanceur vide.
-    expect(outcome.missing).toEqual(["locus.endpoint", "locus.identity", "ports"])
+    //
+    // `locus.identity` **n'y est plus**, et l'absence est le correctif. La garde datait d'un moment
+    // où l'identité d'un worker n'était qu'un champ de §6 écrit à la main ; `W2.4` a livré
+    // l'enrôlement, et l'identité qui compte est la paire de clés du répertoire d'état, dont
+    // `assemblePorts` nomme l'absence. La garde restée en place rendait **inerte un worker
+    // correctement enrôlé** — constaté contre un `locusd` réel, pas déduit.
+    expect(outcome.missing).toEqual(["locus.endpoint", "ports"])
+  })
+
+  test("un endpoint sans ports ne manque que de ports, même sans locus.identity", async () => {
+    // Le pendant du test précédent, et celui qui aurait rougi **avant** le correctif : une
+    // configuration qui a tout ce qui se lit réellement ne doit pas réclamer un champ que personne
+    // ne lit. Sans lui, on saurait que `locus.identity` a disparu de la liste vide sans savoir
+    // qu'il a disparu de la liste qui compte.
+    const outcome = await runWorker(loadConfig({ LOCUS_ENDPOINT: "http://127.0.0.1:8787" }))
+    expect(outcome.status).toBe("inert")
+    if (outcome.status !== "inert") return
+    expect(outcome.missing).toEqual(["ports"])
   })
 
   test("il résout ses couches réellement", async () => {
