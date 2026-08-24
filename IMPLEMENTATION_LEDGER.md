@@ -1676,3 +1676,61 @@ de roadmap de `locusolus` déclare pour ses registres voisins.
 
 **Écart avec la spec.** Aucun. L'inertie du worker n'est **pas** levée ici : seule la raison invoquée
 est rendue vraie, et confondre les deux ferait passer une correction de vérité pour une livraison.
+
+---
+
+## 2026-08-24 — W2.20 — La boucle du worker : de `inert` à une mission exécutée
+
+**Ce qui est livré.** `src/locus/worker-loop.ts` enchaîne les pièces — réclamer, admettre, planifier,
+ouvrir la session, faire remonter, rendre — et `src/locus/session-open.ts` porte la couture vers
+l'amont. `runWorker` cesse d'être inerte par construction.
+
+**Ce qui manquait n'était aucune des pièces.** Enrôlement, offre, lease, admission, plan, contexte,
+événements, résultat, reprise existaient tous et étaient testés depuis `W2.4`–`W2.16`. Ce qui
+manquait était **ce qui les enchaîne**, et c'est pourquoi l'absence ne se voyait dans aucun décompte
+d'items faits — le même angle mort que `W22.c` avait trouvé entre `locusd` et `locus-execd`.
+
+**La machine à états a démenti ma première boucle, et c'est ce qui justifie qu'elle soit traversée.**
+J'avais fait passer l'attempt à `accepted` dès la réclamation. §11.2 ne permet `rejected` que depuis
+`offered` — et c'est juste : _on ne rejette pas ce qu'on a déjà accepté_. Le tableau de `W2.9` savait
+donc quelque chose que la boucle ignorait. Écrire les états à la main aurait produit un `accepted`
+suivi d'un refus, c'est-à-dire une histoire d'attempt que rien dans la spec n'autorise. La boucle
+reste `offered` jusqu'à ce que l'admission tranche.
+
+**Le numéro de tentative ne se réinvente pas.** Une reprise le relit dans le checkpoint plutôt que de
+le redemander au bail — §11.1, « aucune de ces identités ne doit être substituée aux autres ». Le
+test donne au bail un rang **différent** de celui du checkpoint, exprès : égaux, il passerait quelle
+que soit la source retenue. Et son pendant vérifie qu'un checkpoint d'une **autre tâche** n'est pas
+une reprise, sans quoi la boucle emprunterait le rang d'un travail sans rapport.
+
+**La couture reste une frontière de données** — ADR 0010. Un `SessionPlan` part, un `SessionReport`
+revient, et le test le tient par **aller-retour JSON** plutôt qu'en cherchant des fonctions :
+chercher suppose de savoir quoi chercher, alors que la sérialisation ne laisse rien passer. C'est ce
+qui permet à `src/locus/**` de ne rien importer de `src/session/`, donc à une refonte amont de ne
+rien casser ici.
+
+**Et la session amont est réellement ouverte, pas décrite.** Un test fait tourner la boucle avec
+`Session.createNext` de l'amont, sous `Instance.provide`, et **retrouve la session par son
+identifiant**. Vérifié en injectant un identifiant fabriqué : le test rougit. Sans ce test, « session
+amont réellement initialisée » aurait été une affirmation que rien ne vérifie — ce que l'ADR 0025
+rend coûteux. `Session.createNext` est local — enregistrement, système de fichiers, bus, aucun
+provider ni réseau —, ce qui a été vérifié en le lisant **avant** d'écrire le test.
+
+**Une faute évitée de justesse, et elle mérite d'être écrite.** J'avais câblé dans la couture un
+ouvreur de session que rien n'utilisait, avec un `void` pour faire taire le compilateur. C'est
+précisément le code qui a l'air d'agir et n'agit pas, et je le relève depuis des sprints chez les
+autres. La couture est donc restée **mince**, comme son propre en-tête l'exige, et elle dit ce qui
+manque : le **client qui réclame du travail** au plan de contrôle. Sans lui, `canterel worker` rend
+`inert` avec `ports` dans `missing` — un worker à qui personne n'a donné de quoi agir ne doit pas
+rendre « rien à faire », ce qui enverrait chercher un ordonnanceur vide.
+
+Au sens de l'ADR 0022 décision 0, la boucle est donc une **capacité** et non une promesse : complète,
+testée de bout en bout jusqu'à une vraie session amont, et il lui manque un appelant nommé.
+
+**Écart avec la spec.** Aucun. Les cinq répertoires amont intouchables ne sont pas modifiés, et
+`upstream.test.ts` le mesure. Le seul fichier touché hors de `src/locus/**` est
+`src/cli/cmd/worker.ts`, la couture déclarée dans `LOCUS_SEAMS` — quatre lignes, et l'import de
+`@/locus` reste dynamique.
+
+**Prochain item.** Le client de réclamation, qui rendra `canterel worker` réellement exécutable —
+ou `W20.i` / `W20.j` chez `locusolus`.

@@ -368,31 +368,37 @@ export {
 } from "./auth.ts"
 
 import { describeConfig, layerFromEnv, resolveConfig, type Layer, type LocusConfig } from "./config.ts"
+import { runLoop, type LoopOutcome, type WorkerPorts } from "./worker-loop.ts"
 
-/** Ce que le worker rend quand on le lance — aujourd'hui, un constat. */
-export type WorkerOutcome = {
-  /**
-   * `inert` : ce worker ne tient pas encore de mission. Le mot est explicite exprès.
-   *
-   * La raison invoquée ici a longtemps été celle-ci :
-   *
-   * > tant que W2.4 n'a pas donné d'identité au worker
-   *
-   * et `W2.4` est livré depuis le 2026-08-13. L'inertie, elle, est restée vraie — c'est la
-   * **raison** qui avait cessé de l'être, et une raison fausse envoie chercher ailleurs que là où le
-   * travail manque. La citation ci-dessus est en bloc parce qu'elle **rapporte** ce qui était écrit
-   * au lieu de l'affirmer, ce que la garde de `coherence.ts` distingue.
-   *
-   * Ce qui manque réellement est la **boucle** : offre, lease, mission, session, résultat. Ce sera
-   * `W2.20`, et cet item-là n'est pas livré — le dire reste donc exact aujourd'hui, et la garde de
-   * `coherence.ts` le redira le jour où ça cessera de l'être.
-   */
-  readonly status: "inert"
-  /** La configuration résolue, rédigée — la seule forme qui a le droit d'être affichée. */
-  readonly config: Record<string, unknown>
-  /** Ce qui manque pour que le worker puisse se connecter. Vide ne veut pas dire prêt. */
-  readonly missing: readonly string[]
-}
+/**
+ * Ce que le worker rend quand on le lance.
+ *
+ * # `inert` n'est plus le seul état — `W2.20`
+ *
+ * Il l'a été jusqu'ici, et le mot était explicite exprès. Ce qui manquait n'était aucune des
+ * pièces — enrôlement, offre, lease, admission, plan, contexte, événements, résultat, reprise
+ * existaient tous et étaient testés — mais **ce qui les enchaîne**. `runLoop` les enchaîne
+ * désormais.
+ *
+ * `inert` reste, et il dit maintenant exactement ce qu'il a toujours voulu dire : **cette
+ * installation n'a pas de quoi se connecter**. Ce n'est pas une panne, c'est une information, et
+ * `missing` la porte.
+ */
+export type WorkerOutcome =
+  | {
+      /** Cette installation n'a pas de quoi se connecter ; `missing` dit quoi. */
+      readonly status: "inert"
+      /** La configuration résolue, rédigée — la seule forme qui a le droit d'être affichée. */
+      readonly config: Record<string, unknown>
+      /** Ce qui manque pour que le worker puisse se connecter. Vide ne veut pas dire prêt. */
+      readonly missing: readonly string[]
+    }
+  | {
+      /** Un tour a eu lieu, et voici ce qu'il a fait. */
+      readonly status: "ran"
+      readonly config: Record<string, unknown>
+      readonly outcome: LoopOutcome
+    }
 
 /**
  * Résoudre la configuration du worker depuis les couches disponibles.
@@ -406,16 +412,30 @@ export function loadConfig(env: Record<string, string | undefined>, extra: reado
 }
 
 /**
- * Lancer le worker — inerte à W2.3.
+ * Lancer le worker.
  *
  * Rend un constat au lieu de lever quand la configuration est incomplète : à ce stade, « tu n'as
  * pas d'endpoint » est une information, pas une panne. `requireConnectable` existe pour le moment
  * où ça deviendra une panne, c'est-à-dire quand quelque chose tentera vraiment de se connecter.
+ *
+ * # Sans ports, il n'y a rien à enchaîner — et c'est dit plutôt que supposé
+ *
+ * Les ports sont **facultatifs** parce que `canterel worker status` et les diagnostics veulent le
+ * constat de configuration sans rien exécuter. Leur absence rend donc `inert`, avec `missing` qui
+ * nomme ce qui manque — y compris les ports eux-mêmes. Un worker qui rendrait « rien à faire » alors
+ * qu'on ne lui a pas donné de quoi faire enverrait chercher un ordonnanceur vide.
  */
-export function runWorker(config: LocusConfig): WorkerOutcome {
+export async function runWorker(config: LocusConfig, ports?: WorkerPorts): Promise<WorkerOutcome> {
   const missing: string[] = []
   if (!config.endpoint) missing.push("locus.endpoint")
   if (!config.identity) missing.push("locus.identity")
-  return { status: "inert", config: describeConfig(config), missing }
+  if (!ports) missing.push("ports")
+  if (missing.length > 0) return { status: "inert", config: describeConfig(config), missing }
+
+  // `ports` est défini : `missing` serait non vide sinon, et on serait sorti au-dessus.
+  const outcome = await runLoop(ports as WorkerPorts)
+  return { status: "ran", config: describeConfig(config), outcome }
 }
 export * from "./host-probe.ts"
+export * from "./session-open.ts"
+export * from "./worker-loop.ts"

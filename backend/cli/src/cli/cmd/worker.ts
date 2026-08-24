@@ -160,11 +160,15 @@ export const WorkerCommand = cmd({
       throw error
     }
 
-    const outcome = locus.runWorker(config)
+    // `W2.20` a livré la boucle et son ouvreur de session ; ce qui manque encore est le **client
+    // qui réclame du travail** au plan de contrôle. Tant qu'il n'existe pas, cette commande n'a pas
+    // de ports à donner et rend le constat de configuration — `inert`, avec `ports` dans `missing`.
+    // Fabriquer ici un ouvreur pour ne pas s'en servir aurait été du code qui a l'air d'agir.
+    const outcome = await locus.runWorker(config)
 
     UI.println(`worker: ${outcome.status}`)
     UI.println(JSON.stringify(outcome.config, null, 2))
-    if (outcome.missing.length > 0) {
+    if (outcome.status === "inert" && outcome.missing.length > 0) {
       UI.println(`incomplet — manque : ${outcome.missing.join(", ")}`)
     }
   },

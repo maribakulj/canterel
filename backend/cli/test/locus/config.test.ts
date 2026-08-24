@@ -193,22 +193,28 @@ describe("aucun secret dans la configuration", () => {
 })
 
 describe("le worker inerte — le test de sortie de W2.3", () => {
-  test("il ne fait rien, et il le dit", () => {
-    const outcome = runWorker(loadConfig({}))
+  test("il ne fait rien, et il le dit", async () => {
+    const outcome = await runWorker(loadConfig({}))
     expect(outcome.status).toBe("inert")
-    // « Vide » ne veut pas dire prêt : la liste dit ce qui manque pour se connecter, et à W2.3
-    // tout manque.
-    expect(outcome.missing).toEqual(["locus.endpoint", "locus.identity"])
+    if (outcome.status !== "inert") return
+    // « Vide » ne veut pas dire prêt : la liste dit ce qui manque pour se connecter. `ports` s'y
+    // ajoute depuis `W2.20` — un worker à qui personne n'a donné de quoi agir ne doit pas rendre
+    // « rien à faire », ce qui enverrait chercher un ordonnanceur vide.
+    expect(outcome.missing).toEqual(["locus.endpoint", "locus.identity", "ports"])
   })
 
-  test("il résout ses couches réellement", () => {
+  test("il résout ses couches réellement", async () => {
     // La commande passe `process.env` et une couche CLI ; c'est ce chemin-là qui compte.
     const config = loadConfig({ LOCUS_IDENTITY: "depuis-env", LOCUS_ENDPOINT: "http://depuis-env" }, [
       { name: "cli", values: { endpoint: "http://depuis-cli" } },
     ])
     expect(config.endpoint).toBe("http://depuis-cli")
     expect(config.identity).toBe("depuis-env")
-    expect(runWorker(config).missing).toEqual([])
+    // Sans ports, il reste inerte — mais pour la seule raison qui reste vraie.
+    const sansPorts = await runWorker(config)
+    expect(sansPorts.status).toBe("inert")
+    if (sansPorts.status !== "inert") return
+    expect(sansPorts.missing).toEqual(["ports"])
   })
 
   test("il ne touche ni le réseau ni le disque", () => {
