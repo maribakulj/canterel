@@ -198,6 +198,7 @@ export const WorkerCommand = cmd({
   handler: async (args) => {
     // Import dynamique : c'est lui qui garde `src/locus/**` hors du graphe de démarrage.
     const locus = await import("@/locus")
+    const { Instance } = await import("@/project/instance")
 
     // Les options de ligne de commande forment la couche la plus prioritaire de §6. Les champs
     // absents sont omis plutôt que mis à `undefined` : une couche qui pose `undefined` écraserait
@@ -232,12 +233,27 @@ export const WorkerCommand = cmd({
     // et seulement ici, que `Session.createNext` de l'amont est nommé — `src/locus/**` n'importe rien
     // de `src/session/`, et c'est ce qui fait qu'une refonte amont ne casse rien là-bas. Ce qui
     // traverse dans les deux sens est de la donnée : un plan à l'aller, un compte rendu au retour.
-    const outcome = await locus.runWorker(config, await locus.assemblePorts(config, await surroundingsFor(locus)))
+    // `Instance.provide`, comme **toute autre commande** qui touche à l'état d'instance —
+    // `agent.ts`, `auth.ts` et les autres le font depuis toujours. Cette commande-ci ne le faisait
+    // pas, et ça n'avait jamais compté : rien sur son chemin n'atteignait `Instance.directory`.
+    //
+    // `W2.22` a rendu l'accès possible, et le correctif qui a suivi n'a fait que le **différer** :
+    // une installation non enrôlée ne touchait plus le contexte, une installation enrôlée si. Le
+    // défaut était donc toujours là, exactement pour les installations qui comptent — et c'est le
+    // harnais e2e qui l'a montré, en échouant sur une machine où un worker s'était enrôlé pour de
+    // bon. Un correctif qui déplace un défaut au lieu de le retirer se reconnaît à ça : il tient
+    // tant que personne ne va jusqu'au cas réel.
+    await Instance.provide({
+      directory: process.cwd(),
+      async fn() {
+        const outcome = await locus.runWorker(config, await locus.assemblePorts(config, await surroundingsFor(locus)))
 
-    UI.println(`worker: ${outcome.status}`)
-    UI.println(JSON.stringify(outcome.config, null, 2))
-    if (outcome.status === "inert" && outcome.missing.length > 0) {
-      UI.println(`incomplet — manque : ${outcome.missing.join(", ")}`)
-    }
+        UI.println(`worker: ${outcome.status}`)
+        UI.println(JSON.stringify(outcome.config, null, 2))
+        if (outcome.status === "inert" && outcome.missing.length > 0) {
+          UI.println(`incomplet — manque : ${outcome.missing.join(", ")}`)
+        }
+      },
+    })
   },
 })

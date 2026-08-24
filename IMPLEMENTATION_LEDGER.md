@@ -2006,3 +2006,32 @@ au grain du paquet.
 `canterel worker --locus http://127.0.0.1:9999` rend `worker: inert` et sa configuration, comme
 `W2.3` le promet. Le harnais e2e monte ensuite les trois processus — `locus-execd, locusd, canterel
 worker` — et `locusd` répond `200` sur `/projections/status`.
+
+## 2026-08-24 — Défaut — Le correctif précédent déplaçait le défaut au lieu de le retirer
+
+**Périmètre.** `src/cli/cmd/worker.ts` — le corps du handler entre dans `Instance.provide`.
+
+**Ce qui n'allait pas.** La commande `worker` est la **seule** à toucher l'état d'instance sans
+entrer dans le contexte : `agent.ts`, `auth.ts` et les autres enveloppent leur corps dans
+`Instance.provide({ directory, fn })` depuis toujours. Cela n'avait jamais compté, parce que rien sur
+le chemin de `worker` n'atteignait `Instance.directory`.
+
+`W2.22` a rendu l'accès possible. Le correctif qui a suivi — rendre `directory` et `models`
+paresseux — a fait passer les tests et **déplacé le défaut** : une installation non enrôlée ne
+touchait plus le contexte, une installation **enrôlée** si. Le défaut était donc toujours là,
+exactement pour les installations qui comptent.
+
+**Comment il a été trouvé.** Le harnais e2e a échoué sur une machine où un worker s'était enrôlé pour
+de bon quelques minutes plus tôt. Le commit précédent et celui-ci ont un diff **vide** entre eux :
+seul l'état de l'hôte avait changé. C'est ce qui a mis sur la piste — un code identique qui change de
+verdict ne peut le devoir qu'à son environnement.
+
+**La leçon, et elle est plus large que ce correctif.** Un correctif qui déplace un défaut au lieu de
+le retirer se reconnaît à ceci : _il tient tant que personne ne va jusqu'au cas réel_. Mes treize
+tests unitaires passaient, `typecheck` passait, la CI passait — et la commande restait cassée pour
+toute installation enrôlée. Le seul contrôle qui pouvait le dire était celui qui démarre le vrai
+binaire sur une vraie installation.
+
+**Vérifié.** `canterel worker --locus <url>` rend `worker: inert` et `incomplet — manque :
+locus.identity` sur l'installation enrôlée de cette machine, là où il levait « No context found for
+instance ». `bun test test/locus/` → 459 passés. `bun run typecheck` sans erreur.
