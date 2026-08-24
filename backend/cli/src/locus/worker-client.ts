@@ -21,6 +21,10 @@
  * transport **lève**. Les deux envoient chercher à des endroits opposés : l'un un ordonnanceur qui
  * n'a rien à donner, l'autre un lien cassé. C'est la même séparation que l'ADR 0028 décision 4 tient
  * pour le broker de `locusolus`, et elle vaut ici pour la même raison.
+ *
+ * Depuis `W20.q`, le serveur tient l'autre moitié : un broker de placement injoignable rend `503`,
+ * jamais `204`. Ce client n'a rien à changer pour ça — un `503` lève déjà — et c'est le point :
+ * la séparation était écrite ici avant d'exister là-bas.
  */
 
 import { assertEndpointAcceptable, sameOrigin, type Credential } from "./auth.ts"
@@ -138,7 +142,19 @@ export function workerPorts(input: ClientInput): WorkerPorts {
     tools: input.tools,
     openSession: input.openSession,
     claim: async () => {
-      const answer = await call(CLAIM_PATH, { worker_id: input.credential.worker_id })
+      // Le manifeste part **à chaque réclamation**, et non une fois au handshake — `W20.q`.
+      //
+      // §15.3 le fait annoncer au handshake, et le hello de `W2.7` n'en porte que le *hash*. Mais un
+      // inventaire vieillit : un disque se remplit, un accélérateur disparaît, et `capability-watch`
+      // existe justement parce que ça arrive. Un manifeste figé à l'enrôlement ferait placer une
+      // mission sur de l'espace disque qui n'existe plus.
+      //
+      // Ce qu'il ne dit pas, et ne doit pas dire : **qui** parle. C'est la créance qui le dit, et le
+      // plan de contrôle refuse un manifeste au nom d'un autre worker plutôt que de l'ignorer.
+      const answer = await call(CLAIM_PATH, {
+        worker_id: input.credential.worker_id,
+        manifest: input.manifest(),
+      })
       return answer === null ? null : (answer as Offer)
     },
     emit: async (events: readonly Event[]) => {
