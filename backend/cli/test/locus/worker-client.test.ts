@@ -151,6 +151,55 @@ describe("le client de réclamation — le test de sortie de W2.21", () => {
   })
 
   /**
+   * **La réclamation annonce ce que cet hôte sait faire** — §15.3, `W20.q`.
+   *
+   * Sans manifeste, le plan de contrôle n'a rien à placer : il servirait la première mission venue à
+   * un hôte dont il ne sait rien, et c'est exactement ce que `W20.q` corrige côté serveur. La moitié
+   * cliente est ici, et elle envoie le manifeste **à chaque tour** plutôt qu'une fois au handshake —
+   * un inventaire vieillit, `capability-watch` existe pour cette raison.
+   *
+   * Ce que le test tient est le **contenu**, pas la présence d'une clé : un client qui enverrait un
+   * objet vide, ou le manifeste d'un autre worker, passerait une assertion d'existence.
+   */
+  test("la réclamation annonce le manifeste de cet hôte", async () => {
+    let corps: Record<string, unknown> | undefined
+    const port = client(async (_url, init) => {
+      corps = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response(null, { status: 204 })
+    })
+
+    await port.claim()
+
+    expect(corps?.manifest).toEqual(MANIFEST())
+    expect(corps?.worker_id).toBe(CREDENTIAL.worker_id)
+  })
+
+  /**
+   * **Le manifeste est relu à chaque réclamation, jamais figé.**
+   *
+   * Un client qui l'aurait capturé une fois — au moment de construire les ports — enverrait
+   * indéfiniment l'inventaire d'un disque qui s'est rempli depuis. Le port est appelé, donc ce que
+   * l'hôte annonce suit ce que l'hôte est.
+   */
+  test("un manifeste qui change est celui qui part au tour suivant", async () => {
+    const vus: unknown[] = []
+    let disque = 400_000
+    const port = client(
+      async (_url, init) => {
+        vus.push((JSON.parse(String(init?.body)) as { manifest: CapabilityManifest }).manifest.resources.disk_free_mb)
+        return new Response(null, { status: 204 })
+      },
+      { manifest: () => ({ ...MANIFEST(), resources: { ...MANIFEST().resources, disk_free_mb: disque } }) },
+    )
+
+    await port.claim()
+    disque = 12
+    await port.claim()
+
+    expect(vus).toEqual([400_000, 12])
+  })
+
+  /**
    * **Les trois chemins de §15.2, littéralement.**
    *
    * Ce ne sont pas des détails d'implémentation mais la moitié cliente d'un contrat : les changer
@@ -252,8 +301,9 @@ describe("le client de réclamation — le test de sortie de W2.21", () => {
    *
    * Ce n'est pas un test de transport : c'est la chaîne complète — réclamer, admettre, planifier,
    * ouvrir la session, faire remonter, rendre — sur les ports réels de `W2.21`. Le serveur est un
-   * `fetch` d'épreuve parce que `locusd` ne sert pas encore §15.2 ; ce qui est éprouvé est que le
-   * client parle ce que la boucle attend, et l'inverse.
+   * `fetch` d'épreuve — la surface §15.2 réelle est éprouvée chez `locusolus`, contre un vrai socket
+   * (`W20.k`, `W20.q`) ; ce qui est éprouvé ici est que le client parle ce que la boucle attend, et
+   * l'inverse.
    */
   test("un tour complet aboutit sur les ports HTTP réels", async () => {
     const mission = MISSION()
