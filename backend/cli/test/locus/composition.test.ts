@@ -31,6 +31,7 @@ import { join } from "node:path"
 
 import { assemblePorts, assembled } from "../../src/locus/composition.ts"
 import { createIdentity } from "../../src/locus/identity.ts"
+import { modelInventory } from "../../src/locus/model-inventory.ts"
 import { loadConfig, runWorker } from "../../src/locus/index.ts"
 import { locusStateDir } from "../../src/locus/registration.ts"
 import { CLAIM_PATH } from "../../src/locus/worker-client.ts"
@@ -385,6 +386,56 @@ describe("le composition root du worker — W2.22", () => {
     if (!assembled(muet) || !assembled(explicite)) return
     expect(muet.ports.manifest().models).toBeUndefined()
     expect(explicite.ports.manifest().models).toEqual([])
+  })
+
+  /**
+   * **La bascule de `W2.23`, prise de bout en bout.**
+   *
+   * Le même worker, la même mission, la même installation : ce qui change est l'inventaire de
+   * modèles que la couture lui donne. Sans lui, `model_unavailable` ; avec un modèle dont l'adresse
+   * a été **lue** sur la boucle locale, la mission passe.
+   *
+   * Le test le fait dans cet ordre, sur les mêmes objets, parce que c'est la seule façon de montrer
+   * que l'inventaire est bien ce qui décide — deux tests séparés auraient pu diverger sur un détail
+   * de fixture sans que personne le voie.
+   */
+  test("un modèle lu comme local fait passer la mission que le même worker refusait", async () => {
+    const { dataDir } = await installation()
+    const nu = await assemblePorts(CONFIG(), entourage(dataDir, interdit()))
+    expect(assembled(nu)).toBe(true)
+    if (!assembled(nu)) return
+    const mission = missionPour(nu.ports.manifest())
+
+    const tour = async (models?: readonly CapabilityManifestModelsItem[]) => {
+      const assembly = await assemblePorts(CONFIG(), entourage(dataDir, interdit(), models))
+      if (!assembled(assembly)) throw new Error("l'installation est complète")
+      const outcome = await runWorker(CONFIG(), {
+        ...assembly.ports,
+        claim: async () => ({ mission, lease: lease(mission) }),
+        emit: async () => {},
+        report: async () => {},
+      } as typeof assembly.ports)
+      if (outcome.status !== "ran") throw new Error("le worker tourne dans les deux cas")
+      return outcome.outcome
+    }
+
+    const sansModele = await tour()
+    expect(sansModele.status).toBe("refused")
+    if (sansModele.status === "refused") expect(sansModele.refusal.code).toBe("model_unavailable")
+
+    // L'inventaire vient de `modelInventory`, pas d'une constante écrite à la main : ce qui est
+    // éprouvé est la lecture d'adresse, pas ma capacité à recopier un littéral de manifeste.
+    const avecModele = await tour(
+      modelInventory([
+        {
+          id: "ollama",
+          baseURL: "http://localhost:11434/v1",
+          models: ["qwen2.5-coder"],
+          authenticated: false,
+        },
+      ]),
+    )
+    expect(avecModele.status).toBe("ran")
   })
 
   // -------------------------------------------------------------------------------------------

@@ -1908,3 +1908,65 @@ décide en lisant l'adresse d'inférence de chaque fournisseur (une base sur la 
 pas sortir les prompts, tout le reste si), et ce qui ne se lit pas est distant. Dépendance : aucune —
 `Surroundings.models` et `ManifestInput.models` existent et sont testés ; ce qui manque est la
 lecture côté amont.
+
+## 2026-08-24 — W2.23 — L'inventaire des modèles, lu et non supposé
+
+**Périmètre.** `src/locus/model-inventory.ts` (nouveau : `Locality`, `Reason`, `ProviderReading`,
+`localityOf`, `providerLocality`, `modelInventory`), `src/locus/index.ts` (réexport),
+`test/locus/model-inventory.test.ts` (nouveau, 12 tests), `test/locus/composition.test.ts`
+(un test de bascule bout en bout). **Un fichier hors périmètre** : `src/cli/cmd/worker.ts`, la
+couture déjà déclarée, qui gagne `providerReadings()`.
+
+**Tests exécutés.** `bun test test/locus/` → **458 passés**, dont 13 neufs. `bun run typecheck` sans
+erreur, `prettier --check .` propre.
+
+**Ce que l'item lève.** `W2.22` avait livré le champ `models` et laissé la couture n'en déclarer
+aucun : le worker assemblé tournait et refusait **toutes** les missions avec `model_unavailable`.
+La couture lit maintenant `Provider.list()` et en tire, par fournisseur, un identifiant, ses
+adresses, ses modèles et un booléen d'authentification.
+
+**Décisions prises.**
+
+1. **L'adresse est lue, jamais résolue.** Un nom d'hôte qui _résoudrait_ vers la boucle locale — une
+   entrée dans `/etc/hosts` — est traité comme distant. Résoudre demanderait une requête DNS, et
+   `W2.22` a fait de « l'assemblage n'ouvre aucune connexion » une propriété testée ; mais la vraie
+   raison est la seconde : une résolution est **datée**, elle vaut à l'instant où on la fait, et un
+   manifeste vit plus longtemps. Déclarer local d'après une résolution, c'est promettre pour un
+   futur qu'on n'a pas lu.
+2. **Ce qui ne se lit pas est distant, jamais local.** Absence d'adresse, adresse malformée, hôte
+   qui n'est pas un littéral de boucle : `remote: true`. Les deux erreurs ne sont pas symétriques —
+   se tromper vers « distant » coûte une mission non prise, se tromper vers « local » fait sortir un
+   contexte confidentiel de l'hôte, et l'admission n'a plus rien pour l'arrêter.
+3. **Un verdict binaire, quatre raisons distinctes.** Le protocole veut un booléen ; les motifs, eux,
+   ne se réparent pas de la même façon — « aucune adresse configurée » s'arrange en en configurant
+   une, « adresse illisible » en corrigeant une coquille. Un test vérifie que les quatre raisons
+   restent distinctes, parce qu'un test qui ne regarderait que `remote` passerait encore si les
+   trois raisons distantes se fondaient en une seule.
+4. **Toute la boucle, pas seulement sa première adresse.** `127.0.0.0/8` entier est local : un
+   serveur sur `127.0.0.2` l'est autant que sur `127.0.0.1`. `0.0.0.0` en revanche **n'y est pas** —
+   il désigne « toutes les interfaces » côté écoute, et comme destination il dépend de la pile
+   réseau. Un cas ambigu se range du côté sûr.
+5. **Un fournisseur est local seulement si tout l'est.** Le manifeste ne porte qu'un booléen par
+   fournisseur : un seul modèle qui pointe ailleurs le rend distant. Le rabattre sur « la plupart
+   sont locaux » ferait sortir les prompts du modèle qui ne l'est pas — précisément celui dont
+   personne ne se méfie, puisque son fournisseur est réputé local.
+6. **`oauth-local` n'est jamais annoncé.** Le schéma le dit : il « n'est admissible que sur un worker
+   local de confiance ; le schéma ne peut pas le vérifier, l'admission le peut ». L'annoncer est une
+   **revendication** de confiance, pas la description d'un mécanisme, et un module qui lit une
+   configuration n'est pas en position de revendiquer ce qu'un hôte mérite. Reste la distinction
+   lisible : clé configurée → `service-credential`, sinon `none`.
+
+**Un défaut trouvé par son propre test.** `providerLocality` lisait un `modelURLs` valant `undefined`
+comme « ce modèle n'a pas d'adresse », donc distant. Or `undefined` veut dire « ce modèle ne
+surcharge rien » : il part à l'adresse du fournisseur. La confusion déclarait distant **tout
+fournisseur local correctement configuré** — ses modèles ne surchargent précisément rien —, et
+l'inventaire entier serait resté distant, la lecture n'ayant servi à rien. Le test
+`un fournisseur dont toutes les adresses sont sur la boucle est local` l'a démenti avant la première
+exécution réelle.
+
+**Écart avec la spec.** Aucun. Le seul point où le module en dit moins que le schéma est
+`oauth-local`, jamais annoncé — décision 6, avec sa raison.
+
+**Prochain item.** À choisir dans `locusolus/docs/10`. `W12.f` — où vit le harnais de
+`e2e/minimal_science` et qui y joue le worker — est le dernier des cinq constats de la tentative de
+`W12.d` à ne pas être levé, et il demande un ADR.
