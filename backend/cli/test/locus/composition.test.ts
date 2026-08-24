@@ -111,11 +111,7 @@ function interdit(): typeof globalThis.fetch {
   }) as unknown as typeof globalThis.fetch
 }
 
-function entourage(
-  dataDir: string,
-  fetch: typeof globalThis.fetch,
-  models?: readonly CapabilityManifestModelsItem[],
-) {
+function entourage(dataDir: string, fetch: typeof globalThis.fetch, models?: readonly CapabilityManifestModelsItem[]) {
   return {
     dataDir,
     fetch,

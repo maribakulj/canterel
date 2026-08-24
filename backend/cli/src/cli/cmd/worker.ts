@@ -120,9 +120,7 @@ function reportLocusError(locus: typeof import("@/locus"), error: unknown): bool
  * son contexte toute seule ne s'éprouve qu'en muant le processus. Elle ne décide plus rien : elle
  * nomme le monde, et `assemblePorts` en tire des ports ou des raisons.
  */
-async function surroundingsFor(
-  locus: typeof import("@/locus"),
-): Promise<Parameters<typeof locus.assemblePorts>[1]> {
+async function surroundingsFor(locus: typeof import("@/locus")): Promise<Parameters<typeof locus.assemblePorts>[1]> {
   const { Global } = await import("@/global")
   const { Session } = await import("@/session")
   const { Instance } = await import("@/project/instance")
