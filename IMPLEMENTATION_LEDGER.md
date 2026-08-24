@@ -1970,3 +1970,39 @@ exécution réelle.
 **Prochain item.** À choisir dans `locusolus/docs/10`. `W12.f` — où vit le harnais de
 `e2e/minimal_science` et qui y joue le worker — est le dernier des cinq constats de la tentative de
 `W12.d` à ne pas être levé, et il demande un ADR.
+
+## 2026-08-24 — Défaut — La couture résolvait le monde avant de savoir si l'installation existait
+
+**Périmètre.** `src/locus/composition.ts` (`Surroundings.directory` et `Surroundings.models`
+deviennent des fermetures ; `models` est résolu **après** les trois vérifications),
+`src/cli/cmd/worker.ts` (la couture diffère `Instance.directory` et `Provider.list()`),
+`test/locus/composition.test.ts` (un test de plus, 13 au total).
+
+**Comment il a été trouvé.** Par le harnais e2e de `W12.f` (dépôt `locusolus`), au **premier
+démarrage réel des trois processus**. `canterel worker --locus <url>` levait
+« No context found for instance » et mourait, là où `W2.3` promet un constat `inert`.
+
+**La cause.** `W2.22` a remplacé `workerPortsFor` par `surroundingsFor`, appelée **inconditionnellement**
+avant `assemblePorts`. Elle lit `Instance.directory` ; `W2.23` y a ajouté `Provider.list()`. Les deux
+ne sont calculables qu'à l'intérieur du contexte d'instance que la CLI ouvre à l'exécution d'une
+commande. Avant `W2.22`, `workerPortsFor` sortait sur `return undefined` dès l'identité absente, donc
+n'y touchait jamais sur une installation non enrôlée.
+
+**Pourquoi treize tests unitaires ne l'ont pas vu.** Ils **injectent** l'entourage. Aucun n'exerçait
+la couture qui le fabrique, et c'est là que le défaut vivait. Le constat vaut au-delà de ce
+correctif : un composition root testé en lui donnant ses dépendances ne dit rien de l'endroit qui les
+va chercher, et c'est précisément l'endroit qui connaît le monde.
+
+**Le correctif.** `directory` et `models` sont des fermetures, appelées après que l'endpoint,
+l'identité et la créance sont là. `models` est asynchrone parce que `Provider.list()` l'est ; il est
+résolu avant la construction des ports, `WorkerPorts["manifest"]` étant synchrone.
+
+**Le test qui le fige** ne vérifie pas une valeur mais une **absence d'appel** : sur une installation
+non enrôlée, ni `directory` ni `models` ne sont appelés — les deux fermetures du test lèvent si on
+les touche, et le compteur reste à zéro. C'est la seule forme sous laquelle ce défaut est exprimable
+au grain du paquet.
+
+**Vérifié.** `bun test test/locus/` → **459 passés**. `bun run typecheck` sans erreur.
+`canterel worker --locus http://127.0.0.1:9999` rend `worker: inert` et sa configuration, comme
+`W2.3` le promet. Le harnais e2e monte ensuite les trois processus — `locus-execd, locusd, canterel
+worker` — et `locusd` répond `200` sur `/projections/status`.

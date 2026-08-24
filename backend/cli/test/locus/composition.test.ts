@@ -116,9 +116,12 @@ function entourage(dataDir: string, fetch: typeof globalThis.fetch, models?: rea
   return {
     dataDir,
     fetch,
-    directory: dataDir,
+    // Des fermetures, comme la couture réelle : un test qui passerait des valeurs n'exercerait pas
+    // la propriété que `W12.f` a imposée — rien de l'entourage n'est forcé avant que les ports
+    // soient sûrs.
+    directory: () => dataDir,
     create: async (input: { readonly title: string }) => ({ id: `ses_${input.title.length}` }),
-    ...(models === undefined ? {} : { models }),
+    ...(models === undefined ? {} : { models: async () => models }),
   }
 }
 
@@ -436,6 +439,45 @@ describe("le composition root du worker — W2.22", () => {
       ]),
     )
     expect(avecModele.status).toBe("ran")
+  })
+
+  /**
+   * **Rien de l'entourage n'est forcé quand l'assemblage va échouer.**
+   *
+   * Le défaut que le harnais e2e de `W12.f` a trouvé, figé ici. La couture résolvait
+   * `Instance.directory` et l'inventaire de fournisseurs **dès l'entrée**, hors du contexte que la
+   * CLI n'ouvre qu'à l'exécution d'une commande : `canterel worker --locus <url>` levait
+   * « No context found for instance » sur une installation non enrôlée, là où `W2.3` promet un
+   * constat.
+   *
+   * Onze tests unitaires ne l'avaient pas vu, et la raison est instructive : ils **injectent**
+   * l'entourage, donc ils n'exerçaient jamais la couture qui le fabrique. Ce test-ci ne teste donc
+   * pas une valeur mais une **absence d'appel** — la seule forme sous laquelle le défaut est
+   * exprimable au grain du paquet.
+   */
+  test("une installation non enrôlée ne fait appeler ni le répertoire ni l'inventaire", async () => {
+    const { dataDir } = await installation({ identity: false, credential: false })
+    let touche = 0
+
+    const outcome = await runWorker(
+      CONFIG(),
+      await assemblePorts(CONFIG(), {
+        dataDir,
+        fetch: interdit(),
+        directory: () => {
+          touche += 1
+          throw new Error("No context found for instance")
+        },
+        create: async () => ({ id: "ses_0" }),
+        models: async () => {
+          touche += 1
+          throw new Error("No context found for instance")
+        },
+      }),
+    )
+
+    expect(touche).toBe(0)
+    expect(outcome.status).toBe("inert")
   })
 
   // -------------------------------------------------------------------------------------------
