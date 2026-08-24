@@ -439,7 +439,22 @@ export type PortSupply = WorkerPorts | Assembly
 export async function runWorker(config: LocusConfig, supply?: PortSupply): Promise<WorkerOutcome> {
   const missing: string[] = []
   if (!config.endpoint) missing.push("locus.endpoint")
-  if (!config.identity) missing.push("locus.identity")
+  // **Pas de garde sur `config.identity`**, et l'absence est le correctif.
+  //
+  // `W2.3` en posait une, à un moment où l'identité d'un worker n'était qu'un champ de §6 qu'on
+  // écrivait à la main. `W2.4` a livré l'enrôlement, et l'identité qui compte est devenue la paire
+  // de clés du répertoire d'état — celle que `assemblePorts` charge et dont il nomme l'absence
+  // (« identité de worker (`canterel worker enroll`) »).
+  //
+  // La garde, elle, est restée. Conséquence : **un worker correctement enrôlé restait `inert`**, en
+  // réclamant un champ que l'enrôlement ne remplit pas et que rien ne lit. Constaté en enrôlant un
+  // worker réel contre un `locusd` réel — l'enrôlement rendait « enrôlé : canterel-… », et le tour
+  // suivant rendait « incomplet — manque : locus.identity ».
+  //
+  // Le champ reste au schéma : §6 le définit, et l'ôter serait diverger de la spec dans un commit
+  // de correction. Ce qui est acté ici est qu'**aucun code ne le lit** — ni pour nommer le worker,
+  // ni pour rien d'autre. Lui donner un consommateur, ou le retirer de §6, est une décision, pas un
+  // correctif ; elle est consignée au ledger plutôt que prise en passant.
 
   // Trois formes, et la troisième est celle que `W2.22` a ajoutée. `undefined` — personne n'a
   // assemblé, et le mot « ports » est alors exact. Un `Assembly` en échec — quelqu'un a essayé et

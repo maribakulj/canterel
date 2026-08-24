@@ -35,6 +35,27 @@ const CREDENTIAL: Credential = {
   labels: [],
 }
 
+/**
+ * Le motif qu'un refus laisse à l'appelant.
+ *
+ * `LocusServerRejected` est une erreur **structurée** : son `message` est son nom, et ce qui
+ * renseigne vit dans `data.reason`. Un test qui interrogerait `message` passerait sur n'importe
+ * quel refus — vérifié en l'écrivant de travers d'abord.
+ */
+async function motifDuRefus(reponse: () => Promise<Response>): Promise<string> {
+  try {
+    await lepCall({
+      endpoint: "https://locus.example",
+      path: CLAIM_PATH,
+      fetch: reponse,
+      credential: CREDENTIAL,
+    })
+  } catch (error) {
+    return (error as { data: { reason: string } }).data.reason
+  }
+  throw new Error("le refus n'a pas été levé")
+}
+
 function lease(mission: MissionEnvelope, attempt: number): Lease {
   return {
     protocol: mission.protocol,
@@ -236,6 +257,51 @@ describe("le client de réclamation — le test de sortie de W2.21", () => {
       }),
     ).rejects.toThrow()
     expect(appels).toBe(0)
+  })
+
+  /**
+   * **Un refus typé arrive jusqu'à l'appelant, pas seulement son code de statut.**
+   *
+   * Le plan de contrôle refuse de façon typée — §22.5 — et jusqu'ici le worker jetait le corps pour
+   * ne garder que « réponse 400 ». Ce n'est pas une gêne théorique : la première réclamation d'un
+   * worker réel contre un `locusd` réel a échoué exactement ainsi, et il a fallu **rejouer la
+   * requête à la main** pour lire une phrase que le serveur avait déjà envoyée du premier coup.
+   */
+  test("un refus §22.5 porte sa famille et son détail", async () => {
+    const motif = await motifDuRefus(
+      async () =>
+        new Response(
+          JSON.stringify({
+            family: "validation",
+            detail: "« project_id » : sans projet, un fait n'a pas d'endroit où appartenir",
+          }),
+          { status: 400 },
+        ),
+    )
+
+    expect(motif).toContain("validation")
+    expect(motif).toContain("project_id")
+    // Le statut reste : c'est lui qui distingue un refus d'une panne, et le détail ne le remplace pas.
+    expect(motif).toContain("400")
+  })
+
+  /**
+   * **Un corps qui n'est pas un refus typé est repris tel quel, et borné.**
+   *
+   * Un proxy ou une passerelle répond en HTML, et cet HTML dit souvent lequel des deux a refusé. Le
+   * jeter parce qu'il n'a pas la forme attendue reviendrait à ne garder le renseignement que dans
+   * le cas où l'on en a le moins besoin. Borné, parce qu'un refus qui remplit un journal ne s'y lit
+   * plus.
+   */
+  test("un corps non typé est repris tronqué, et un corps vide ne laisse que le statut", async () => {
+    const html = await motifDuRefus(async () => new Response(`<html>${"x".repeat(5_000)}</html>`, { status: 502 }))
+    expect(html).toContain("502")
+    expect(html.length).toBeLessThan(500)
+    expect(html).toContain("…")
+
+    // Pas de « 503 : » suivi de rien : une section vide se lit comme un renseignement perdu.
+    const vide = await motifDuRefus(async () => new Response("", { status: 503 }))
+    expect(vide).toBe("réponse 503")
   })
 
   /**

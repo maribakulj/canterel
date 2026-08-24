@@ -40,11 +40,58 @@ export const CLAIM_PATH = "/lep/v1/claim"
 export const EVENTS_PATH = "/lep/v1/events"
 export const RESULT_PATH = "/lep/v1/result"
 
+/** Au-delà, un refus n'explique plus rien : il remplit un journal. */
+const REFUSAL_EXCERPT = 400
+
+/**
+ * Ce qu'un refus dit de lui-même — §22.5.
+ *
+ * # Pourquoi le corps est lu, et pas seulement le statut
+ *
+ * Le plan de contrôle refuse de façon **typée** : `{ "family": "validation", "detail": "« project_id »
+ * : sans projet, un fait n'a pas d'endroit où appartenir" }`. Jeter ce corps pour ne garder que
+ * « réponse 400 » revient à transformer un diagnostic complet en une invitation à chercher.
+ *
+ * Ce n'est pas une hypothèse : la première réclamation d'un worker réel contre un `locusd` réel a
+ * échoué exactement ainsi, et il a fallu **rejouer la requête à la main** pour lire ce que le
+ * serveur avait déjà dit du premier coup. Le worker avait la phrase entre les mains et l'a jetée.
+ *
+ * # Trois précautions, et chacune a sa raison
+ *
+ * - le corps est **borné**. Un serveur mal en point peut répondre une page entière ; un refus qui
+ *   remplit un journal ne s'y lit plus ;
+ * - un corps illisible ne devient pas une seconde panne. Ce qui est demandé ici est un
+ *   renseignement ; échouer à l'obtenir laisse le statut, qui reste vrai ;
+ * - un corps qui n'est **pas** du JSON typé est repris tel quel, tronqué. Un serveur intermédiaire —
+ *   un proxy, une passerelle — répond en HTML, et cet HTML dit souvent lequel des deux a refusé.
+ */
+async function refusalReason(response: Response): Promise<string> {
+  const statut = `réponse ${response.status}`
+  const corps = await response.text().catch(() => "")
+  if (corps.trim() === "") return statut
+
+  const probleme = ((): string | undefined => {
+    try {
+      const lu: unknown = JSON.parse(corps)
+      if (typeof lu !== "object" || lu === null) return undefined
+      const { family, detail } = lu as { family?: unknown; detail?: unknown }
+      if (typeof family !== "string" || typeof detail !== "string") return undefined
+      return `${family} — ${detail}`
+    } catch {
+      return undefined
+    }
+  })()
+
+  const dit = probleme ?? corps.trim()
+  return `${statut} : ${dit.length > REFUSAL_EXCERPT ? `${dit.slice(0, REFUSAL_EXCERPT)}…` : dit}`
+}
+
 /**
  * Un appel LEP, sous la politique de §7.3.
  *
  * Rend `null` sur `204` — « rien », qui n'est pas une panne. Lève [`LocusServerRejected`] sur tout
- * le reste : redirection, statut non-`ok`, origine changée.
+ * le reste : redirection, statut non-`ok`, origine changée. Un refus porte **ce que le serveur en a
+ * dit** — voir [`refusalReason`].
  *
  * # Errors
  *
@@ -98,7 +145,7 @@ export async function lepCall(input: {
     // ferait chercher un lien cassé là où il n'y a que du calme.
     if (response.status === 204) return null
     if (!response.ok) {
-      throw new LocusServerRejected({ endpoint: target, reason: `réponse ${response.status}` })
+      throw new LocusServerRejected({ endpoint: target, reason: await refusalReason(response) })
     }
     return await response.json()
   } finally {

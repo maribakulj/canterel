@@ -2035,3 +2035,61 @@ binaire sur une vraie installation.
 **Vérifié.** `canterel worker --locus <url>` rend `worker: inert` et `incomplet — manque :
 locus.identity` sur l'installation enrôlée de cette machine, là où il levait « No context found for
 instance ». `bun test test/locus/` → 459 passés. `bun run typecheck` sans erreur.
+
+---
+
+## Défauts — un worker enrôlé restait inerte, et un refus perdait sa raison
+
+Deux défauts, trouvés par la même sonde : enrôler un worker `canterel` réel contre un `locusd` réel,
+puis lancer la boucle. Aucun des deux ne se voyait autrement — 460 tests unitaires, le typecheck et
+quinze portes de CI les laissaient passer tous les deux.
+
+### 1. La garde sur `locus.identity` a survécu à ce qu'elle gardait
+
+`runWorker` refusait de démarrer sans `config.identity`. La garde vient de `W2.3`, à un moment où
+l'identité d'un worker n'était qu'un champ de §6 qu'on écrivait à la main. `W2.4` a livré
+l'enrôlement, et l'identité qui compte est devenue la paire de clés du répertoire d'état — celle que
+`assemblePorts` charge, et dont il nomme déjà l'absence.
+
+La garde, elle, est restée. Conséquence exacte : **un worker correctement enrôlé restait `inert`**.
+L'enrôlement rendait `enrôlé : canterel-…`, et le tour suivant rendait `incomplet — manque :
+locus.identity` — un champ que l'enrôlement ne remplit pas, et que **rien ne lit**.
+
+Ce qui est acté et **non** corrigé en passant : `config.identity` n'a aucun consommateur. Le champ
+reste au schéma parce que §6 le définit, et l'ôter serait diverger de la spec dans un commit de
+correction. Lui donner un consommateur — un nom de worker stable qu'un exploitant épingle à travers
+les réinstallations — ou le retirer de §6 est une **décision**, pas un correctif.
+
+Le test qui l'aurait attrapé n'existait pas, et il existe maintenant en deux moitiés : la liste vide
+ne nomme plus `locus.identity`, **et** une configuration qui a tout ce qui se lit réellement ne
+manque que de `ports`. La première seule aurait dit que le nom a disparu de la liste sans dire qu'il
+a disparu de la liste qui compte.
+
+### 2. `lepCall` jetait le corps d'un refus typé
+
+Le plan de contrôle refuse de façon typée — §22.5, `{ "family": …, "detail": … }`. Le worker n'en
+gardait que le statut : `réponse 400`.
+
+Ce n'est pas une gêne théorique. La première réclamation d'un worker réel a échoué exactement ainsi,
+et il a fallu **rejouer la requête à la main** pour lire une phrase que le serveur avait déjà
+envoyée du premier coup : « `« project_id »` : sans projet, un fait n'a pas d'endroit où
+appartenir ». Le worker avait le diagnostic entre les mains et l'a jeté.
+
+Trois précautions, chacune avec sa raison : le corps est **borné** — un serveur mal en point répond
+une page entière, et un refus qui remplit un journal ne s'y lit plus ; un corps illisible ne devient
+pas une **seconde** panne — ce qui est demandé est un renseignement, et échouer à l'obtenir laisse le
+statut, qui reste vrai ; un corps qui n'est pas du JSON typé est repris **tel quel**, tronqué —
+un proxy répond en HTML, et cet HTML dit souvent lequel des deux a refusé.
+
+### Ce que la sonde a trouvé et que ce commit ne corrige pas
+
+`/lep/v1/claim` refuse la réclamation d'un worker réel : le worker envoie `{ worker_id, manifest }`,
+et le daemon exige les champs de §22.5 — `idempotency_key` et `project_id`. **Le worker n'a pas
+tort.** C'est exactement ce que `W20.w` a tranché pour l'enrôlement : le projet d'un worker vient de
+son **grant**, pas de sa demande, parce qu'un worker qui choisit son projet écrit là où personne ne
+l'a assigné. Le correctif est donc côté `locusolus`, et il y est consigné.
+
+**Vérifié.** `bun test test/locus/` → 462 passés (3 nouveaux) ; `bun run typecheck` sans erreur ; et
+contre la chaîne réelle, le worker atteint désormais la réclamation, et son journal porte
+`réponse 400 : validation — « project_id » : sans projet, un fait n'a pas d'endroit où appartenir`
+là où il ne portait que `réponse 400`.
