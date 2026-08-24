@@ -62,8 +62,18 @@ export type Surroundings = {
   readonly dataDir: string
   /** Le transport. Jamais appelé pendant l'assemblage. */
   readonly fetch: FetchLike
-  /** Le répertoire de travail d'une session, tel que l'amont le calcule. */
-  readonly directory: string
+  /**
+   * Le répertoire de travail d'une session, **différé**.
+   *
+   * Une valeur et non une fermeture, c'était le premier jet, et le harnais e2e de `W12.f` l'a
+   * démenti au premier démarrage réel : l'amont ne peut calculer ce répertoire qu'à l'intérieur du
+   * contexte d'instance de la CLI, et le résoudre avant de savoir si l'installation est seulement
+   * enrôlée faisait lever « No context found for instance » là où `W2.3` promet un constat.
+   *
+   * Différé, il n'est calculé que lorsque des ports vont vraiment être construits — c'est-à-dire
+   * quand l'endpoint, l'identité et la créance sont là.
+   */
+  readonly directory: () => string
   /** Ouvrir une session amont. */
   readonly create: SessionCreator
   /**
@@ -84,7 +94,7 @@ export type Surroundings = {
    * refuse toute mission avec `model_unavailable` tant qu'aucun modèle n'est annoncé, et elle a
    * raison. Voir la note de [`assemblePorts`] sur ce que la couture ne fournit pas encore.
    */
-  readonly models?: readonly CapabilityManifestModelsItem[]
+  readonly models?: () => Promise<readonly CapabilityManifestModelsItem[]>
 }
 
 /**
@@ -118,6 +128,16 @@ export function assembled(assembly: Assembly): assembly is { readonly ports: Wor
  * installation possède et qu'une configuration ne porte pas — la première dit qui elle est, la
  * seconde qu'elle a le droit de le dire.
  *
+ * # Rien de l'entourage n'est forcé avant que les ports soient sûrs
+ *
+ * `directory` et `models` sont des fermetures, appelées **après** les trois vérifications et jamais
+ * avant. Ce n'était pas le cas au premier jet, et le harnais e2e de `W12.f` l'a démenti au premier
+ * démarrage réel : la couture résolvait le répertoire d'instance et l'inventaire de fournisseurs
+ * dès l'entrée, hors du contexte que la CLI n'ouvre qu'à l'exécution d'une commande, et
+ * `canterel worker --locus <url>` levait « No context found for instance » au lieu de rendre le
+ * constat que `W2.3` promet. Onze tests unitaires ne l'avaient pas vu : ils injectent l'entourage
+ * eux-mêmes, donc ils n'exerçaient jamais la couture.
+ *
  * # Les manques sont cumulés, pas rendus un par un
  *
  * Une installation neuve manque des trois à la fois. Les rendre un par un obligerait à relancer la
@@ -149,6 +169,11 @@ export async function assemblePorts(config: LocusConfig, surroundings: Surroundi
 
   if (!config.endpoint || !identity || !credential) return { missing }
 
+  // **Après** les trois vérifications, et jamais avant. L'inventaire de fournisseurs se lit dans le
+  // contexte d'instance de la CLI ; le résoudre à l'entrée faisait lever « No context found for
+  // instance » sur une installation non enrôlée.
+  const models = surroundings.models === undefined ? undefined : await surroundings.models()
+
   return {
     ports: workerPorts({
       endpoint: config.endpoint,
@@ -162,11 +187,11 @@ export async function assemblePorts(config: LocusConfig, surroundings: Surroundi
         buildManifest({
           probe: realProbe(),
           workerId: identity.public.worker_id,
-          ...(surroundings.models === undefined ? {} : { models: surroundings.models }),
+          ...(models === undefined ? {} : { models }),
         }),
       tools: surroundings.tools ?? (() => []),
       openSession: sessionOpener({
-        directory: surroundings.directory,
+        directory: surroundings.directory(),
         create: surroundings.create,
       }),
     }),

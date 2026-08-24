@@ -128,12 +128,16 @@ async function surroundingsFor(locus: typeof import("@/locus")): Promise<Paramet
   return {
     dataDir: Global.Path.data,
     fetch: globalThis.fetch,
-    directory: Instance.directory,
+    // Des fermetures, et c'est le harnais e2e de `W12.f` qui l'a imposé : `Instance.directory` n'est
+    // calculable qu'à l'intérieur du contexte d'instance, et le lire ici — avant même de savoir si
+    // l'installation est enrôlée — faisait lever « No context found for instance » sur
+    // `canterel worker --locus <url>`, là où `W2.3` promet un constat.
+    directory: () => Instance.directory,
     create: async (input) => Session.createNext({ title: input.title, directory: input.directory }),
     // Aucun outil déclaré tant que l'inventaire d'outils n'est pas branché : une liste inventée
     // ferait admettre des missions que cette installation ne sait pas honorer.
     tools: () => [],
-    models: locus.modelInventory(await providerReadings()),
+    models: async () => locus.modelInventory(await providerReadings()),
   }
 }
 
