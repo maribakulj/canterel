@@ -1782,47 +1782,47 @@ une liste vide, ce qui est exact.
 deux modules a laissé sept mutants vivants. Cinq étaient des trous de test, deux ont demandé un
 changement de code, et aucun n'aurait été trouvé en relisant.
 
-- *Le chemin LEP était comparé à lui-même.* L'attente s'écrivait
+- _Le chemin LEP était comparé à lui-même._ L'attente s'écrivait
   `` `https://locus.example${CLAIM_PATH}` `` : la constante des deux côtés de l'égalité, donc la
   changer changeait aussi l'attente. Remplacer `/lep/v1/claim` par `/lep/v1/claimx` ne faisait rougir
   personne. C'est **le même défaut** que la vérification des permissions du socket avait contre
   `SOCKET_MODE`, deux sprints plus tôt, et je l'ai réintroduit sans le reconnaître. Les trois chemins
   de §15.2 sont désormais écrits en toutes lettres.
-- *`redirect: "manual"` était une consigne donnée à `fetch`, jamais exercée.* Un `fetch` d'épreuve
+- _`redirect: "manual"` était une consigne donnée à `fetch`, jamais exercée._ Un `fetch` d'épreuve
   rend un `302` quelle que soit l'option : le basculer en `"follow"` ne changeait rien. Deux
   `Bun.serve` sur la boucle locale — donc deux origines — et un compteur sur la cible remplacent
   cela. Ce qui est vérifié est la propriété que §7.3 protège réellement : **la destination n'est
   jamais contactée**, donc l'en-tête `authorization` ne part pas vers un hôte que le serveur a
   choisi après coup.
-- *La borne de délai n'était éprouvée nulle part.* Remplacer `controller.abort()` par un no-op
+- _La borne de délai n'était éprouvée nulle part._ Remplacer `controller.abort()` par un no-op
   passait. Un serveur muet — un handler qui ne résout jamais — l'éprouve maintenant, par le temps
   écoulé. Sans borne, un worker se fige sur sa réclamation et cesse silencieusement de travailler,
   ce qu'aucun de ses journaux ne dit puisqu'il n'y a pas d'erreur. Au passage l'abandon devient un
   `LocusServerRejected` : deux formes d'échec de transport là où la boucle n'en distingue qu'une
   auraient obligé chaque appelant à connaître `AbortError`.
-- *La branche « redirection » n'était pas distinguée de « réponse non-ok ».* Le test n'exigeait que
+- _La branche « redirection » n'était pas distinguée de « réponse non-ok »._ Le test n'exigeait que
   « la raison contient 302 » — vrai des deux branches, puisqu'un `302` non intercepté tombe dans le
   refus générique et dit aussi « 302 ». Rétrécir la plage `3xx` survivait. Le test compare
   maintenant la raison d'un `302` et celle d'un `503` et exige qu'elles diffèrent : ce qu'on garde
   ici est un **diagnostic**, et c'est dit comme tel plutôt que déguisé en propriété de sûreté.
-- *La garde d'origine était injoignable depuis ce module.* Les trois chemins sont relatifs et
+- _La garde d'origine était injoignable depuis ce module._ Les trois chemins sont relatifs et
   constants, donc `new URL(path, base)` ne peut pas changer d'origine : la neutraliser ne cassait
   rien. Mais `lepCall` est **exportée**, et `new URL` ignore la base dès que le chemin est absolu.
   La supprimer parce qu'aucun appelant interne ne la déclenche aurait fait de la première
   configuration lisible un aller simple pour la créance du worker. Un test la déclenche par un
   chemin absolu et vérifie qu'aucun appel ne part.
-- *Le compte rendu de session pouvait ne pas remonter.* `emit(report.events)` → `emit([])` et
+- _Le compte rendu de session pouvait ne pas remonter._ `emit(report.events)` → `emit([])` et
   `through_sequence: events.length` → `0` passaient tous deux, parce que le seul tour complet testé
   ne portait **aucun** événement. `through_sequence` est ce sur quoi §12.4 fait reposer « rien
   perdu, rien dupliqué » : le figer à zéro ferait rejouer depuis le début à chaque reprise, donc
   dupliquer.
-- *`advance` ne garantissait rien.* Remplacer tout son corps par `return to` ne faisait rougir aucun
+- _`advance` ne garantissait rien._ Remplacer tout son corps par `return to` ne faisait rougir aucun
   test — la fonction n'existait que pour assurer qu'aucun état n'est écrit sans passer par §11.2, et
   cette assurance n'était vérifiée nulle part. Elle rendait de surcroît l'état **inchangé** sur un
   refus, ce qui était le vrai défaut : le tour aurait continué et écrit un checkpoint portant un
   état que la boucle n'a pas atteint, envoyant une reprise repartir d'un endroit où rien ne s'était
-  passé. *Un compteur qui n'a rien lu ne vaut pas zéro, et un état qu'on n'a pas su changer ne vaut
-  pas l'ancien.* `advance` lève désormais `LocusAttemptPathBroken`. Aucun chemin de la boucle ne peut
+  passé. _Un compteur qui n'a rien lu ne vaut pas zéro, et un état qu'on n'a pas su changer ne vaut
+  pas l'ancien._ `advance` lève désormais `LocusAttemptPathBroken`. Aucun chemin de la boucle ne peut
   la déclencher aujourd'hui, et c'est justement ce qui la rend utile pour le cran suivant.
 
 Quinze mutants, quinze tués, zéro survivant, zéro motif absent.
