@@ -170,3 +170,41 @@ export const LocusInventoryUnmeasured = NamedError.create(
   "LocusInventoryUnmeasured",
   z.object({ quantity: z.string() }),
 )
+
+/**
+ * Un checkpoint mis en quarantaine, rencontré au moment de reprendre — §24.5, `W2.21`.
+ *
+ * # Pourquoi lever plutôt que repartir de zéro
+ *
+ * `ResumeStore` distingue trois états : reprise possible, **absent**, **en quarantaine**. Un premier
+ * démarrage n'a pas de checkpoint, et c'est normal ; un checkpoint illisible veut dire qu'un travail
+ * était en cours et que son état est perdu.
+ *
+ * Les fondre en un seul « rien à reprendre » ferait repartir sous un rang de tentative neuf, c'est
+ *-à-dire produire pour l'institution un **doublon** de ce que §15.5 existe pour empêcher. Une
+ * ignorance n'est pas une absence : c'est la même règle que `W22.e` a posée pour les sondes d'hôte,
+ * et que `W21.m` a posée pour une écriture non classée.
+ */
+export const LocusResumeUnreadable = NamedError.create(
+  "LocusResumeUnreadable",
+  z.object({ reason: z.string(), movedTo: z.string().optional() }),
+)
+
+/**
+ * La boucle a tenté un cran que §11.2 n'autorise pas — `W2.21`.
+ *
+ * # Pourquoi lever, plutôt que garder l'état précédent
+ *
+ * Une première rédaction rendait l'état inchangé sur une transition refusée. C'était silencieux, et
+ * le silence coûtait cher : le tour continuait, écrivait un checkpoint portant un état que la boucle
+ * n'avait pas atteint, et une reprise repartait d'un endroit où rien ne s'était passé. Un compteur
+ * qui n'a rien lu ne vaut pas zéro, et un état qu'on n'a pas su changer ne vaut pas l'ancien.
+ *
+ * Aucun chemin de la boucle ne peut la lever aujourd'hui — `RUN_PATH` et `REFUSAL_PATH` sont
+ * parcourus par `canTransition` dans les tests. C'est précisément ce qui la rend utile : elle garde
+ * cette propriété vraie pour le prochain cran qu'on ajoutera.
+ */
+export const LocusAttemptPathBroken = NamedError.create(
+  "LocusAttemptPathBroken",
+  z.object({ from: z.string(), to: z.string() }),
+)

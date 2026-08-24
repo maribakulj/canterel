@@ -438,4 +438,5 @@ export async function runWorker(config: LocusConfig, ports?: WorkerPorts): Promi
 }
 export * from "./host-probe.ts"
 export * from "./session-open.ts"
+export * from "./worker-client.ts"
 export * from "./worker-loop.ts"

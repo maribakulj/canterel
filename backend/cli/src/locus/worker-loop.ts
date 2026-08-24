@@ -34,6 +34,7 @@
 
 import type { AttemptState } from "./attempt.ts"
 import { transition } from "./attempt.ts"
+import { LocusAttemptPathBroken } from "./errors.ts"
 import type { Checkpoint } from "./resume-store.ts"
 import type { Refusal } from "./admission.ts"
 import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "./lep/generated.ts"
@@ -246,12 +247,23 @@ export const RUN_PATH: readonly AttemptState[] = ["accepted", "preparing", "runn
 export const REFUSAL_PATH: readonly AttemptState[] = ["rejected"]
 
 /**
- * Avancer d'un cran, ou dire pourquoi on ne peut pas.
+ * Avancer d'un cran, ou refuser bruyamment.
  *
- * Rend l'état inchangé quand la transition est interdite. Ce cas ne peut pas survenir sur
- * [`RUN_PATH`] — un test le vérifie en parcourant le chemin — et le laisser silencieux serait
- * pourtant une faute : c'est `advance` qui garantit qu'aucun état n'est écrit sans passer par §11.2.
+ * Aucun chemin de cette boucle ne peut le faire échouer : `RUN_PATH` et `REFUSAL_PATH` sont
+ * parcourus par `canTransition` dans les tests. C'est ce qui rend cette fonction utile plutôt
+ * qu'inutile — elle garde la propriété vraie pour le cran suivant qu'on ajoutera.
+ *
+ * Une première rédaction rendait l'état **inchangé** sur un refus. Une passe de mutation l'a
+ * démentie : remplacer tout le corps par `return to` ne faisait rougir aucun test, ce qui voulait
+ * dire que passer par §11.2 n'était vérifié nulle part. Le silence était le vrai défaut — un tour
+ * aurait continué et écrit un checkpoint portant un état que la boucle n'a pas atteint, envoyant
+ * une reprise repartir d'un endroit où rien ne s'était passé.
+ *
+ * # Errors
+ *
+ * [`LocusAttemptPathBroken`] quand §11.2 n'autorise pas le cran demandé.
  */
-function advance(from: AttemptState, to: AttemptState): AttemptState {
-  return transition(from, to).ok ? to : from
+export function advance(from: AttemptState, to: AttemptState): AttemptState {
+  if (!transition(from, to).ok) throw new LocusAttemptPathBroken({ from, to })
+  return to
 }

@@ -7,6 +7,7 @@ import type { ToolDescriptor } from "../../src/locus/tool-policy.ts"
 import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "../../src/locus/lep/generated.ts"
 import type { SessionPlan } from "../../src/locus/session-map.ts"
 import {
+  advance,
   PHASES,
   REFUSAL_PATH,
   RUN_PATH,
@@ -17,6 +18,7 @@ import {
   type WorkerPorts,
 } from "../../src/locus/worker-loop.ts"
 import { canTransition } from "../../src/locus/attempt.ts"
+import { LocusAttemptPathBroken } from "../../src/locus/errors.ts"
 import { sessionOpener, sessionTitle } from "../../src/locus/session-open.ts"
 
 const FIXTURES = join(import.meta.dir, "fixtures")
@@ -264,6 +266,66 @@ describe("la boucle du worker — le test de sortie de W2.20", () => {
     expect(saved.unserializable).toEqual([])
     expect(saved.context_hash).toBe(MISSION().context_view.hash)
     expect(JSON.parse(JSON.stringify(saved))).toEqual(saved)
+  })
+
+  /**
+   * **Ce que la session a produit remonte tel quel, et le checkpoint le compte.**
+   *
+   * Deux propriétés que le tour « complet » ci-dessus laissait entièrement libres, parce que son
+   * compte rendu ne porte aucun événement : une boucle qui aurait appelé `emit([])` et écrit
+   * `through_sequence: 0` passait tous les tests. Une passe de mutation l'a montré en faisant
+   * exactement ces deux substitutions sans faire rougir quoi que ce soit.
+   *
+   * `through_sequence` est ce sur quoi §12.4 fait reposer « rien perdu, rien dupliqué » : le
+   * figer à zéro ferait rejouer depuis le début à chaque reprise, donc dupliquer.
+   */
+  test("les événements du compte rendu remontent, et le checkpoint dit jusqu'où", async () => {
+    const evenement = (sequence: number): Event => ({
+      protocol: MISSION().protocol,
+      event_type: "progress",
+      sequence,
+      occurred_at: `2026-08-24T12:00:0${sequence}.000Z`,
+      idempotency_key: `idem-${sequence}`,
+    })
+    const produits: readonly Event[] = [evenement(1), evenement(2), evenement(3)]
+
+    let remontes: readonly Event[] | undefined
+    const port = ports({
+      openSession: async () => ({ sessionId: "ses_02", events: produits, output: { summary: "fait" } }),
+      emit: async (events) => {
+        remontes = events
+      },
+    })
+
+    const verdict = await runLoop(port)
+    expect(verdict.status).toBe("ran")
+
+    expect(remontes).toEqual(produits)
+    const [saved] = port.seen.saved
+    expect(saved?.through_sequence).toBe(3)
+  })
+
+  /**
+   * **Un cran interdit par §11.2 lève ; il ne se tait pas.**
+   *
+   * `advance` existe pour qu'aucun état ne soit écrit sans passer par la machine de `W2.9`. Une
+   * passe de mutation a montré que remplacer son corps par `return to` ne faisait rougir aucun
+   * test : la garantie était affirmée et vérifiée nulle part — le motif exact de l'ADR 0025.
+   *
+   * Le cran choisi est vrai dans la spec : §11.2 n'autorise `rejected` que depuis `offered`, donc
+   * `completed → rejected` est interdit, et on ne rejette pas ce qu'on a déjà mené à terme.
+   */
+  test("advance refuse un cran que §11.2 n'autorise pas", () => {
+    expect(advance("offered", "accepted")).toBe("accepted")
+    expect(() => advance("completed", "rejected")).toThrow()
+    try {
+      advance("completed", "rejected")
+    } catch (error) {
+      expect(LocusAttemptPathBroken.isInstance(error)).toBe(true)
+      if (LocusAttemptPathBroken.isInstance(error)) {
+        expect(error.data).toEqual({ from: "completed", to: "rejected" })
+      }
+    }
   })
 
   /**

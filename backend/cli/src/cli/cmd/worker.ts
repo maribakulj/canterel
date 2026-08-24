@@ -108,6 +108,44 @@ function reportLocusError(locus: typeof import("@/locus"), error: unknown): bool
   return false
 }
 
+/**
+ * Assembler les ports du worker, ou rendre `undefined` quand l'installation n'a pas de quoi agir.
+ *
+ * Rendre `undefined` plutôt que de lever : `runWorker` sait déjà dire « inerte, et voici ce qui
+ * manque ». Lever ici transformerait une installation incomplète en panne, alors que c'est une
+ * information — la distinction que `W2.3` a posée et que cet item ne défait pas.
+ */
+async function workerPortsFor(
+  locus: typeof import("@/locus"),
+  config: Awaited<ReturnType<typeof locus.loadConfig>>,
+): Promise<Parameters<typeof locus.runWorker>[1]> {
+  if (!config.endpoint) return undefined
+  const { Global } = await import("@/global")
+  const stateDir = locus.locusStateDir(Global.Path.data)
+
+  const identity = await locus.loadIdentity(stateDir)
+  const credential = await locus.loadCredential(stateDir)
+  if (!identity || !credential) return undefined
+
+  const { Session } = await import("@/session")
+  const { Instance } = await import("@/project/instance")
+
+  return locus.workerPorts({
+    endpoint: config.endpoint,
+    fetch: globalThis.fetch,
+    credential,
+    store: new locus.ResumeStore(stateDir),
+    manifest: () => locus.buildManifest({ probe: locus.realProbe(), workerId: identity.public.worker_id }),
+    // Aucun outil déclaré tant que l'inventaire d'outils n'est pas branché : une liste inventée
+    // ferait admettre des missions que cette installation ne sait pas honorer.
+    tools: () => [],
+    openSession: locus.sessionOpener({
+      directory: Instance.directory,
+      create: async (input) => Session.createNext({ title: input.title, directory: input.directory }),
+    }),
+  })
+}
+
 export const WorkerCommand = cmd({
   command: "worker",
   describe: "run this installation as a Locus Solus worker",
@@ -160,11 +198,11 @@ export const WorkerCommand = cmd({
       throw error
     }
 
-    // `W2.20` a livré la boucle et son ouvreur de session ; ce qui manque encore est le **client
-    // qui réclame du travail** au plan de contrôle. Tant qu'il n'existe pas, cette commande n'a pas
-    // de ports à donner et rend le constat de configuration — `inert`, avec `ports` dans `missing`.
-    // Fabriquer ici un ouvreur pour ne pas s'en servir aurait été du code qui a l'air d'agir.
-    const outcome = await locus.runWorker(config)
+    // `W2.21` : la couture assemble ce que la boucle ne peut pas aller chercher elle-même. C'est ici,
+    // et seulement ici, que `Session.createNext` de l'amont est nommé — `src/locus/**` n'importe rien
+    // de `src/session/`, et c'est ce qui fait qu'une refonte amont ne casse rien là-bas. Ce qui
+    // traverse dans les deux sens est de la donnée : un plan à l'aller, un compte rendu au retour.
+    const outcome = await locus.runWorker(config, await workerPortsFor(locus, config))
 
     UI.println(`worker: ${outcome.status}`)
     UI.println(JSON.stringify(outcome.config, null, 2))
