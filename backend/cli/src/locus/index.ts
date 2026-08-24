@@ -367,6 +367,7 @@ export {
   type EnrollmentTransport,
 } from "./auth.ts"
 
+import type { Assembly } from "./composition.ts"
 import { describeConfig, layerFromEnv, resolveConfig, type Layer, type LocusConfig } from "./config.ts"
 import { runLoop, type LoopOutcome, type WorkerPorts } from "./worker-loop.ts"
 
@@ -412,6 +413,16 @@ export function loadConfig(env: Record<string, string | undefined>, extra: reado
 }
 
 /**
+ * Ce qu'on peut donner à [`runWorker`] en fait de ports.
+ *
+ * Soit les ports eux-mêmes — un test qui veut éprouver la boucle les fabrique directement —, soit
+ * l'[`Assembly`] qu'un composition root a produit, y compris quand il a **échoué**. La seconde
+ * forme existe parce qu'un échec d'assemblage sait pourquoi il a échoué, et que cette raison vaut
+ * mieux que le mot « ports » dans un constat destiné à un humain.
+ */
+export type PortSupply = WorkerPorts | Assembly
+
+/**
  * Lancer le worker.
  *
  * Rend un constat au lieu de lever quand la configuration est incomplète : à ce stade, « tu n'as
@@ -425,17 +436,30 @@ export function loadConfig(env: Record<string, string | undefined>, extra: reado
  * nomme ce qui manque — y compris les ports eux-mêmes. Un worker qui rendrait « rien à faire » alors
  * qu'on ne lui a pas donné de quoi faire enverrait chercher un ordonnanceur vide.
  */
-export async function runWorker(config: LocusConfig, ports?: WorkerPorts): Promise<WorkerOutcome> {
+export async function runWorker(config: LocusConfig, supply?: PortSupply): Promise<WorkerOutcome> {
   const missing: string[] = []
   if (!config.endpoint) missing.push("locus.endpoint")
   if (!config.identity) missing.push("locus.identity")
-  if (!ports) missing.push("ports")
-  if (missing.length > 0) return { status: "inert", config: describeConfig(config), missing }
+
+  // Trois formes, et la troisième est celle que `W2.22` a ajoutée. `undefined` — personne n'a
+  // assemblé, et le mot « ports » est alors exact. Un `Assembly` en échec — quelqu'un a essayé et
+  // **sait pourquoi** : ses raisons remplacent le mot « ports », qui est un terme interne qu'un
+  // utilisateur ne peut pas aller corriger. Des ports — il n'y a rien à signaler.
+  const supplied = supply !== undefined && "ports" in supply ? supply.ports : supply
+  const ports = supplied !== undefined && !("missing" in supplied) ? supplied : undefined
+  if (supply === undefined) missing.push("ports")
+  else if ("missing" in supply) missing.push(...supply.missing)
+
+  // Dédoublonné : `assemblePorts` nomme `locus.endpoint` de son côté, et le lire deux fois dans la
+  // même ligne ferait douter qu'il s'agisse du même champ.
+  const unique = [...new Set(missing)]
+  if (unique.length > 0) return { status: "inert", config: describeConfig(config), missing: unique }
 
   // `ports` est défini : `missing` serait non vide sinon, et on serait sorti au-dessus.
   const outcome = await runLoop(ports as WorkerPorts)
   return { status: "ran", config: describeConfig(config), outcome }
 }
+export * from "./composition.ts"
 export * from "./host-probe.ts"
 export * from "./session-open.ts"
 export * from "./worker-client.ts"

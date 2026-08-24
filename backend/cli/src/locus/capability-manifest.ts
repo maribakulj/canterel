@@ -3,6 +3,7 @@ import { payloadHash } from "./lep/canonical.ts"
 import type {
   CapabilityManifest,
   CapabilityManifestAcceleratorsItem,
+  CapabilityManifestModelsItem,
   DataClass,
   NetworkMode,
   SandboxLevel,
@@ -160,6 +161,16 @@ export type ManifestInput = {
   readonly workerId: string
   readonly maxConcurrency?: number
   readonly dataClasses?: readonly DataClass[]
+  /**
+   * Les modèles que cette installation peut faire tourner — §10.2, et la porte `model_unavailable`
+   * de l'admission.
+   *
+   * **Omis** quand l'appelant ne dit rien, et présent — fût-ce vide — quand il dit quelque chose.
+   * La distinction porte : un manifeste sans champ `models` n'a jamais été interrogé sur ses
+   * modèles, un manifeste qui annonce `[]` a été interrogé et n'en a aucun. Confondre les deux
+   * ferait lire « installation neuve » sur un hôte dont les fournisseurs ont tous été retirés.
+   */
+  readonly models?: readonly CapabilityManifestModelsItem[]
 }
 
 /**
@@ -207,6 +218,7 @@ export function buildManifest(input: ManifestInput): CapabilityManifest {
       // mensonge que d'annoncer S3.
       attestation: false,
     },
+    ...(input.models === undefined ? {} : { models: [...input.models] }),
     data_classes: [...(input.dataClasses ?? DEFAULT_DATA_CLASSES)],
     max_concurrency: input.maxConcurrency ?? 1,
   }

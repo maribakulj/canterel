@@ -109,41 +109,33 @@ function reportLocusError(locus: typeof import("@/locus"), error: unknown): bool
 }
 
 /**
- * Assembler les ports du worker, ou rendre `undefined` quand l'installation n'a pas de quoi agir.
+ * Remplir l'entourage du composition root avec le vrai monde.
  *
- * Rendre `undefined` plutôt que de lever : `runWorker` sait déjà dire « inerte, et voici ce qui
- * manque ». Lever ici transformerait une installation incomplète en panne, alors que c'est une
- * information — la distinction que `W2.3` a posée et que cet item ne défait pas.
+ * L'assemblage lui-même vit dans `src/locus/composition.ts`, à l'intérieur du périmètre local, et
+ * c'est ce que `W2.22` a déplacé. Ce qui reste ici est **irréductiblement** de la couture : le
+ * répertoire de données du processus, le `fetch` de la plateforme, et les deux noms amont
+ * (`Session.createNext`, `Instance.directory`) que `src/locus/**` n'a pas le droit d'importer.
+ *
+ * La fonction avait le bon câblage et **aucun test**, parce qu'une fonction privée qui va chercher
+ * son contexte toute seule ne s'éprouve qu'en muant le processus. Elle ne décide plus rien : elle
+ * nomme le monde, et `assemblePorts` en tire des ports ou des raisons.
  */
-async function workerPortsFor(
+async function surroundingsFor(
   locus: typeof import("@/locus"),
-  config: Awaited<ReturnType<typeof locus.loadConfig>>,
-): Promise<Parameters<typeof locus.runWorker>[1]> {
-  if (!config.endpoint) return undefined
+): Promise<Parameters<typeof locus.assemblePorts>[1]> {
   const { Global } = await import("@/global")
-  const stateDir = locus.locusStateDir(Global.Path.data)
-
-  const identity = await locus.loadIdentity(stateDir)
-  const credential = await locus.loadCredential(stateDir)
-  if (!identity || !credential) return undefined
-
   const { Session } = await import("@/session")
   const { Instance } = await import("@/project/instance")
 
-  return locus.workerPorts({
-    endpoint: config.endpoint,
+  return {
+    dataDir: Global.Path.data,
     fetch: globalThis.fetch,
-    credential,
-    store: new locus.ResumeStore(stateDir),
-    manifest: () => locus.buildManifest({ probe: locus.realProbe(), workerId: identity.public.worker_id }),
+    directory: Instance.directory,
+    create: async (input) => Session.createNext({ title: input.title, directory: input.directory }),
     // Aucun outil déclaré tant que l'inventaire d'outils n'est pas branché : une liste inventée
     // ferait admettre des missions que cette installation ne sait pas honorer.
     tools: () => [],
-    openSession: locus.sessionOpener({
-      directory: Instance.directory,
-      create: async (input) => Session.createNext({ title: input.title, directory: input.directory }),
-    }),
-  })
+  }
 }
 
 export const WorkerCommand = cmd({
@@ -202,7 +194,7 @@ export const WorkerCommand = cmd({
     // et seulement ici, que `Session.createNext` de l'amont est nommé — `src/locus/**` n'importe rien
     // de `src/session/`, et c'est ce qui fait qu'une refonte amont ne casse rien là-bas. Ce qui
     // traverse dans les deux sens est de la donnée : un plan à l'aller, un compte rendu au retour.
-    const outcome = await locus.runWorker(config, await workerPortsFor(locus, config))
+    const outcome = await locus.runWorker(config, await locus.assemblePorts(config, await surroundingsFor(locus)))
 
     UI.println(`worker: ${outcome.status}`)
     UI.println(JSON.stringify(outcome.config, null, 2))

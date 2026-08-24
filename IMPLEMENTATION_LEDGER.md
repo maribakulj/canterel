@@ -1839,3 +1839,72 @@ son import de `@/locus` demeure dynamique.
 
 **Prochain item.** `W20.i` ou `W20.j` chez `locusolus`, ou le service §15.2 côté `locusd` qui rendrait
 `W12.d` atteignable.
+
+## 2026-08-24 — W2.22 — Le composition root du worker, et ce qu'il refuse
+
+**Périmètre.** `src/locus/composition.ts` (nouveau : `Surroundings`, `Assembly`, `assemblePorts`,
+`assembled`), `src/locus/index.ts` (`PortSupply`, `runWorker` accepte un `Assembly`, réexport),
+`src/locus/capability-manifest.ts` (`ManifestInput.models`),
+`test/locus/composition.test.ts` (nouveau, 11 tests). **Un fichier hors périmètre** :
+`src/cli/cmd/worker.ts`, la couture déjà déclarée en `W2.3`, qui **perd** du code — `workerPortsFor`
+devient `surroundingsFor`, qui ne décide plus rien et se contente de nommer le monde.
+
+**Tests exécutés.** `bun test test/locus/` → **445 passés**, dont 11 neufs. `bun run typecheck` sans
+erreur.
+
+**Ce que l'item a trouvé, et qui n'était pas dans son énoncé.**
+
+1. **La roadmap se trompait sur le constat.** `locusolus/docs/10` dit « personne n'assemble les
+   ports » et « aucun chemin du binaire ne mène d'une configuration à une boucle qui tourne ».
+   `W2.21` avait livré ce chemin (`git log -S workerPortsFor` le date du commit `5c3b516`). Le
+   constat est antérieur à cette livraison. Ce qui restait vrai est plus discret : **rien ne
+   l'attestait** — l'assemblage était une fonction privée d'un module de commande, qui allait
+   chercher son contexte toute seule, et aucun test ne pouvait l'atteindre sans muter le processus.
+   C'est `W7.a` sous un autre nom : livré, non attesté. La ligne de roadmap n'est pas réécrite —
+   elle date un constat, et le ledger est l'endroit où l'on dit ce qui a été fait.
+2. **Le manifeste sondé n'est pas le manifeste de fixture.** `W2.21` éprouvait la boucle avec
+   `manifest-vm-linux.json`, qui offre `S3`. `realProbe` sur l'hôte de CI n'offre que `S1` : la
+   mission nominale du corpus y est **refusée**. Le test ne fige donc aucun niveau — il taille la
+   mission sur le manifeste de l'hôte qui l'exécute, et vérifie séparément qu'un cran au-dessus de
+   ce que cet hôte offre est refusé en nommant le niveau.
+3. **Le worker assemblé refusait _toutes_ les missions**, et pour une raison qu'aucune fixture ne
+   pouvait montrer : `buildManifest` n'avait pas de champ `models`, donc l'admission répondait
+   `model_unavailable` — « ce worker n'annonce aucun modèle ». Le composition root produisait un
+   worker qui tourne et ne peut rien prendre.
+
+**Décisions prises.**
+
+1. **L'assemblage entre dans le périmètre, et son entourage devient un paramètre.** Une fonction qui
+   va chercher `Global.Path.data`, `globalThis.fetch` et les modules amont ne se teste qu'en muant
+   le processus. `Surroundings` les reçoit ; la commande le remplit avec le vrai monde, un test avec
+   un répertoire temporaire et un `fetch` qui **lève** si on l'appelle. C'est cette dernière qui rend
+   la clause « le démarrage n'ouvre aucune connexion » vérifiable au lieu d'être une intention
+   écrite en commentaire.
+2. **Un échec d'assemblage nomme la chose à corriger, pas sa cause interne.** `W2.21` rendait
+   `undefined`, et `runWorker` disait `missing: ["ports"]` — exact et inutilisable : « ports » est un
+   terme que personne ne peut aller réparer. `Assembly` porte ses raisons, et un test par manque
+   plutôt qu'un test qui les cumule : trois causes différentes doivent produire trois phrases
+   différentes, et un test unique passerait encore si elles se fondaient en une seule.
+3. **« Personne n'a assemblé » reste distinct de « l'assemblage a échoué ».** `runWorker(config)`
+   sans rien est le cas de `worker status` : aucun composition root n'a été sollicité, et « ports »
+   est alors le mot exact. Les confondre ferait dire « ton enrôlement manque » à quelqu'un dont on
+   n'a jamais regardé l'installation.
+4. **`models` est omis quand personne ne s'est prononcé, et présent-vide quand quelqu'un l'a fait.**
+   Un manifeste sans le champ n'a jamais été interrogé ; un manifeste qui annonce `[]` l'a été et n'a
+   rien trouvé. Les fondre ferait lire « installation neuve » sur un hôte dont les fournisseurs ont
+   tous été retirés. L'omission préserve aussi le hash des manifestes que `W2.6` produisait.
+5. **La couture ne déclare aucun modèle, et c'est délibéré.** Elle ne sait pas dire, pour chaque
+   fournisseur configuré en amont, si ses prompts quittent la machine. Un modèle marqué local alors
+   qu'il est distant fait sortir un contexte confidentiel de l'hôte — §12.4 et l'invariant 11 —, et
+   l'admission n'aurait plus rien pour l'arrêter. Le refus, lui, ne coûte qu'une mission non prise.
+   Un test **fige** ce refus sous son code de §10.2 plutôt que de le laisser se découvrir en
+   production.
+
+**Écart avec la spec.** Aucun. Le worker assemblé refuse les missions faute de modèle déclaré, ce
+qui est le comportement que §10.2 prescrit pour un worker sans modèle — pas un écart, un état.
+
+**Prochain item.** `W2.23` — l'inventaire des modèles, **lu** et non supposé : `remote_inference` se
+décide en lisant l'adresse d'inférence de chaque fournisseur (une base sur la boucle locale ne fait
+pas sortir les prompts, tout le reste si), et ce qui ne se lit pas est distant. Dépendance : aucune —
+`Surroundings.models` et `ManifestInput.models` existent et sont testés ; ce qui manque est la
+lecture côté amont.
