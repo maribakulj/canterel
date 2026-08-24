@@ -1734,3 +1734,108 @@ testée de bout en bout jusqu'à une vraie session amont, et il lui manque un ap
 
 **Prochain item.** Le client de réclamation, qui rendra `canterel worker` réellement exécutable —
 ou `W20.i` / `W20.j` chez `locusolus`.
+
+---
+
+## 2026-08-24 — W2.21 — Le client de réclamation : la boucle a son appelant
+
+**Ce qui est livré.** `src/locus/worker-client.ts` — les ports HTTP du worker, sur la politique de
+transport de §7.3 — et la couture qui les assemble. `canterel worker` cesse de rendre `inert` sur une
+installation configurée et enrôlée : `ports` sort de `missing`.
+
+**Ce que cet item ne change pas, et c'est le point d'un port.** La boucle de `W2.20` n'a pas bougé
+d'une ligne. `W2.21` est son appelant, et il s'est branché sans que rien du côté domaine ne soit
+touché — ce qui est la propriété qu'on achète en écrivant un port avant un driver.
+
+**La politique de transport n'est pas réécrite.** Aucune redirection suivie, une origine validée, un
+délai borné : `httpEnrollmentTransport` les applique déjà, et les redire aurait produit une seconde
+version qui divergerait. `lepCall` est donc la fonction unique par laquelle tout ce module parle. La
+leçon vient de `xiiif` : suivre une redirection laisse le serveur choisir la destination **après** que
+la politique a été appliquée à l'URL d'origine, et un jeton de worker suit ce chemin.
+
+**« Rien pour toi » n'est pas « je n'ai pas pu demander ».** Un `204` rend `null` et la boucle en fait
+un tour `idle` ; une panne de transport lève. Les deux envoient chercher à des endroits opposés — un
+ordonnanceur qui n'a rien à donner, ou un lien cassé. C'est la séparation que l'ADR 0028 décision 4
+tient pour le broker de `locusolus`, et elle est tenue ici par le **type** : `null` d'un côté, une
+exception de l'autre, jamais par la lecture d'un message.
+
+**Un commentaire que mon code démentait, écrit et corrigé dans le même quart d'heure.** J'avais
+documenté `resume` ainsi : « `null` veut dire pas de checkpoint, jamais je n'ai pas su le lire » — et
+le code rendait `null` dans les **deux** cas. C'est exactement le motif de l'ADR 0025, produit par
+moi, sur du code neuf, alors que je passe mes sprints à le relever ailleurs.
+
+`ResumeStore` distingue pourtant les trois états : reprise, **absent**, **en quarantaine**. Un premier
+démarrage n'a pas de checkpoint et c'est normal ; un checkpoint illisible dit qu'un travail était en
+cours et que son état est perdu. Les fondre ferait repartir sous un rang de tentative neuf,
+c'est-à-dire produire le doublon que §15.5 existe pour empêcher. `LocusResumeUnreadable` entre, et un
+test exerce les trois chemins sur un vrai fichier corrompu.
+
+**Le harnais de `W0.9` pousse là où ce client tire, et c'est pour ça qu'il sert.** §15.2 autorise les
+deux modes, et `WorkerUnderTest` est délibérément sans transport : ce qu'il vérifie est une
+**séquence**, ce qui reste vrai quel que soit le tuyau. Brancher la boucle dessus se fait en
+remplaçant un seul port — la réclamation rend ce que le harnais a proposé —, et les vérifications
+passent hors de celles qui portent sur les événements. Celles-là sont attendues : `W2.12` a livré la
+coalescence, mais aucun fil réel ne produit encore d'événement, et le compte rendu de session en rend
+une liste vide, ce qui est exact.
+
+**Sept tests sur quinze ne prouvaient pas ce que leur nom annonçait.** Une passe de mutation sur les
+deux modules a laissé sept mutants vivants. Cinq étaient des trous de test, deux ont demandé un
+changement de code, et aucun n'aurait été trouvé en relisant.
+
+- *Le chemin LEP était comparé à lui-même.* L'attente s'écrivait
+  `` `https://locus.example${CLAIM_PATH}` `` : la constante des deux côtés de l'égalité, donc la
+  changer changeait aussi l'attente. Remplacer `/lep/v1/claim` par `/lep/v1/claimx` ne faisait rougir
+  personne. C'est **le même défaut** que la vérification des permissions du socket avait contre
+  `SOCKET_MODE`, deux sprints plus tôt, et je l'ai réintroduit sans le reconnaître. Les trois chemins
+  de §15.2 sont désormais écrits en toutes lettres.
+- *`redirect: "manual"` était une consigne donnée à `fetch`, jamais exercée.* Un `fetch` d'épreuve
+  rend un `302` quelle que soit l'option : le basculer en `"follow"` ne changeait rien. Deux
+  `Bun.serve` sur la boucle locale — donc deux origines — et un compteur sur la cible remplacent
+  cela. Ce qui est vérifié est la propriété que §7.3 protège réellement : **la destination n'est
+  jamais contactée**, donc l'en-tête `authorization` ne part pas vers un hôte que le serveur a
+  choisi après coup.
+- *La borne de délai n'était éprouvée nulle part.* Remplacer `controller.abort()` par un no-op
+  passait. Un serveur muet — un handler qui ne résout jamais — l'éprouve maintenant, par le temps
+  écoulé. Sans borne, un worker se fige sur sa réclamation et cesse silencieusement de travailler,
+  ce qu'aucun de ses journaux ne dit puisqu'il n'y a pas d'erreur. Au passage l'abandon devient un
+  `LocusServerRejected` : deux formes d'échec de transport là où la boucle n'en distingue qu'une
+  auraient obligé chaque appelant à connaître `AbortError`.
+- *La branche « redirection » n'était pas distinguée de « réponse non-ok ».* Le test n'exigeait que
+  « la raison contient 302 » — vrai des deux branches, puisqu'un `302` non intercepté tombe dans le
+  refus générique et dit aussi « 302 ». Rétrécir la plage `3xx` survivait. Le test compare
+  maintenant la raison d'un `302` et celle d'un `503` et exige qu'elles diffèrent : ce qu'on garde
+  ici est un **diagnostic**, et c'est dit comme tel plutôt que déguisé en propriété de sûreté.
+- *La garde d'origine était injoignable depuis ce module.* Les trois chemins sont relatifs et
+  constants, donc `new URL(path, base)` ne peut pas changer d'origine : la neutraliser ne cassait
+  rien. Mais `lepCall` est **exportée**, et `new URL` ignore la base dès que le chemin est absolu.
+  La supprimer parce qu'aucun appelant interne ne la déclenche aurait fait de la première
+  configuration lisible un aller simple pour la créance du worker. Un test la déclenche par un
+  chemin absolu et vérifie qu'aucun appel ne part.
+- *Le compte rendu de session pouvait ne pas remonter.* `emit(report.events)` → `emit([])` et
+  `through_sequence: events.length` → `0` passaient tous deux, parce que le seul tour complet testé
+  ne portait **aucun** événement. `through_sequence` est ce sur quoi §12.4 fait reposer « rien
+  perdu, rien dupliqué » : le figer à zéro ferait rejouer depuis le début à chaque reprise, donc
+  dupliquer.
+- *`advance` ne garantissait rien.* Remplacer tout son corps par `return to` ne faisait rougir aucun
+  test — la fonction n'existait que pour assurer qu'aucun état n'est écrit sans passer par §11.2, et
+  cette assurance n'était vérifiée nulle part. Elle rendait de surcroît l'état **inchangé** sur un
+  refus, ce qui était le vrai défaut : le tour aurait continué et écrit un checkpoint portant un
+  état que la boucle n'a pas atteint, envoyant une reprise repartir d'un endroit où rien ne s'était
+  passé. *Un compteur qui n'a rien lu ne vaut pas zéro, et un état qu'on n'a pas su changer ne vaut
+  pas l'ancien.* `advance` lève désormais `LocusAttemptPathBroken`. Aucun chemin de la boucle ne peut
+  la déclencher aujourd'hui, et c'est justement ce qui la rend utile pour le cran suivant.
+
+Quinze mutants, quinze tués, zéro survivant, zéro motif absent.
+
+**Ce qui reste, dit plutôt que supposé.** Aucun outil n'est déclaré par la couture — l'inventaire
+d'outils n'est pas branché, et une liste inventée ferait admettre des missions que cette installation
+ne sait pas honorer. Et `locusd` ne sert pas encore §15.2 : le test de bout en bout se fait contre un
+`fetch` d'épreuve, ce qui éprouve que le client parle ce que la boucle attend et l'inverse, mais pas
+qu'un serveur réel répond. C'est `W12.d`.
+
+**Écart avec la spec.** Aucun. Les cinq répertoires amont intouchables ne sont pas modifiés. Le seul
+fichier touché hors de `src/locus/**` reste `src/cli/cmd/worker.ts`, la couture de `LOCUS_SEAMS`, et
+son import de `@/locus` demeure dynamique.
+
+**Prochain item.** `W20.i` ou `W20.j` chez `locusolus`, ou le service §15.2 côté `locusd` qui rendrait
+`W12.d` atteignable.
