@@ -460,6 +460,7 @@ export async function runWorker(config: LocusConfig, supply?: PortSupply): Promi
   return { status: "ran", config: describeConfig(config), outcome }
 }
 export * from "./composition.ts"
+export * from "./model-inventory.ts"
 export * from "./host-probe.ts"
 export * from "./session-open.ts"
 export * from "./worker-client.ts"

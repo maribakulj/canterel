@@ -133,7 +133,43 @@ async function surroundingsFor(locus: typeof import("@/locus")): Promise<Paramet
     // Aucun outil déclaré tant que l'inventaire d'outils n'est pas branché : une liste inventée
     // ferait admettre des missions que cette installation ne sait pas honorer.
     tools: () => [],
+    models: locus.modelInventory(await providerReadings()),
   }
+}
+
+/**
+ * Lire les fournisseurs configurés, et n'en garder que ce qui décide — `W2.23`.
+ *
+ * C'est la moitié « couture » de l'inventaire : elle connaît `Provider.list()`, et `src/locus/**`
+ * ne le connaît pas. Ce qui traverse est une lecture — un identifiant, des adresses, des noms de
+ * modèles, un booléen d'authentification —, jamais le type amont lui-même, qui serait un hunk à
+ * rejouer à chaque synchronisation.
+ *
+ * `Provider.list()` **ne parle à personne** : il lit la configuration et le catalogue déjà en
+ * cache. C'est ce qui permet à `assemblePorts` de garder la propriété testée par `W2.22` — assembler
+ * n'ouvre aucune connexion.
+ */
+async function providerReadings(): Promise<Parameters<typeof import("@/locus").modelInventory>[0]> {
+  const { Provider } = await import("@/provider/provider")
+  const providers = await Provider.list()
+
+  return Object.values(providers).map((provider) => {
+    const models = Object.values(provider.models)
+    return {
+      id: provider.id,
+      // `options.baseURL` est la seule adresse que la configuration écrit pour un fournisseur
+      // entier. Elle est lue **telle quelle**, sans être résolue : voir `model-inventory.ts`.
+      baseURL: typeof provider.options?.["baseURL"] === "string" ? provider.options["baseURL"] : undefined,
+      // Un modèle peut pointer ailleurs que son fournisseur. Un seul suffit à rendre l'ensemble
+      // distant, et c'est `providerLocality` qui en décide — pas cette lecture.
+      modelURLs: models.map((model) => model.api?.url),
+      models: models.map((model) => model.id),
+      // Une clé configurée, ou une variable d'environnement que le fournisseur déclare et qui est
+      // renseignée. Les deux sont des créances de service ; leur absence est l'absence
+      // d'authentification, ce qui est le cas d'un serveur local qui ignore la clé qu'on lui envoie.
+      authenticated: provider.key !== undefined || provider.env.some((name) => (process.env[name] ?? "") !== ""),
+    }
+  })
 }
 
 export const WorkerCommand = cmd({
