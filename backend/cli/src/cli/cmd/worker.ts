@@ -253,6 +253,16 @@ export const WorkerCommand = cmd({
         if (outcome.status === "inert" && outcome.missing.length > 0) {
           UI.println(`incomplet — manque : ${outcome.missing.join(", ")}`)
         }
+        // Ce que le tour a fait. `runLoop` le rend depuis toujours, et son commentaire dit pourquoi —
+        // « un tour qui n'aurait laissé qu'un log serait indiscernable d'un tour qui n'a rien fait ».
+        // La valeur arrivait ici et **s'arrêtait ici** : un worker qui n'avait rien réclamé affichait
+        // `worker: ran`, ce qui dit le contraire de ce qui s'est passé, et `idle`, `refused` et un tour
+        // complet étaient indiscernables au terminal.
+        //
+        // Constaté en montant la chaîne réelle, pas en relisant le code.
+        if (outcome.status === "ran") {
+          for (const line of locus.describeOutcome(outcome.outcome)) UI.println(line)
+        }
       },
     })
   },

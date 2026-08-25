@@ -267,3 +267,56 @@ export function advance(from: AttemptState, to: AttemptState): AttemptState {
   if (!transition(from, to).ok) throw new LocusAttemptPathBroken({ from, to })
   return to
 }
+
+/**
+ * Ce qu'un tour a fait, en clair — le pendant de la valeur que `runLoop` rend déjà.
+ *
+ * # Le défaut que cette fonction retire
+ *
+ * `runLoop` rend un [`LoopOutcome`] complet, et son propre commentaire dit pourquoi : « un tour qui
+ * n'aurait laissé qu'un log serait indiscernable d'un tour qui n'a rien fait ». La valeur existe
+ * donc, et elle est exacte. **Ce qui la reçoit la jetait** : `WorkerCommand` imprimait
+ * `worker: ${outcome.status}` et la configuration, jamais l'issue du tour.
+ *
+ * Conséquence mesurée en montant la chaîne réelle : un worker qui n'a **rien réclamé** — parce
+ * qu'aucune mission n'était en file — affiche `worker: ran`. Le mot dit le contraire de ce qui s'est
+ * passé, `idle`, `refused` et un tour complet sont indiscernables au terminal, et la seule façon de
+ * savoir ce que le worker a fait est de relire le journal du plan de contrôle.
+ *
+ * C'est la forme exacte que `W5.x` a retirée du côté `locusolus`, dans l'autre sens : là un binaire
+ * disait et le harnais jetait, ici la boucle rend et la commande jette.
+ *
+ * # Pourquoi des lignes plutôt qu'un JSON
+ *
+ * La configuration est déjà rendue en JSON juste au-dessus, et c'est un objet que l'utilisateur peut
+ * aller corriger. Une issue de tour n'est pas éditable : ce qu'on en veut est de la lire. Les lignes
+ * restent stables et préfixées, donc un harnais les lit aussi bien qu'un humain.
+ */
+export function describeOutcome(outcome: LoopOutcome): readonly string[] {
+  if (outcome.status === "idle") {
+    // La ligne qui manquait le plus. « Rien à réclamer » est un état parfaitement normal — une file
+    // vide — et le confondre avec un tour complet envoie chercher un défaut d'exécution là où il n'y
+    // a qu'une file vide, ou l'inverse.
+    return ["tour : aucune mission à réclamer"]
+  }
+
+  if (outcome.status === "refused") {
+    return [
+      `tour : mission refusée à l'admission — ${outcome.refusal.code}`,
+      // Le message humain **et** les détails structurés : §10.3 dit que les seconds sont ce qui
+      // décide, et n'imprimer que le premier ferait discuter une phrase.
+      `  motif : ${outcome.refusal.message}`,
+      `  détails : ${JSON.stringify(outcome.refusal.details)}`,
+      `  étapes : ${outcome.phases.join(", ") || "aucune"}`,
+      `  état : ${outcome.state}`,
+    ]
+  }
+
+  return [
+    `tour : mission ${outcome.taskId} exécutée`,
+    `  attempt : ${outcome.attempt}${outcome.resumed ? " (reprise)" : ""}`,
+    `  session : ${outcome.sessionId}`,
+    `  étapes : ${outcome.phases.join(", ")}`,
+    `  état : ${outcome.state}`,
+  ]
+}
