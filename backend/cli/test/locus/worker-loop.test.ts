@@ -8,6 +8,7 @@ import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "../../sr
 import type { SessionPlan } from "../../src/locus/session-map.ts"
 import {
   advance,
+  describeOutcome,
   PHASES,
   REFUSAL_PATH,
   RUN_PATH,
@@ -419,5 +420,104 @@ describe("la couture ouvre une vraie session amont — W2.20, ADR 0010", () => {
     const titre = sessionTitle(plan)
     expect(titre).toContain("task_01")
     expect(titre).toContain("att_02")
+  })
+})
+
+/**
+ * Ce qu'un tour a fait, rendu lisible — le défaut trouvé en montant la chaîne réelle.
+ *
+ * `runLoop` rend un `LoopOutcome` complet depuis `W2.20`, et son commentaire dit pourquoi : « un
+ * tour qui n'aurait laissé qu'un log serait indiscernable d'un tour qui n'a rien fait ». Le type
+ * `WorkerOutcome` le répète — « un tour a eu lieu, et voici ce qu'il a fait ». La valeur existait
+ * donc, exacte, et **la commande la jetait** : elle imprimait `worker: ${status}` et la
+ * configuration, jamais l'issue.
+ *
+ * Constaté en montant les trois processus du harnais `locusolus` : un worker qui n'avait **rien**
+ * réclamé — file vide — affichait `worker: ran`, mot qui dit le contraire de ce qui s'est passé.
+ */
+describe("un tour dit ce qu'il a fait — le rendu de LoopOutcome", () => {
+  /**
+   * **La ligne qui manquait le plus.**
+   *
+   * « Rien à réclamer » est un état parfaitement normal — une file vide — et le confondre avec un
+   * tour complet envoie chercher un défaut d'exécution là où il n'y a qu'une file vide, ou
+   * l'inverse. C'est le cas qu'un `worker: ran` seul rendait invisible.
+   */
+  test("un tour qui n'a rien réclamé le dit, au lieu de se lire « ran »", () => {
+    expect(describeOutcome({ status: "idle" })).toEqual(["tour : aucune mission à réclamer"])
+  })
+
+  /**
+   * **Un refus porte son code, son motif et ses détails structurés.**
+   *
+   * §10.3 dit que ce qui décide sont les détails, la phrase étant « le confort humain, explicitement
+   * secondaire ». N'imprimer que la phrase ferait discuter une formulation là où il y a une valeur.
+   */
+  test("un refus d'admission porte son code et ses détails, pas seulement sa phrase", () => {
+    const lignes = describeOutcome({
+      status: "refused",
+      refusal: {
+        accepted: false,
+        code: "sandbox_unavailable",
+        details: { requested: "S3", offered: "S2" },
+        message: "cet hôte ne tient pas S3",
+      },
+      phases: ["claim"],
+      state: "rejected",
+    })
+
+    expect(lignes[0]).toBe("tour : mission refusée à l'admission — sandbox_unavailable")
+    expect(lignes.join("\n")).toContain("cet hôte ne tient pas S3")
+    // Les détails **structurés**, sous leur forme : c'est ce qui distingue « on m'a demandé S3 » de
+    // « on m'a demandé autre chose », et une phrase ne le porte pas.
+    expect(lignes.join("\n")).toContain('"requested":"S3"')
+    expect(lignes.join("\n")).toContain('"offered":"S2"')
+    expect(lignes.join("\n")).toContain("état : rejected")
+  })
+
+  /**
+   * **Un tour complet nomme la mission, le rang, la session et les étapes.**
+   *
+   * Les étapes sont ce qui distingue un tour qui a ouvert une session d'un tour qui s'est arrêté à
+   * la planification — et c'est précisément ce que la valeur portait sans que personne ne le lise.
+   */
+  test("un tour exécuté nomme la mission, le rang, la session et les étapes", () => {
+    const lignes = describeOutcome({
+      status: "ran",
+      phases: ["claim", "plan", "session", "emit", "report"],
+      attempt: 3,
+      taskId: "task_01HF7YAT000000000000000005",
+      sessionId: "ses_42",
+      resumed: false,
+      state: "completed",
+    })
+
+    expect(lignes[0]).toContain("task_01HF7YAT000000000000000005")
+    expect(lignes.join("\n")).toContain("attempt : 3")
+    expect(lignes.join("\n")).toContain("session : ses_42")
+    expect(lignes.join("\n")).toContain("claim, plan, session, emit, report")
+    // Pas de « (reprise) » sur un tour neuf : l'annoter partout ferait perdre l'information le jour
+    // où elle compte, exactement comme l'empreinte que `W5.w` n'imprime que là où elle sert.
+    expect(lignes.join("\n")).not.toContain("reprise")
+  })
+
+  /**
+   * **Une reprise se voit.**
+   *
+   * Un rang relu d'un checkpoint et un rang neuf donnent le même nombre ; ce qui les distingue est
+   * l'origine, et c'est elle qui dit à un lecteur si l'institution va y voir un doublon ou une suite.
+   */
+  test("une reprise est annotée, et un tour neuf ne l'est pas", () => {
+    const lignes = describeOutcome({
+      status: "ran",
+      phases: ["claim", "plan", "session", "emit", "report"],
+      attempt: 2,
+      taskId: "task_x",
+      sessionId: "ses_1",
+      resumed: true,
+      state: "completed",
+    })
+
+    expect(lignes.join("\n")).toContain("attempt : 2 (reprise)")
   })
 })

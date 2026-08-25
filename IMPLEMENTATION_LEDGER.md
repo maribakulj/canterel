@@ -2093,3 +2093,72 @@ l'a assigné. Le correctif est donc côté `locusolus`, et il y est consigné.
 contre la chaîne réelle, le worker atteint désormais la réclamation, et son journal porte
 `réponse 400 : validation — « project_id » : sans projet, un fait n'a pas d'endroit où appartenir`
 là où il ne portait que `réponse 400`.
+
+---
+
+## 2026-08-25 — W2.24 — `worker: ran` ne disait pas ce que le tour avait fait
+
+**Le constat, trouvé en montant la chaîne réelle.** Le harnais e2e de `locusolus` démarre les trois
+processus ; une sonde a proposé puis mis en file une mission, attendu douze secondes, et lu le
+journal du plan de contrôle. La mission n'a **jamais** été réclamée, et toute la sortie du worker
+tenait en ceci :
+
+```text
+worker: ran
+{ "enabled": true, "endpoint": "http://127.0.0.1:8791", … }
+```
+
+Le mot `ran` dit le contraire de ce qui s'est passé. `runLoop` avait rendu `{ status: "idle" }` —
+aucune mission à réclamer, la file étant vide au moment du tour — et `runWorker` traduit **tout** tour
+effectué en `status: "ran"`, ce qui est exact à son niveau et trompeur au terminal.
+
+**La valeur existait, exacte, et la commande la jetait.** `runLoop` rend un `LoopOutcome` complet, et
+son propre commentaire dit pourquoi :
+
+> Un tour qui n'aurait laissé qu'un log serait indiscernable d'un tour qui n'a rien fait. Les étapes
+> traversées sont une **valeur**, donc un test les lit.
+
+`WorkerOutcome` le répète, sur la branche concernée : « un tour a eu lieu, et voici ce qu'il a fait ».
+Les deux commentaires affirment une propriété que l'assemblage ne tenait pas — `WorkerCommand`
+imprimait `worker: ${outcome.status}` et la configuration, jamais `outcome.outcome`. `idle`, `refused`
+et un tour complet étaient donc **indiscernables** au terminal, et la seule façon de savoir ce qu'un
+worker avait fait était de relire le journal du plan de contrôle, c'est-à-dire de demander à
+l'institution ce que le worker sait déjà.
+
+C'est la forme exacte que `W5.x` a retirée du côté `locusolus`, dans l'autre sens : là un binaire
+disait et le harnais jetait, ici la boucle rend et la commande jette.
+
+**Ce qui est livré.** `describeOutcome` dans `src/locus/worker-loop.ts`, et son appel dans la
+couture. Trois issues, trois formes :
+
+- `idle` → « tour : aucune mission à réclamer ». La ligne qui manquait le plus : une file vide est un
+  état parfaitement normal, et le confondre avec un tour complet envoie chercher un défaut
+  d'exécution là où il n'y en a pas — ou l'inverse.
+- `refused` → le **code** de §10.3, le motif humain, et les **détails structurés**. La spec dit que
+  la phrase est « le confort humain, explicitement secondaire » ; n'imprimer qu'elle ferait discuter
+  une formulation là où il y a une valeur.
+- `ran` → la mission, le rang, la session, les étapes traversées et l'état atteint. Une reprise est
+  annotée ; un tour neuf ne l'est pas, pour la même raison que `W5.w` n'imprime l'empreinte que là où
+  elle sert — une annotation partout ne dit plus rien nulle part.
+
+**Des lignes, pas un JSON.** La configuration est déjà rendue en JSON juste au-dessus, et c'est un
+objet que l'utilisateur peut aller corriger. Une issue de tour n'est pas éditable : ce qu'on en veut
+est de la lire. Les lignes restent préfixées et stables, donc un harnais les lit aussi bien qu'un
+humain.
+
+**Une erreur de ma part, attrapée par les types.** La première rédaction du test posait un code de
+refus `sandbox_level_unsupported`, qui n'existe pas : `REFUSAL_CODES` de §10.3 en compte quatorze et
+celui-là n'en est pas. `bun test` passait — les tests ne vérifient pas les types — et `bun run
+typecheck` l'a démenti. C'est la même leçon que le harnais `locusolus` a apprise sur
+`ChildProcessWithoutNullStreams` : dans ces dépôts, la porte qui tient les types n'est pas celle qui
+lance les tests.
+
+**Vérifié.** `bun test test/locus/worker-loop.test.ts` → 16 passés (4 nouveaux) ; `bun run typecheck`
+sans erreur ; et contre la chaîne réelle, le worker imprime désormais `tour : aucune mission à
+réclamer` là où il disait `worker: ran`.
+
+**Ce que ça débloque.** La clause de `W12.d` qui suit — « un worker s'enregistre **et est placé sur ce
+qu'il a prouvé** » — ne pouvait rien affirmer tant que le worker ne rendait pas compte de son tour.
+Elle le peut désormais. Reste, du côté `locusolus`, que le harnais démarre le worker **avant** de
+mettre une mission en file : `runLoop` fait **un** tour, et le tour a lieu avant que la mission
+existe. C'est une correction d'ordonnancement du harnais, consignée là-bas.
