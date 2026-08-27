@@ -39,6 +39,7 @@ import type { Checkpoint } from "./resume-store.ts"
 import type { Refusal } from "./admission.ts"
 import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "./lep/generated.ts"
 import type { ToolDescriptor } from "./tool-policy.ts"
+import { attemptEvent, coalesce } from "./event-bridge.ts"
 import { mapMission, type SessionPlan } from "./session-map.ts"
 
 /** Ce que le plan de contrôle propose : une mission et le bail qui l'autorise. */
@@ -164,10 +165,34 @@ export async function runLoop(ports: WorkerPorts): Promise<LoopOutcome> {
   const attempt = resumed ? previous.attempt : offer.lease.attempt
 
   state = advance(state, "running")
+
+  // **`attempt.started` part avant la session, et non après** — `W2.27`, §15.6. Un événement de
+  // début émis après coup n'aurait plus rien à dire d'un attempt qui n'a jamais fini : c'est
+  // précisément le cas — session qui pend, worker tué — où l'institution a besoin de savoir qu'une
+  // tentative a commencé. Le `sequence` est compté ici parce que §18.2 le veut monotone **par
+  // connexion**, ce qu'un compteur enfoui dans le constructeur ne saurait pas être.
+  let sequence = 0
+  const attemptEvents = (type: "attempt.started" | "attempt.completed") => {
+    sequence += 1
+    return attemptEvent({
+      type,
+      taskId: offer.mission.task_id,
+      attempt,
+      sequence,
+      occurredAt: new Date(ports.now()).toISOString(),
+      ...(offer.lease.lease_id === undefined ? {} : { leaseId: offer.lease.lease_id }),
+    })
+  }
+  await ports.emit([attemptEvents("attempt.started")])
+
   const report = await ports.openSession(mapped.plan)
   phases.push("session")
 
-  await ports.emit(report.events)
+  // **Coalescé** — c'est ce pour quoi `W2.12` existe, et rien ne l'appelait. Une rafale de
+  // `progress` fusionne, un `tool.completed` la coupe, et l'ordre est préservé. Les deux événements
+  // d'attempt ne traversent jamais cette fonction : ils sont dans la seconde liste de §18.3, et les
+  // faire passer par elle ne changerait rien tout en laissant croire qu'ils pourraient fusionner.
+  await ports.emit(coalesce(report.events))
   phases.push("emit")
 
   state = advance(state, "completing")
@@ -185,6 +210,12 @@ export async function runLoop(ports: WorkerPorts): Promise<LoopOutcome> {
   await ports.report(report, mapped.plan)
   phases.push("report")
   state = advance(state, "completed")
+
+  // **`attempt.completed` part après le rapport.** L'inverse annoncerait la fin d'une tentative dont
+  // le résultat n'est pas encore parti, et un plan de contrôle qui lirait les deux dans cet ordre
+  // aurait un attempt complété sans rendu — exactement l'état que §15.5 appelle un résultat tardif,
+  // fabriqué ici par un ordre d'émission.
+  await ports.emit([attemptEvents("attempt.completed")])
 
   return {
     status: "ran",
