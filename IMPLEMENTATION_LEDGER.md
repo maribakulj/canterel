@@ -2258,3 +2258,63 @@ quand le SDK généré change. C'est une garde à poser **là-bas**, du côté q
 Chaque fichier relu à sa source, la réécriture déclarée rejouée, les deux empreintes recalculées, le
 commit épinglé avancé. Un seul fichier a bougé ; les neuf autres ont rendu la même empreinte, ce qui
 est la vérification que le procédé n'a rien touché d'autre.
+
+## 2026-08-27 — W2.26 — Les enveloppes du worker ne portaient aucune clé d'idempotence
+
+`backend/cli/src/locus/worker-client.ts`. Trouvé en poussant la quatrième clause de `W12.d` :
+la **première** mission réellement plaçable a tué le tour sur place.
+
+### Ce que §15.2 demande, et ce que le client envoyait
+
+« Toutes les enveloppes portent version de protocole, sequence, correlation IDs et **idempotency
+key**. » Les trois enveloppes de ce client — `claim`, `events`, `result` — n'en portaient aucune, et
+`CommandEnvelope::mutating` côté plan de contrôle refuse une clé vide.
+
+### Pourquoi le défaut a survécu à trois clauses de bout en bout
+
+Parce que `locusd` ne construit sa commande que lorsqu'il a **quelque chose à écrire**. Une
+réclamation qui ne trouve aucune mission plaçable répond `204` avant d'en arriver là. Les trois
+premières clauses de `W12.d` n'ont jamais eu de mission plaçable — l'hôte ne tenait pas `S2`, la
+réservation dépassait sa capacité, aucune campagne n'avait conclu — et la réclamation **semblait**
+fonctionner.
+
+La quatrième clause taille la mission sur le manifeste : la première mission plaçable de tout le
+chantier a rendu `400 : validation — « idempotency_key » : vide`, et le worker est sorti en `1` sur
+`LocusServerRejected`.
+
+C'est la forme de défaut qu'aucune lecture n'attrape : le code était identique avant et après, seul
+l'état du monde a changé. Il fallait qu'une mission arrive jusque-là.
+
+### Une seule clé inventée, les deux autres dérivées
+
+C'est la leçon de `W20.x`, où le même trou s'était présenté à l'enrôlement et où le daemon a pris le
+**nonce** comme clé : le worker avait déjà envoyé ce qu'il fallait, sous un autre nom. Exiger une
+valeur de plus quand une identité naturelle existe donne deux valeurs pour une garantie, et la moins
+sûre des deux.
+
+- `result` — `result:<task>:<attempt>:<session>`. Reporter deux fois le même attempt **est** le même
+  acte ; une reprise qui rejoue son rapport ne produit pas un second fait. La clé porte l'attempt et
+  pas seulement la tâche : sans lui, la seconde tentative passerait pour un rejeu de la première.
+- `events` — la clé du **premier** événement du lot. Chaque `Event` porte déjà la sienne (§18.2),
+  donc l'enveloppe n'invente rien et retransmettre le même lot est le même acte.
+- `claim` — la seule neuve. Rien dans ce corps n'identifie l'acte : le `worker_id` est le même à
+  chaque tour, et le manifeste peut l'être. Deux réclamations sont deux actes, et leur donner la
+  même clé ferait prendre la seconde pour un rejeu.
+
+La source de la clé neuve est un **port** (`newKey`), `crypto.randomUUID` par défaut. Un test lit
+alors la clé qui est **partie**, et non celle qu'il aurait devinée.
+
+### Vérifié contre la chaîne réelle, pas seulement en test
+
+Avant : `LocusServerRejected`, `réponse 400 : validation — « idempotency_key » : vide`, le tour mort.
+Après, sur la même chaîne :
+
+```
+tour : mission refusée à l'admission — model_unavailable
+  motif : ce worker n'annonce aucun modèle
+  étapes : claim
+  état : rejected
+```
+
+`étapes : claim` — la réclamation a eu lieu. Le refus qui suit est celui d'une machine sans modèle
+configuré, et il est nommé.

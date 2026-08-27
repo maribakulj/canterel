@@ -569,3 +569,93 @@ describe("`runWorker` cesse d'être inerte quand on lui donne de quoi agir — W
     expect(verdict.outcome.status).toBe("idle")
   })
 })
+
+describe("chaque enveloppe porte une clé d'idempotence — §15.2, W2.26", () => {
+  /** Capture les corps envoyés, par chemin. */
+  function espion() {
+    const envoyes: { path: string; body: Record<string, unknown> }[] = []
+    const fetchLike = (async (url: string | URL, init?: { body?: string }) => {
+      envoyes.push({
+        path: new URL(String(url)).pathname,
+        body: JSON.parse(init?.body ?? "{}") as Record<string, unknown>,
+      })
+      return new Response(null, { status: 204 })
+    }) as Parameters<typeof workerPorts>[0]["fetch"]
+    return { envoyes, fetchLike }
+  }
+
+  /**
+   * **Le défaut qui a vécu, et qui ne se voyait pas.**
+   *
+   * §15.2 : « toutes les enveloppes portent version de protocole, sequence, correlation IDs et
+   * idempotency key ». Aucune des trois n'en portait, et `CommandEnvelope::mutating` refuse une clé
+   * vide. `locusd` ne construit sa commande que lorsqu'il a **quelque chose à écrire** : une
+   * réclamation sans mission plaçable répond `204` avant d'en arriver là, et le trou est resté
+   * invisible tant qu'aucune mission n'était plaçable. La première qui l'a été a rendu
+   * `400 : validation — « idempotency_key » : vide`.
+   */
+  test("la réclamation porte une clé neuve, et c'est la seule qui soit inventée", async () => {
+    const { envoyes, fetchLike } = espion()
+    let rang = 0
+    const ports = client(fetchLike, { newKey: () => `cle-${(rang += 1)}` })
+
+    await ports.claim()
+    await ports.claim()
+
+    expect(envoyes.map((envoye) => envoye.path)).toEqual([CLAIM_PATH, CLAIM_PATH])
+    // Neuve à chaque acte : deux réclamations sont deux actes, et leur donner la même clé ferait
+    // prendre la seconde pour un rejeu de la première.
+    expect(envoyes[0]?.body["idempotency_key"]).toBe("cle-1")
+    expect(envoyes[1]?.body["idempotency_key"]).toBe("cle-2")
+  })
+
+  /**
+   * **Un rapport rejoué est le même acte, et sa clé le dit.**
+   *
+   * C'est la leçon de `W20.x` : quand une identité naturelle existe, on la prend au lieu d'inventer
+   * une valeur de plus. Une reprise qui rejoue son rapport ne doit pas produire un second fait.
+   */
+  test("le rapport dérive sa clé de l'acte, pas de l'instant", async () => {
+    const { envoyes, fetchLike } = espion()
+    const ports = client(fetchLike, { newKey: () => "jamais-utilisee-ici" })
+    const plan = { task_id: "task_1", attempt_id: "att_1" } as Parameters<typeof ports.report>[1]
+    const rapport: SessionReport = { sessionId: "ses_01", events: [], output: {} }
+
+    await ports.report(rapport, plan)
+    await ports.report(rapport, plan)
+
+    const cles = envoyes.map((envoye) => envoye.body["idempotency_key"])
+    expect(cles).toEqual(["result:task_1:att_1:ses_01", "result:task_1:att_1:ses_01"])
+
+    // Et deux attempts distincts ne se confondent pas : une clé qui ne porterait que la tâche
+    // ferait passer la seconde tentative pour un rejeu de la première.
+    await ports.report(rapport, { task_id: "task_1", attempt_id: "att_2" } as typeof plan)
+    expect(envoyes[2]?.body["idempotency_key"]).toBe("result:task_1:att_2:ses_01")
+  })
+
+  /**
+   * **Le lot d'événements reprend la clé de son premier.**
+   *
+   * Chaque `Event` porte déjà la sienne (§18.2) : l'enveloppe n'a rien à inventer, et retransmettre
+   * le même lot est le même acte.
+   */
+  test("le lot d'événements dérive sa clé du premier événement", async () => {
+    const { envoyes, fetchLike } = espion()
+    const ports = client(fetchLike, { newKey: () => "jamais-utilisee-ici" })
+    const evenement = (cle: string) =>
+      ({
+        protocol: "lep/1.0",
+        event_type: "progress",
+        sequence: 1,
+        occurred_at: "2026-08-27T12:00:00.000Z",
+        idempotency_key: cle,
+      }) as unknown as Parameters<typeof ports.emit>[0][number]
+
+    await ports.emit([evenement("ev-a"), evenement("ev-b")])
+    expect(envoyes[0]?.body["idempotency_key"]).toBe("events:ev-a")
+
+    // Un lot vide n'atteint pas le réseau — c'était déjà vrai, et la dérivation ne le change pas.
+    await ports.emit([])
+    expect(envoyes.length).toBe(1)
+  })
+})
