@@ -2319,7 +2319,7 @@ tour : mission refusée à l'admission — model_unavailable
 `étapes : claim` — la réclamation a eu lieu. Le refus qui suit est celui d'une machine sans modèle
 configuré, et il est nommé.
 
-## 2026-08-27 — W2.27 (1/n) — La boucle émet ce qu'elle sait sans session
+## 2026-08-27 — W2.27.1 — La boucle émet ce qu'elle sait sans session
 
 `backend/cli/src/locus/event-bridge.ts` et `worker-loop.ts`. Première tranche de la composition du
 worker, et la seule qui ne dépende d'aucun hôte.
