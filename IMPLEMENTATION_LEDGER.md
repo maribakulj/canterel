@@ -2223,3 +2223,38 @@ La première rédaction forçait `network: "full"` en abaissant le niveau, et le
 `network_policy_unsupported` : le worker macOS du corpus offre `deny/allowlist`. Le test aurait
 constaté un refus en croyant constater le mien — deux causes possibles pour un seul « refusé », ce
 que les codes de §10.2 existent pour éviter. Seul le niveau change désormais.
+
+## 2026-08-27 — Défaut — le SDK épinglé avait dérivé de sa source, et le worker ne voyait pas `W16.d`
+
+`backend/cli/src/locus/lep/generated.ts` et son `PINNED.json`. Trouvé par la garde qui existe pour
+ça, en lançant la suite avant de pousser `W2.25`.
+
+### Ce qui manquait
+
+Le SDK vendu était épinglé à `08c68ab` (`W19.b`). `W16.d` a ensuite changé
+`locusolus/packages/lep/src/generated.ts` — la visibilité institutionnelle des sous-agents — et rien
+ne l'a redescendu ici. Le worker ignorait donc `AttemptSubagentsItem`, le champ `subagents` d'un
+attempt, et la feature `subagent-visibility: "1.1"` du handshake : trois choses que le plan de
+contrôle sait désormais émettre.
+
+Ce n'est pas une divergence de contrat — le contrat, ce sont les schémas — mais une **lecture
+périmée** du contrat, ce qui produit le même effet chez le consommateur.
+
+### Ce que la garde voit, et où elle ne voit rien
+
+`verifyAgainstSource` rejoue la réécriture déclarée dans `vendor.ts` et compare. Elle a nommé le
+fichier exact et le côté qui avait bougé — `packages/lep/src/generated.ts (source)`.
+
+Mais elle ne tourne que là où une copie de travail de `locusolus` existe. Le dépôt est privé : la CI
+de ce fork ne peut pas le lire, et le test se déclare **dégradé** plutôt que de passer en silence —
+ce qui est le bon comportement et laisse néanmoins la dérive vivre indéfiniment en CI. Elle n'a été
+vue qu'en travaillant les deux dépôts au même endroit.
+
+Le remède ne vit pas ici : rien dans `locusolus` n'exige de rafraîchir le pin d'un consommateur
+quand le SDK généré change. C'est une garde à poser **là-bas**, du côté qui sait qu'il a changé.
+
+### Le re-vendoring est mécanique, et l'a été
+
+Chaque fichier relu à sa source, la réécriture déclarée rejouée, les deux empreintes recalculées, le
+commit épinglé avancé. Un seul fichier a bougé ; les neuf autres ont rendu la même empreinte, ce qui
+est la vérification que le procédé n'a rien touché d'autre.

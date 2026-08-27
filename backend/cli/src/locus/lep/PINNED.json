@@ -1,11 +1,11 @@
 {
   "repo": "https://github.com/maribakulj/locusolus",
-  "commit": "08c68abea280025fe72698b4b572ade8c9c0154d",
+  "commit": "bb5259f65aecb9a17efa2b9ab27a98e6c333737c",
   "files": {
     "backend/cli/src/locus/lep/generated.ts": {
       "source": "packages/lep/src/generated.ts",
-      "sha256_source": "d0c691365d14919a22dbd2ec70caa8c07235d699f7644969400076bf85ad5695",
-      "sha256_vendored": "d0c691365d14919a22dbd2ec70caa8c07235d699f7644969400076bf85ad5695"
+      "sha256_source": "ed6277100fbffb1e6f1160f4d666694b14affb7286ee5f54d7c908a3cb82b097",
+      "sha256_vendored": "ed6277100fbffb1e6f1160f4d666694b14affb7286ee5f54d7c908a3cb82b097"
     },
     "backend/cli/src/locus/lep/negotiate.ts": {
       "source": "packages/lep/src/index.ts",

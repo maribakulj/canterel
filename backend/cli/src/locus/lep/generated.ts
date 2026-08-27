@@ -705,6 +705,34 @@ export type AttemptResourcesObserved = {
 };
 
 /**
+ * Ce que ce sous-agent a coûté. Facultatif : un harnais qui ne mesure pas ne déclare pas, et zéro dirait « mesuré à zéro » là où la vérité est « non mesuré » — l'aveu s'appelle ici l'absence, comme pour tout champ `1.1`.
+ */
+export type AttemptSubagentsItemCost = {
+  readonly calls?: number | undefined;
+  readonly tokens?: number | undefined;
+  readonly wall_time_seconds?: number | undefined;
+};
+
+export type AttemptSubagentsItem = {
+  /**
+   * Le nom du sous-agent dans le harnais. Une **désignation**, jamais son contexte : deux sous-agents du même nom sont deux exécutions du même rôle.
+   */
+  readonly name: string;
+  /**
+   * Sa classe de cognition, au sens de `W25.a` — une **classe**, jamais un identifiant de modèle. Chaîne libre et non énumération : un mineur ajoute des champs et jamais des valeurs (ADR 0017, interdit 3), et une classe nouvelle dans une énumération fermée ferait échouer la désérialisation chez tout consommateur `1.0`.
+   */
+  readonly cognition: string;
+  /**
+   * Ce qu'il a rendu — le **résultat**, pas le raisonnement qui y mène. Les trois valeurs sont celles qu'un exploitant distingue : abouti, échoué, ou interrompu avant terme. Confondre les deux derniers ferait lire un budget épuisé comme une erreur de sous-agent.
+   */
+  readonly outcome: "succeeded" | "failed" | "cancelled";
+  /**
+   * Ce que ce sous-agent a coûté. Facultatif : un harnais qui ne mesure pas ne déclare pas, et zéro dirait « mesuré à zéro » là où la vérité est « non mesuré » — l'aveu s'appelle ici l'absence, comme pour tout champ `1.1`.
+   */
+  readonly cost?: AttemptSubagentsItemCost | undefined;
+};
+
+/**
  * Une tentative d'exécution d'une tâche (SPEC_V1 §15.5). Un attempt ne produit jamais directement un état canonique : il soumet des artefacts et un EpistemicCommit. `succeeded` veut dire que le worker a rempli son contrat technique — jamais que ses claims sont validés, et les deux mots restent séparés partout ici.
  */
 export type Attempt = {
@@ -741,6 +769,10 @@ export type Attempt = {
    * Ce qui a réellement été consommé, face à ce que ResourceSpec avait réservé. L'écart est ce que le rapprochement de coûts (§4) exploite.
    */
   readonly resources_observed?: AttemptResourcesObserved | undefined;
+  /**
+   * Ce que l'institution voit des sous-agents internes du harnais — `W16.d`, tranche 4 du mineur `lep/1.1` (ADR 0017 §5.4), tranché par l'ADR 0027 décision 7. **Facultatif** : un harnais qui ne subdivise pas n'a rien à déclarer, et l'obliger à déclarer « aucun » ferait payer la fonctionnalité à ceux qui ne l'utilisent pas. La feature `subagent-visibility` la négocie au handshake ; absente, ce champ ne s'attend pas. **Quatre choses, et pas une cinquième** : qu'un sous-agent a existé, sa classe de cognition, son coût et son résultat. Le contexte et le raisonnement n'y sont pas, et ce n'est pas un oubli — voir qu'un sous-agent existe et voir son contexte sont deux choses, et la seconde traverse l'invariant 11. Un sous-agent reviewer interne au harnais ne doit pas devenir le chemin par lequel le raisonnement privé du générateur remonte. Sa lecture, quand elle est due, passe par les trois classes de lecteurs de l'ADR 0027 décision 2 et jamais par un chemin propre au harnais.
+   */
+  readonly subagents?: readonly AttemptSubagentsItem[] | undefined;
 };
 
 /**
@@ -1051,6 +1083,10 @@ export const LEP_FEATURES = {
    * Signature des événements : facultative en local, obligatoire en fédération. La négocier permet à un déploiement local de ne pas la payer sans que le code de fédération ait à la redemander.
    */
   "signed-events": "1.0",
+  /**
+   * Le harnais déclare les sous-agents internes d'un attempt : qu'ils ont existé, leur classe de cognition, leur coût et leur résultat. **Facultative** au sens strict — un harnais qui ne subdivise pas n'a rien à déclarer, et l'obliger à déclarer « aucun » ferait payer la fonctionnalité à ceux qui ne l'utilisent pas. Ce qu'elle n'ouvre pas : le contexte et le raisonnement des sous-agents, que l'invariant 11 borne et que les trois classes de lecteurs de l'ADR 0027 gouvernent seules.
+   */
+  "subagent-visibility": "1.1",
 } as const;
 
 export type LepFeature = keyof typeof LEP_FEATURES;
