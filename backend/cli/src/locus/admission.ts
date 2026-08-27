@@ -118,10 +118,7 @@ export function levelRank(level: string): number {
  * inventer de restriction — et quand le niveau exigé est offert, c'est lui, donc rien ne change
  * pour aucune mission qui passait déjà.
  */
-export function levelApplied(
-  offered: readonly SandboxLevel[],
-  required: SandboxLevel,
-): SandboxLevel | undefined {
+export function levelApplied(offered: readonly SandboxLevel[], required: SandboxLevel): SandboxLevel | undefined {
   const floor = levelRank(required)
   // Un niveau offert que l'échelle ne connaît pas rend `-1` et ne satisfait donc jamais un plancher
   // connu. C'est voulu : un manifeste qui annonce un niveau inventé n'a rien prouvé, et le lire
