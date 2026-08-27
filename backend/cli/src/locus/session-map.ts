@@ -2,7 +2,7 @@ import { admit, type Refusal } from "./admission.ts"
 import { selectOverlay, type AgentOverlay } from "./agent-overlay.ts"
 import { modelUnavailableReason, usableModels, type ModelChoice } from "./model-policy.ts"
 import { partitionTools, type ToolDescriptor } from "./tool-policy.ts"
-import type { CapabilityManifest, DataClass, MissionEnvelope } from "./lep/generated.ts"
+import type { CapabilityManifest, DataClass, MissionEnvelope, SandboxLevel } from "./lep/generated.ts"
 
 /**
  * De la mission à la session — `SPEC_V1.md` §30.2, la couche d'adaptation vers l'amont.
@@ -34,6 +34,15 @@ export type SessionPlan = {
   readonly blindReview: boolean
   /** L'identifiant de la vue à matérialiser (W2.10). Le plan ne la matérialise pas. */
   readonly contextViewId: string | undefined
+  /**
+   * Le niveau de confinement **appliqué**, qui n'est pas toujours celui que la mission exige.
+   *
+   * `mission.sandbox.minimum_level` est un plancher. Un worker qui ne l'offre pas exactement mais
+   * mieux applique le plus bas de ses niveaux qui suffit, et l'écart appartient au plan : sans lui,
+   * deux missions confinées différemment produiraient des plans identiques, et personne ne pourrait
+   * dire après coup à quoi une session avait effectivement droit.
+   */
+  readonly sandboxLevel: SandboxLevel
 }
 
 export type MapInput = {
@@ -120,6 +129,7 @@ export function mapMission(input: MapInput): MapResult {
       forbiddenTools: forbidden,
       blindReview: reviewPolicy === "independent-blind",
       contextViewId: readViewId(mission["context_view"]),
+      sandboxLevel: admission.appliedLevel,
     },
   }
 }

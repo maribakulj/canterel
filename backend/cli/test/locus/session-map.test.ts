@@ -283,3 +283,35 @@ describe("overlay d'agent — additif, jamais remplaçant", () => {
     }
   })
 })
+
+describe("le plan dit à quel confinement la session aura droit — W2.25", () => {
+  test("le niveau appliqué voyage dans le plan, et pas seulement dans le verdict", () => {
+    // Sans ce champ, deux missions confinées différemment produiraient des plans identiques : le
+    // verdict d'admission est consommé sur place par `mapMission` et n'atteint jamais l'appelant.
+    const mapped = mapMission({
+      mission: MISSION(),
+      manifest: MANIFEST(),
+      tools: TOOLS,
+      containedWrites: true,
+    })
+    expect(mapped.ok).toBe(true)
+    if (!mapped.ok) return
+    expect(mapped.plan.sandboxLevel).toBe("S3")
+  })
+
+  test("quand le worker dépasse le plancher, c'est le niveau appliqué que le plan porte", () => {
+    // La mission demande `S3`, ce worker-ci n'offre que `S4` : le plan doit dire `S4`, pas `S3`.
+    // Écrire `mission.sandbox.minimum_level` dans le plan aurait passé le test précédent — où les
+    // deux coïncident — et menti ici.
+    const manifest = MANIFEST()
+    const mapped = mapMission({
+      mission: MISSION(),
+      manifest: { ...manifest, sandbox: { ...manifest.sandbox, levels: ["S4"] } },
+      tools: TOOLS,
+      containedWrites: true,
+    })
+    expect(mapped.ok).toBe(true)
+    if (!mapped.ok) return
+    expect(mapped.plan.sandboxLevel).toBe("S4")
+  })
+})
