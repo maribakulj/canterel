@@ -2318,3 +2318,82 @@ tour : mission refusée à l'admission — model_unavailable
 
 `étapes : claim` — la réclamation a eu lieu. Le refus qui suit est celui d'une machine sans modèle
 configuré, et il est nommé.
+
+## 2026-08-27 — W2.27.1 — La boucle émet ce qu'elle sait sans session
+
+`backend/cli/src/locus/event-bridge.ts` et `worker-loop.ts`. Première tranche de la composition du
+worker, et la seule qui ne dépende d'aucun hôte.
+
+### Ce que la mesure a montré, et qui n'était pas ce que la roadmap laissait croire
+
+`W12.d` semblait n'attendre qu'un hôte capable. En comptant les **appelants réels** plutôt qu'en
+lisant les entrées de ledger : `event-bridge`, `artifact-client`, `artifact-scanner`,
+`epistemic-commit`, `context-materializer` et `usage-meter` sont livrés, testés, et **aucun n'est
+appelé par la boucle**. Leurs seuls importateurs sont `index.ts` et eux-mêmes.
+
+`sessionOpener` le disait déjà en toutes lettres, et personne ne l'avait relié à la clause : il rend
+`events: []`, « se remplira quand `W2.12` sera branché sur un vrai fil ».
+
+Ce ne sont pas des promesses au sens de l'ADR 0022 décision 0 — chacun est un sous-système fini. Mais
+`W12.d` a besoin qu'ils soient **appelés**, et rien ne les appelait.
+
+### Pourquoi ces deux événements-là, et pourquoi ils ne dépendent de rien
+
+`attempt.started` et `attempt.completed` sont les premiers de §15.6 qui appartiennent au **worker**
+plutôt qu'à ce qu'il exécute : la boucle a commencé une tentative et l'a finie, quoi que la session
+ait produit. Tout le reste — `progress`, `tool.*`, `artifact.*` — vient de l'intérieur d'une session,
+donc d'un modèle, et attend un hôte qui en annonce un.
+
+Le constructeur vit dans `event-bridge.ts` parce que c'est ce module qui porte le vocabulaire : les
+deux listes de §18.3, les champs exigés par §18.2, la coalescence. Posé ailleurs, il aurait pu
+fabriquer un événement que `eventFieldFindings` rejette sans que personne s'en aperçoive avant le
+serveur — et un test le vérifie en **appelant** cette fonction plutôt qu'en rejouant sa règle.
+
+### Deux ordres d'émission, et chacun a une raison
+
+**`attempt.started` part avant la session.** Émis après coup, il n'aurait plus rien à dire d'un
+attempt qui n'a jamais fini — or c'est exactement le cas, session qui pend ou worker tué, où
+l'institution a besoin de savoir qu'une tentative a commencé.
+
+**`attempt.completed` part après le rapport.** L'inverse annoncerait la fin d'une tentative dont le
+résultat n'est pas encore parti, et un plan de contrôle lisant les deux dans cet ordre aurait un
+attempt complété sans rendu — l'état que §15.5 appelle un résultat tardif, fabriqué par un ordre
+d'émission.
+
+### `coalesce` est enfin appelé
+
+Le compte rendu de session passe désormais par lui : une rafale de `progress` fusionne, un
+`tool.completed` la coupe, l'ordre est préservé. C'est ce pour quoi `W2.12` existe, et rien ne
+l'appelait. Les deux événements d'attempt ne le traversent **pas** — ils sont dans la seconde liste
+de §18.3, et les y faire passer ne changerait rien tout en laissant croire qu'ils pourraient
+fusionner.
+
+Le checkpoint continue de lire le **compte rendu** et non ce qui est parti : coalescer ne doit pas
+faire reculer le point de reprise, sans quoi une reprise rejouerait ce qui avait été fusionné. Un
+test le tient.
+
+### `sequence` est donné, la clé est dérivée
+
+§18.2 veut la séquence **monotone par connexion** — c'est ce qui rend « rien perdu, rien dupliqué »
+vérifiable. Un compteur enfoui dans le constructeur serait monotone par processus, ce qui n'est pas
+la même chose et se casserait à la première boucle concurrente : l'appelant le donne.
+
+La clé d'idempotence est `attempt:<task>:<attempt>:<type>` — même leçon que `W2.26` et `W20.x`. Une
+reprise qui rejoue son `attempt.started` porte la même clé, sans quoi l'institution y lirait deux
+tentatives là où il n'y en a qu'une.
+
+### Un test existant a changé, et il avait raison avant
+
+`les événements du compte rendu remontent` capturait la **dernière** émission et exigeait qu'elle
+soit exactement les trois `progress` produits. C'était exact tant que rien n'appelait `coalesce` et
+qu'il n'y avait qu'une émission. Il vérifie maintenant les **trois** émissions et leur ordre — une
+rédaction qui ne regarderait que la dernière passerait tout aussi bien si les deux autres
+disparaissaient.
+
+### Ce qui n'est pas fait, et pourquoi ce n'est pas un oubli
+
+Une mission **refusée** à l'admission n'émet rien : `runLoop` rend la main avant le premier `emit`,
+et il n'y a pas d'attempt à annoncer — l'admission a dit non avant toute exécution. Que le plan de
+contrôle l'apprenne autrement est `W19.c` côté `locusolus`, une question de protocole qui attend une
+décision plutôt qu'un événement inventé ici. Un test fige le comportement actuel pour que le jour où
+la décision tombe, le changement se voie.

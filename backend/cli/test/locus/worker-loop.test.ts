@@ -6,6 +6,7 @@ import type { Checkpoint } from "../../src/locus/resume-store.ts"
 import type { ToolDescriptor } from "../../src/locus/tool-policy.ts"
 import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "../../src/locus/lep/generated.ts"
 import type { SessionPlan } from "../../src/locus/session-map.ts"
+import { eventFieldFindings } from "../../src/locus/event-bridge.ts"
 import {
   advance,
   describeOutcome,
@@ -290,18 +291,35 @@ describe("la boucle du worker — le test de sortie de W2.20", () => {
     })
     const produits: readonly Event[] = [evenement(1), evenement(2), evenement(3)]
 
-    let remontes: readonly Event[] | undefined
+    const emis: (readonly Event[])[] = []
     const port = ports({
       openSession: async () => ({ sessionId: "ses_02", events: produits, output: { summary: "fait" } }),
       emit: async (events) => {
-        remontes = events
+        emis.push(events)
       },
     })
 
     const verdict = await runLoop(port)
     expect(verdict.status).toBe("ran")
 
-    expect(remontes).toEqual(produits)
+    // **Trois émissions, et leur ordre est le contrat** — `W2.27`. `attempt.started` avant la
+    // session, le compte rendu ensuite, `attempt.completed` après le rapport. Un test qui ne
+    // regarderait que la dernière — ce que faisait la rédaction d'avant — passerait tout aussi bien
+    // si les deux premières disparaissaient.
+    expect(emis.map((lot) => lot.map((event) => event.event_type))).toEqual([
+      ["attempt.started"],
+      // Les trois `progress` consécutifs **fusionnent** : §18.3 les range parmi les coalescibles, et
+      // c'est `W2.27` qui a branché `coalesce` sur ce chemin. Avant, rien ne l'appelait et les trois
+      // partaient tels quels.
+      ["progress"],
+      ["attempt.completed"],
+    ])
+
+    // Le survivant d'une rafale est le **dernier** : c'est lui qui porte l'état le plus récent.
+    expect(emis[1]?.[0]?.idempotency_key).toBe("idem-3")
+
+    // Le checkpoint lit le compte rendu, **pas** ce qui est parti : coalescer ne doit pas faire
+    // reculer le point de reprise, sans quoi une reprise rejouerait ce qui avait été fusionné.
     const [saved] = port.seen.saved
     expect(saved?.through_sequence).toBe(3)
   })
@@ -519,5 +537,73 @@ describe("un tour dit ce qu'il a fait — le rendu de LoopOutcome", () => {
     })
 
     expect(lignes.join("\n")).toContain("attempt : 2 (reprise)")
+  })
+})
+
+describe("la boucle émet ce qu'elle sait sans session — W2.27, §15.6", () => {
+  /**
+   * **Les deux événements qu'une boucle connaît d'elle-même.**
+   *
+   * `attempt.started` et `attempt.completed` sont les premiers de §15.6 qui appartiennent au worker
+   * plutôt qu'à ce qu'il exécute : il a commencé une tentative et l'a finie, quoi que la session ait
+   * produit. Tout le reste — `progress`, `tool.*`, `artifact.*` — vient de l'intérieur d'une
+   * session, donc d'un modèle, et n'est pas de cette tranche.
+   */
+  test("les deux événements portent tous les champs que §18.2 exige d'un événement d'attempt", async () => {
+    const emis: (readonly Event[])[] = []
+    const port = ports({ emit: async (events) => void emis.push(events) })
+
+    expect((await runLoop(port)).status).toBe("ran")
+
+    const plats = emis.flat().filter((event) => event.event_type.startsWith("attempt."))
+    expect(plats.map((event) => event.event_type)).toEqual(["attempt.started", "attempt.completed"])
+    // `eventFieldFindings` connaît la règle — `task_id` et `attempt` en plus des cinq champs de base
+    // pour un type d'attempt. La rejouer ici en dur ferait deux vérités.
+    for (const event of plats) expect(eventFieldFindings(event)).toEqual([])
+  })
+
+  /**
+   * **`sequence` est monotone, et la clé d'idempotence est dérivée.**
+   *
+   * §18.2 veut la première **par connexion** : c'est ce qui rend « rien perdu, rien dupliqué »
+   * vérifiable. La seconde porte l'acte et non l'instant — une reprise qui rejoue son
+   * `attempt.started` doit porter la même clé, sans quoi l'institution lirait deux tentatives là où
+   * il n'y en a qu'une.
+   */
+  test("les séquences montent et les clés portent l'acte", async () => {
+    const emis: (readonly Event[])[] = []
+    const port = ports({ emit: async (events) => void emis.push(events) })
+
+    expect((await runLoop(port)).status).toBe("ran")
+
+    const plats = emis.flat().filter((event) => event.event_type.startsWith("attempt."))
+    const [debut, fin] = plats
+    expect(debut?.sequence).toBe(1)
+    expect(fin?.sequence).toBe(2)
+    expect(debut?.idempotency_key).toMatch(/^attempt:.+:\d+:attempt\.started$/)
+    expect(fin?.idempotency_key).toMatch(/^attempt:.+:\d+:attempt\.completed$/)
+    // Deux actes distincts, donc deux clés distinctes. Une clé partagée ferait prendre la fin pour
+    // un rejeu du début.
+    expect(debut?.idempotency_key).not.toBe(fin?.idempotency_key)
+  })
+
+  /**
+   * **Une mission refusée à l'admission n'émet rien.**
+   *
+   * Ce n'est pas un oubli : `runLoop` rend la main avant d'atteindre le premier `emit`, et il n'y a
+   * pas d'attempt à annoncer — l'admission a dit non **avant** toute exécution. Que le plan de
+   * contrôle l'apprenne autrement est une question ouverte, nommée `W19.c` côté `locusolus`, et
+   * elle attend une décision de protocole plutôt qu'un événement inventé ici.
+   */
+  test("un refus d'admission n'émet aucun événement d'attempt", async () => {
+    const emis: (readonly Event[])[] = []
+    const port = ports({
+      // Un manifeste qui n'offre que `S1` contre la mission `S3` du corpus : `sandbox_unavailable`.
+      manifest: () => ({ ...MANIFEST(), sandbox: { ...MANIFEST().sandbox, levels: ["S1"] } }),
+      emit: async (events) => void emis.push(events),
+    })
+
+    expect((await runLoop(port)).status).toBe("refused")
+    expect(emis).toEqual([])
   })
 })

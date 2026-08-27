@@ -1,4 +1,5 @@
 import type { Event } from "./lep/generated.ts"
+import { PROTOCOL_VERSION } from "./protocol.ts"
 
 /**
  * Le bridge d'événements et la coalescence — `SPEC_V1.md` §18.3.
@@ -160,4 +161,54 @@ export function eventFieldFindings(event: Event): readonly string[] {
     ? [...REQUIRED_EVENT_FIELDS, "task_id", "attempt"]
     : REQUIRED_EVENT_FIELDS
   return required.filter((field) => record[field] === undefined).map((field) => `champ \`${field}\` absent (§18.2)`)
+}
+
+/**
+ * Les deux événements qu'une boucle connaît **sans session** — `W2.27`, §15.6.
+ *
+ * # Pourquoi ces deux-là, et pourquoi ils vivent ici
+ *
+ * §15.6 énumère les événements minimaux, et `attempt.started` / `attempt.completed` en sont les
+ * premiers qui appartiennent au worker plutôt qu'à ce qu'il exécute : la boucle a commencé une
+ * tentative et l'a finie, et elle le sait quoi que la session ait produit. Tout le reste —
+ * `progress`, `tool.*`, `artifact.*` — vient de l'intérieur d'une session, donc d'un modèle.
+ *
+ * Ils vivent dans ce module parce que c'est lui qui porte le vocabulaire d'événement : les deux
+ * listes de §18.3, les champs exigés par §18.2, et la coalescence. Un constructeur posé ailleurs
+ * pourrait fabriquer un événement que `eventFieldFindings` rejette, et personne ne s'en
+ * apercevrait avant le serveur.
+ *
+ * # `sequence` est donné, jamais deviné
+ *
+ * §18.2 le veut **monotone par connexion** : c'est ce qui rend « rien perdu, rien dupliqué »
+ * vérifiable. Un compteur interne à ce module le rendrait monotone par processus, ce qui n'est pas
+ * la même chose et se casserait à la première boucle concurrente. L'appelant, lui, sait où il en
+ * est.
+ *
+ * # La clé d'idempotence est **dérivée**
+ *
+ * `attempt:<task>:<attempt>:<type>` — même leçon que `W2.26` et `W20.x` : une reprise qui rejoue
+ * son `attempt.started` doit porter la même clé, sans quoi l'institution y lirait deux tentatives
+ * là où il n'y en a qu'une. Rien n'est tiré au hasard, donc rien n'a besoin d'être mémorisé.
+ */
+export function attemptEvent(input: {
+  readonly type: "attempt.started" | "attempt.completed"
+  readonly taskId: string
+  readonly attempt: number
+  readonly sequence: number
+  readonly occurredAt: string
+  readonly workerId?: string
+  readonly leaseId?: string
+}): Event {
+  return {
+    protocol: PROTOCOL_VERSION,
+    event_type: input.type,
+    sequence: input.sequence,
+    occurred_at: input.occurredAt,
+    idempotency_key: `attempt:${input.taskId}:${input.attempt}:${input.type}`,
+    task_id: input.taskId,
+    attempt: input.attempt,
+    ...(input.workerId === undefined ? {} : { worker_id: input.workerId }),
+    ...(input.leaseId === undefined ? {} : { lease_id: input.leaseId }),
+  } as Event
 }
