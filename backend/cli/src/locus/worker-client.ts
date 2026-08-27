@@ -40,6 +40,62 @@ export const CLAIM_PATH = "/lep/v1/claim"
 export const EVENTS_PATH = "/lep/v1/events"
 export const RESULT_PATH = "/lep/v1/result"
 
+/**
+ * La clé d'idempotence que porte **chaque** enveloppe — §15.2, `W2.26`.
+ *
+ * # Ce que le worker n'envoyait pas, et ce que ça coûtait
+ *
+ * §15.2, en toutes lettres : « toutes les enveloppes portent version de protocole, sequence,
+ * correlation IDs et **idempotency key** ». Les trois enveloppes de ce client n'en portaient
+ * aucune, et `CommandEnvelope::mutating` côté plan de contrôle refuse une clé vide.
+ *
+ * Le défaut ne se voyait pas, et pour une raison précise : `locusd` ne construit sa commande que
+ * lorsqu'il a **quelque chose à écrire**. Une réclamation qui ne trouve aucune mission plaçable
+ * répond `204` avant d'en arriver là. Tant qu'aucune mission n'était plaçable — et aucune ne l'était,
+ * les trois clauses précédentes de `W12.d` le montrent — la réclamation semblait fonctionner. La
+ * **première** mission réellement plaçable a rendu `400 : validation — « idempotency_key » : vide`,
+ * et le tour est mort sur place.
+ *
+ * # Une seule clé est inventée, les deux autres sont **dérivées**
+ *
+ * C'est la leçon de `W20.x`, où le même trou s'était présenté à l'enrôlement : le daemon y a pris le
+ * **nonce** comme clé, parce que le worker avait déjà envoyé ce qu'il fallait sous un autre nom.
+ * Exiger une valeur de plus quand une identité naturelle existe donne deux valeurs pour une
+ * garantie, et la moins sûre des deux.
+ *
+ * - **`result`** : reporter deux fois le même attempt **est** le même acte. La clé le dit —
+ *   `result:<task>:<attempt>:<session>` — et une reprise qui rejoue son rapport ne produit pas un
+ *   second fait.
+ * - **`events`** : chaque `Event` porte déjà son `idempotency_key` (§18.2). L'enveloppe reprend
+ *   celui du **premier** du lot : retransmettre le même lot est le même acte, et rien n'est inventé.
+ * - **`claim`** : rien dans le corps n'identifie l'acte — ni le `worker_id`, qui est le même à
+ *   chaque tour, ni le manifeste, qui peut l'être. C'est le seul endroit où une valeur neuve est
+ *   nécessaire, et le seul où elle est produite.
+ */
+export type IdempotencyKey = string
+
+/** D'où vient la clé neuve de la réclamation. Un port, pour qu'un test la rende prévisible. */
+export type KeySource = () => IdempotencyKey
+
+/** La clé d'un rapport : son acte, pas son instant. */
+export function resultKey(taskId: string, attemptId: string, sessionId: string): IdempotencyKey {
+  return `result:${taskId}:${attemptId}:${sessionId}`
+}
+
+/**
+ * La clé d'un lot d'événements : celle de son premier.
+ *
+ * Le lot vide n'atteint jamais le réseau — [`workerPorts`] rend la main avant —, donc l'absence de
+ * premier événement ne se produit pas par le chemin normal. Elle est traitée quand même, et
+ * **bruyamment** : rendre une clé vide ferait refuser l'envoi par le serveur avec un message parlant
+ * de la clé là où le défaut serait dans le lot.
+ */
+export function eventsKey(events: readonly Event[]): IdempotencyKey {
+  const premier = events[0]
+  if (premier === undefined) throw new Error("lot d'événements vide : aucune clé à en dériver")
+  return `events:${premier.idempotency_key}`
+}
+
 /** Au-delà, un refus n'explique plus rien : il remplit un journal. */
 const REFUSAL_EXCERPT = 400
 
@@ -163,6 +219,13 @@ export type ClientInput = {
   readonly tools: WorkerPorts["tools"]
   readonly openSession: WorkerPorts["openSession"]
   readonly timeoutMs?: number
+  /**
+   * D'où vient la clé neuve de la réclamation — `W2.26`.
+   *
+   * Facultatif : `crypto.randomUUID` par défaut, ce qu'un worker réel veut. Un test l'injecte pour
+   * lire la clé qui est **partie**, et non celle qu'il aurait devinée.
+   */
+  readonly newKey?: KeySource
 }
 
 /**
@@ -173,6 +236,7 @@ export type ClientInput = {
  * fabriquer ici ferait de lui un composition root, ce qu'il n'a pas à être.
  */
 export function workerPorts(input: ClientInput): WorkerPorts {
+  const newKey = input.newKey ?? (() => crypto.randomUUID())
   const call = (path: string, body?: unknown) =>
     lepCall({
       endpoint: input.endpoint,
@@ -199,6 +263,10 @@ export function workerPorts(input: ClientInput): WorkerPorts {
       // Ce qu'il ne dit pas, et ne doit pas dire : **qui** parle. C'est la créance qui le dit, et le
       // plan de contrôle refuse un manifeste au nom d'un autre worker plutôt que de l'ignorer.
       const answer = await call(CLAIM_PATH, {
+        // La seule clé **neuve** des trois enveloppes : rien dans ce corps n'identifie l'acte, le
+        // `worker_id` étant le même à chaque tour et le manifeste pouvant l'être. Voir
+        // [`IdempotencyKey`].
+        idempotency_key: newKey(),
         worker_id: input.credential.worker_id,
         manifest: input.manifest(),
       })
@@ -208,10 +276,11 @@ export function workerPorts(input: ClientInput): WorkerPorts {
       // Rien à dire est un fait, pas un appel : un `POST` vide à chaque tour ferait du bruit pour
       // rien et rendrait un journal de serveur illisible.
       if (events.length === 0) return
-      await call(EVENTS_PATH, { events })
+      await call(EVENTS_PATH, { idempotency_key: eventsKey(events), events })
     },
     report: async (report: SessionReport, plan: SessionPlan) => {
       await call(RESULT_PATH, {
+        idempotency_key: resultKey(plan.task_id, plan.attempt_id, report.sessionId),
         task_id: plan.task_id,
         attempt_id: plan.attempt_id,
         session_id: report.sessionId,
