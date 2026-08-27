@@ -2162,3 +2162,64 @@ qu'il a prouvé** » — ne pouvait rien affirmer tant que le worker ne rendait 
 Elle le peut désormais. Reste, du côté `locusolus`, que le harnais démarre le worker **avant** de
 mettre une mission en file : `runLoop` fait **un** tour, et le tour a lieu avant que la mission
 existe. C'est une correction d'ordonnancement du harnais, consignée là-bas.
+
+## 2026-08-27 — W2.25 — `minimum_level` est un plancher, et l'admission le lisait comme une égalité
+
+`backend/cli/src/locus/admission.ts` et `session-map.ts`. Un défaut trouvé en tentant la quatrième
+clause de `W12.d` côté `locusolus`, et qu'aucune lecture n'aurait produit.
+
+### Les deux moitiés d'une même décision ne lisaient pas le même champ
+
+Le placement est décidé deux fois, et c'est voulu : le plan de contrôle choisit un worker, le worker
+accepte ou refuse la mission qu'on lui offre. Les deux lisaient `mission.sandbox.minimum_level`
+différemment.
+
+- `locusolus`, dans `Candidate::shortfall` puis `admit`, compare par l'**ordre** :
+  `SandboxLevel::satisfies` est littéralement `self >= required`.
+- Ce worker comparait par l'**appartenance** : `manifest.sandbox.levels.includes(required)`.
+
+Conséquence, mesurée avant d'être corrigée : une mission `S0` offerte à un worker qui annonce
+`S1/S2` est **placée** par le plan de contrôle, puis **refusée** par le worker —
+`{"code":"sandbox_unavailable","details":{"required_level":"S0","offered_levels":["S1","S2"]}}`.
+Deux comportements chacun défendable seul, et faux ensemble.
+
+### Pourquoi personne ne l'avait vu
+
+Les trois paires du corpus de `W0.7` exigent toutes **au-dessus** du plafond offert — mission `S3`,
+worker macOS `S1/S2`. Là, appartenance et ordre coïncident. Le cas discriminant est une mission
+**sous le plancher** offert, et rien ne l'exerçait.
+
+Il ne s'est pas présenté par hasard : la quatrième clause de `W12.d` a besoin d'une mission que
+n'importe quel hôte peut porter, et `S0` est le seul niveau que `Candidate::shortfall` place sans
+attestation — la seule mission host-indépendante est donc précisément celle que ce worker refusait.
+
+### Le champ s'appelle `minimum_level`
+
+C'est un plancher, et §10.3 autorise explicitement une machine à confiner **davantage** que demandé,
+dans la phrase même où elle lui interdit de confiner moins. Un worker qui offre `S1/S2` et refuse
+`S0` refuse une mission qu'il sur-satisfait.
+
+`levelApplied` rend donc le **plus bas** niveau offert qui atteint le plancher. Le plus haut serait
+une politique que personne n'a demandée — `S2` coûte une sandbox réelle là où la mission n'exigeait
+rien — et quand le niveau exigé est offert, le plus bas qui suffit **est** lui : rien ne change pour
+aucune mission qui passait déjà. Le refus `sandbox_unavailable` reste atteignable, par le seul
+chemin qui le mérite, et un test l'exige — une correction qui aurait rendu le code inatteignable
+aurait fait passer les deux moitiés du corpus en **supprimant** le refus.
+
+### L'écart devient lisible plutôt que déductible
+
+Accepter `S0` pour l'exécuter en `S1` sans le dire aurait remplacé un refus visible par un écart
+muet. Le verdict porte donc `appliedLevel`, et `SessionPlan` porte `sandboxLevel` — sans quoi deux
+missions confinées différemment produiraient des plans identiques : le verdict d'admission est
+consommé sur place par `mapMission` et n'atteint jamais l'appelant.
+
+Un test le tient contre la rédaction paresseuse : mission `S3`, worker qui n'offre que `S4`, le plan
+doit dire `S4`. Écrire `mission.sandbox.minimum_level` dans le plan passerait le cas nominal — où
+les deux coïncident — et mentirait sur celui-là.
+
+### Un défaut de test, de moi, corrigé en chemin
+
+La première rédaction forçait `network: "full"` en abaissant le niveau, et le verdict est revenu
+`network_policy_unsupported` : le worker macOS du corpus offre `deny/allowlist`. Le test aurait
+constaté un refus en croyant constater le mien — deux causes possibles pour un seul « refusé », ce
+que les codes de §10.2 existent pour éviter. Seul le niveau change désormais.

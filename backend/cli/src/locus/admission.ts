@@ -43,7 +43,22 @@ export type Refusal = {
   readonly message: string
 }
 
-export type Admission = { readonly accepted: true } | Refusal
+/**
+ * Une mission admise, et **le niveau qui la confinera**.
+ *
+ * `appliedLevel` n'est pas toujours `mission.sandbox.minimum_level` : c'est un plancher, et un
+ * worker qui n'offre pas ce niveau exact mais mieux applique le plus bas qui suffit. Le porter dans
+ * le verdict plutôt que le laisser déduire est ce qui rend l'écart **lisible** : une acceptation nue
+ * dirait « oui » sans dire à quoi la mission aura effectivement droit, et deux missions confinées
+ * différemment se ressembleraient trait pour trait dans un journal.
+ */
+export type Accepted = {
+  readonly accepted: true
+  /** Le niveau réellement appliqué — jamais inférieur au plancher de la mission. */
+  readonly appliedLevel: SandboxLevel
+}
+
+export type Admission = Accepted | Refusal
 
 /**
  * La politique locale — §10.3.
@@ -71,6 +86,49 @@ const LEVEL_ORDER: readonly SandboxLevel[] = ["S0", "S1", "S2", "S3", "S4", "S5"
 /** L'ordre de §21.6 : S0 < S1 < … < S5. Rend `-1` pour un niveau inconnu. */
 export function levelRank(level: string): number {
   return LEVEL_ORDER.indexOf(level as SandboxLevel)
+}
+
+/**
+ * Le niveau que ce worker **appliquera** pour une mission qui exige au moins `required`.
+ *
+ * `undefined` quand aucun niveau offert n'y suffit — le seul cas de `sandbox_unavailable`.
+ *
+ * # Ce que le champ dit, et ce que ce module en lisait
+ *
+ * Il s'appelle `minimum_level`. C'est un **plancher**, et un worker qui offre plus le franchit :
+ * confiner davantage que demandé est ce que §10.3 autorise explicitement à une machine, dans la
+ * même phrase où elle lui interdit de confiner moins.
+ *
+ * L'admission testait pourtant l'**appartenance** — `levels.includes(required)` —, ce qui refuse
+ * une mission `S0` sur un worker qui offre `S1/S2`. Le cas ne s'était jamais présenté parce que
+ * les trois paires du corpus de W0.7 exigent toutes **au-dessus** du plafond offert, où
+ * appartenance et ordre coïncident ; il s'est présenté en tentant la quatrième clause de `W12.d`,
+ * dont la mission ne peut viser que `S0` — le seul niveau que `Candidate::shortfall` place sans
+ * attestation, côté plan de contrôle.
+ *
+ * Les deux moitiés d'une même décision lisaient donc le champ différemment : `locusd` place par
+ * l'ordre (`SandboxLevel::satisfies`, littéralement `self >= required`), le worker refusait par
+ * l'égalité. Une mission `S0` était **placée puis refusée**, et les deux comportements étaient
+ * défendables séparément.
+ *
+ * # Pourquoi le **plus bas** qui suffit, et non le plus haut
+ *
+ * Le plus haut serait une politique que personne n'a demandée : sur ce worker, `S2` coûte une
+ * sandbox réelle là où la mission n'exigeait rien. Le plus bas qui suffit honore la demande sans
+ * inventer de restriction — et quand le niveau exigé est offert, c'est lui, donc rien ne change
+ * pour aucune mission qui passait déjà.
+ */
+export function levelApplied(
+  offered: readonly SandboxLevel[],
+  required: SandboxLevel,
+): SandboxLevel | undefined {
+  const floor = levelRank(required)
+  // Un niveau offert que l'échelle ne connaît pas rend `-1` et ne satisfait donc jamais un plancher
+  // connu. C'est voulu : un manifeste qui annonce un niveau inventé n'a rien prouvé, et le lire
+  // comme « au moins autant » lui accorderait le bénéfice de sa propre faute.
+  return offered
+    .filter((level) => levelRank(level) >= floor && floor >= 0)
+    .sort((left, right) => levelRank(left) - levelRank(right))[0]
 }
 
 /**
@@ -122,7 +180,8 @@ export function admit(input: AdmissionInput): Admission {
   }
 
   const required = mission.sandbox.minimum_level
-  if (!manifest.sandbox.levels.includes(required)) {
+  const applied = levelApplied(manifest.sandbox.levels, required)
+  if (applied === undefined) {
     // Le refus du corpus de W0.7 : mission S3, worker macOS Seatbelt qui n'offre que S1/S2.
     return refuse(
       "sandbox_unavailable",
@@ -199,7 +258,7 @@ export function admit(input: AdmissionInput): Admission {
     })
   }
 
-  return { accepted: true }
+  return { accepted: true, appliedLevel: applied }
 }
 
 function refuse(code: RefusalCode, message: string, details: Record<string, unknown>): Refusal {

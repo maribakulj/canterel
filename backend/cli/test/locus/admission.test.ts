@@ -8,11 +8,12 @@ import {
   clampPolicy,
   hasBoundedBudget,
   insufficientResources,
+  levelApplied,
   levelRank,
   missingCapabilities,
   type LocalPolicy,
 } from "../../src/locus/admission.ts"
-import type { CapabilityManifest, MissionEnvelope } from "../../src/locus/lep/generated.ts"
+import type { CapabilityManifest, MissionEnvelope, SandboxLevel } from "../../src/locus/lep/generated.ts"
 
 const FIXTURES = join(import.meta.dir, "fixtures")
 
@@ -235,3 +236,67 @@ describe("détails structurés", () => {
     expect(hasBoundedBudget(bare)).toBe(true)
   })
 })
+
+describe("`minimum_level` est un plancher, pas une égalité — W2.25", () => {
+  test("un worker qui offre mieux que le plancher accepte, et dit ce qu'il appliquera", () => {
+    // Le cas qui manquait : les trois paires du corpus de W0.7 exigent toutes **au-dessus** du
+    // plafond offert, où appartenance et ordre coïncident. Celle-ci exige en dessous du plancher
+    // offert, et c'est là que les deux lectures divergent.
+    const manifest = MACOS_MANIFEST()
+    expect(manifest.sandbox.levels).toEqual(["S1", "S2"])
+
+    const verdict = admit({ mission: sous_le_plancher("S0"), manifest })
+    expect(verdict.accepted).toBe(true)
+    if (!verdict.accepted) return
+    // Le plus bas qui suffit, pas le plus haut : `S2` coûterait une sandbox réelle que personne
+    // n'a demandée.
+    expect(verdict.appliedLevel).toBe("S1")
+  })
+
+  test("le niveau exigé, quand il est offert, est celui qui s'applique", () => {
+    // La moitié qui empêche la correction d'élargir : rien ne change pour une mission qui passait.
+    const verdict = admit({ mission: ACCEPTED_MISSION(), manifest: VM_MANIFEST() })
+    expect(verdict.accepted).toBe(true)
+    if (verdict.accepted) expect(verdict.appliedLevel).toBe("S3")
+  })
+
+  test("au-dessus du plafond offert, le refus est inchangé", () => {
+    // `sandbox_unavailable` reste atteignable, et par le seul chemin qui le mérite. Une correction
+    // qui aurait rendu le code inatteignable aurait fait passer les deux moitiés du corpus en
+    // supprimant le refus au lieu de le corriger.
+    const verdict = admit({ mission: REFUSED_MISSION(), manifest: MACOS_MANIFEST() })
+    expect(verdict.accepted).toBe(false)
+    if (!verdict.accepted) expect(verdict.code).toBe("sandbox_unavailable")
+  })
+
+  test("`levelApplied` rend le plus bas qui suffit, et rien pour un plancher hors d'atteinte", () => {
+    expect(levelApplied(["S1", "S2"], "S0")).toBe("S1")
+    expect(levelApplied(["S1", "S2"], "S1")).toBe("S1")
+    expect(levelApplied(["S1", "S2"], "S2")).toBe("S2")
+    expect(levelApplied(["S1", "S2"], "S3")).toBeUndefined()
+    // L'ordre de la liste offerte ne décide pas : c'est l'échelle de §21.6 qui décide.
+    expect(levelApplied(["S2", "S1"], "S0")).toBe("S1")
+    // Un niveau que l'échelle ne connaît pas n'accorde jamais « au moins autant » : un manifeste
+    // qui annonce un niveau inventé n'a rien prouvé.
+    expect(levelApplied(["SX"] as unknown as SandboxLevel[], "S0")).toBeUndefined()
+    // Et un plancher inconnu ne se satisfait de rien — l'inverse ferait accepter une mission dont
+    // on ne sait pas ce qu'elle demande.
+    expect(levelApplied(["S1", "S2"], "SX" as SandboxLevel)).toBeUndefined()
+  })
+})
+
+/**
+ * La mission d'acceptation du corpus, ramenée à un plancher que le worker macOS dépasse.
+ *
+ * **Le niveau seul change.** La première rédaction forçait aussi `network: "full"`, et le verdict
+ * est revenu `network_policy_unsupported` — le worker macOS du corpus offre `deny/allowlist`. Le
+ * test aurait alors constaté un refus en croyant constater le mien : deux causes possibles pour un
+ * seul « refusé », ce qui est exactement ce que les codes de §10.2 existent pour éviter.
+ */
+function sous_le_plancher(level: string): MissionEnvelope {
+  const mission = ACCEPTED_MISSION()
+  return {
+    ...mission,
+    sandbox: { ...mission.sandbox, minimum_level: level },
+  } as MissionEnvelope
+}
