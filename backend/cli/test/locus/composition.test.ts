@@ -35,6 +35,7 @@ import { modelInventory } from "../../src/locus/model-inventory.ts"
 import { loadConfig, runWorker } from "../../src/locus/index.ts"
 import { locusStateDir } from "../../src/locus/registration.ts"
 import { CLAIM_PATH } from "../../src/locus/worker-client.ts"
+import { avecVue, vueScellee } from "./context-view-fixture.ts"
 import type {
   CapabilityManifest,
   CapabilityManifestModelsItem,
@@ -195,13 +196,19 @@ describe("le composition root du worker — W2.22", () => {
     // recherchée n'est pas « telle mission passe » mais « la sonde réelle atteint l'admission, et
     // ce qu'elle annonce est ce qui est jugé ».
     const offert = assembly.ports.manifest()
-    const mission = missionPour(offert)
+    const vue = vueScellee()
+    const mission = avecVue(missionPour(offert), vue)
 
     const ports = {
       ...assembly.ports,
       claim: async () => ({ mission, lease: lease(mission) }),
       emit: async () => {},
       report: async () => {},
+      // Remplacé pour la même raison que `claim`, `emit` et `report` : ce que cette clause éprouve
+      // est l'**assemblage**, et le port réel irait chercher la vue sur `https://locus.example`.
+      // La récupération et sa double vérification ont leur test de sortie dans
+      // `context-view.test.ts`, contre un serveur qui répond.
+      contextView: async () => vue,
     }
 
     const outcome = await runWorker(CONFIG(), ports)
@@ -407,7 +414,8 @@ describe("le composition root du worker — W2.22", () => {
     const nu = await assemblePorts(CONFIG(), entourage(dataDir, interdit()))
     expect(assembled(nu)).toBe(true)
     if (!assembled(nu)) return
-    const mission = missionPour(nu.ports.manifest())
+    const vue = vueScellee()
+    const mission = avecVue(missionPour(nu.ports.manifest()), vue)
 
     const tour = async (models?: readonly CapabilityManifestModelsItem[]) => {
       const assembly = await assemblePorts(CONFIG(), entourage(dataDir, interdit(), models))
@@ -417,6 +425,7 @@ describe("le composition root du worker — W2.22", () => {
         claim: async () => ({ mission, lease: lease(mission) }),
         emit: async () => {},
         report: async () => {},
+        contextView: async () => vue,
       } as typeof assembly.ports)
       if (outcome.status !== "ran") throw new Error("le worker tourne dans les deux cas")
       return outcome.outcome

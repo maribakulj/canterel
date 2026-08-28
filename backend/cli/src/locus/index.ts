@@ -256,6 +256,7 @@ export { forkModifiedFiles } from "./upstream-merge.ts"
 export {
   applyRedactions,
   assertBranchScope,
+  assertNamedByMission,
   assertViewIntegrity,
   classRank,
   materialize,
