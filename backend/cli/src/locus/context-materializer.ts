@@ -127,6 +127,43 @@ export function assertViewIntegrity(view: ContextView): void {
   }
 }
 
+/**
+ * Vérifier que ce document est **celui que la mission nomme** — §12.3, `W20.ac`.
+ *
+ * # Ce que `assertViewIntegrity` ne peut pas voir
+ *
+ * Elle vérifie qu'un document est cohérent avec lui-même : son empreinte annoncée est bien celle de
+ * son contenu. Une vue **échangée** est cohérente aussi — c'est une vraie vue, scellée par le même
+ * plan de contrôle, simplement pas celle-là. Les deux contrôles ne font donc pas double emploi, et
+ * l'ordre importe peu : ce qui compte est qu'aucun ne manque.
+ *
+ * §15.4 dit pourquoi la mission porte les deux valeurs : « référence, pas contenu ». Le `hash` y est
+ * obligatoire, et cette fonction est la seule raison pour laquelle il l'est — sans confrontation, un
+ * champ obligatoire que personne ne lit ne protège rien.
+ *
+ * L'identifiant **et** l'empreinte sont confrontés. Ne vérifier que l'empreinte laisserait passer un
+ * document servi sous un autre nom, ce qui n'est pas anodin : c'est l'identifiant qui rattache la
+ * vue à ce que le journal en dit.
+ */
+export function assertNamedByMission(view: ContextView, named: { readonly id: string; readonly hash: string }): void {
+  if (view.id !== named.id) {
+    throw new LocusContextRefused({
+      view_id: view.id,
+      reason:
+        `la mission nomme la vue ${named.id} et le document servi s'appelle ${view.id} : ` +
+        "ce n'est pas le contexte de cet attempt (§12.3)",
+    })
+  }
+  if (view.content_hash !== named.hash) {
+    throw new LocusContextRefused({
+      view_id: view.id,
+      reason:
+        `la mission annonce ${named.hash} et le document porte ${view.content_hash} : ` +
+        "la vue a été échangée entre la mission et sa récupération (§12.3)",
+    })
+  }
+}
+
 export type MaterializeInput = {
   readonly view: ContextView
   readonly items: readonly ContextItem[]

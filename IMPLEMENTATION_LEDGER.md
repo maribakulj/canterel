@@ -2397,3 +2397,58 @@ et il n'y a pas d'attempt à annoncer — l'admission a dit non avant toute exé
 contrôle l'apprenne autrement est `W19.c` côté `locusolus`, une question de protocole qui attend une
 décision plutôt qu'un événement inventé ici. Un test fige le comportement actuel pour que le jour où
 la décision tombe, le changement se voie.
+
+## 2026-08-28 — W20.ac.3 — Le worker récupère la vue que sa mission nomme, et refuse celle qu'on lui échange
+
+**Périmètre.** `backend/cli/src/locus/context-materializer.ts` (`assertNamedByMission`) ;
+`backend/cli/src/locus/worker-client.ts` (`contextViewPath`, la méthode de `lepCall`, le port
+`contextView`) ; `backend/cli/src/locus/worker-loop.ts` (le port et son appel) ;
+`backend/cli/src/locus/index.ts` (l'export) ; `backend/cli/test/locus/context-view.test.ts` et
+`context-view-fixture.ts` (neufs) ; `worker-client.test.ts`, `worker-loop.test.ts`,
+`composition.test.ts` mis à jour.
+
+**Tests exécutés.** `bun test test/locus/` → **485 passés, 0 échec** ; `bun run typecheck` → 0 ;
+`prettier --check` sur les deux périmètres locaux → propre.
+
+Le test de sortie est `context-view.test.ts` : la vue est demandée en `GET` sur le chemin que
+`locusd` sert et **avant** l'ouverture de session ; une vue cohérente mais échangée est refusée et
+la session ne s'ouvre pas ; un identifiant qui n'est pas celui de la mission est refusé ; un
+document dont l'empreinte ne décrit pas son contenu est refusé ; une vue introuvable lève un refus
+de **serveur** et non de contexte.
+
+**Décisions prises.**
+
+1. **Deux vérifications, parce qu'elles ne voient pas la même chose.** `assertViewIntegrity` dit
+   qu'un document est cohérent avec lui-même ; une vue échangée l'est aussi — c'est une vraie vue,
+   scellée par le même plan de contrôle, simplement pas celle-là. Le champ `hash` de §15.4 n'existe
+   que pour cette confrontation, et sans elle c'était un champ obligatoire que personne ne lisait.
+2. **L'identifiant est confronté autant que l'empreinte.** Un document servi sous un autre nom
+   décrirait le bon contexte sous une provenance fausse ; c'est l'identifiant qui rattache la vue à
+   ce que le journal en dit.
+3. **Le refus n'est pas une admission refusée.** §10.2 énumère quatorze codes et aucun ne dit « ce
+   contexte n'est pas celui-là ». En ajouter un serait une valeur d'énumération de plus dans un
+   mineur, ce que l'ADR 0017 interdit — un consommateur `1.0` cesserait de désérialiser. C'est un
+   `LocusContextRefused`, comme les deux autres refus de ce module.
+4. **La vérification a lieu avant la session et après `attempt.started`.** Avant la session parce
+   que §12.3 dit « vérifié avant démarrage » — un contexte authentifié après coup n'a servi à rien.
+   Après `attempt.started` parce que l'ordre inverse ferait disparaître de l'institution une
+   tentative qui a bel et bien commencé : le bail est frappé, et un échec ici est l'échec **de cette
+   tentative-là**.
+5. **`lepCall` apprend `GET` plutôt que d'être doublé.** La politique de §7.3 — origine,
+   redirections, délai — est la même pour une lecture ; un second appelant en produirait une version
+   qui divergerait, ce que l'en-tête du module refuse déjà.
+
+**Écart avec la spec.** Aucun. §12.3 exige la vérification avant démarrage ; §15.4 fait de `hash` un
+champ obligatoire. Cette tranche est ce qui rend les deux vrais.
+
+**Ce qu'un test a attrapé de lui-même.** La première rédaction de la clause « vue échangée »
+construisait deux vues qui ne différaient que par leur identifiant, puis remettait l'identifiant
+attendu — donc le même document, et le test passait sans rien éprouver. Il l'a dit en résolvant là où
+il devait rejeter. La vue échangée porte maintenant un **watermark différent** et est rescellée, et
+une assertion vérifie que les deux empreintes diffèrent avant que le refus soit attendu.
+
+**Périmètre hors `src/locus/**`et`test/locus/**`.** Aucun.
+
+**Prochain item.** `W20.ac` est clos par cette tranche. La frontière de `docs/10` redevient `W2.27`
+— les artefacts, l'`EpistemicCommit` et le compteur d'usage, qui attendent une session qui produise
+quelque chose, donc un hôte annonçant un modèle — et `W12.d`.

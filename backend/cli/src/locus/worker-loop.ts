@@ -37,7 +37,7 @@ import { transition } from "./attempt.ts"
 import { LocusAttemptPathBroken } from "./errors.ts"
 import type { Checkpoint } from "./resume-store.ts"
 import type { Refusal } from "./admission.ts"
-import type { CapabilityManifest, Event, Lease, MissionEnvelope } from "./lep/generated.ts"
+import type { CapabilityManifest, ContextView, Event, Lease, MissionEnvelope } from "./lep/generated.ts"
 import type { ToolDescriptor } from "./tool-policy.ts"
 import { attemptEvent, coalesce } from "./event-bridge.ts"
 import { mapMission, type SessionPlan } from "./session-map.ts"
@@ -71,6 +71,17 @@ export type WorkerPorts = {
   readonly manifest: () => CapabilityManifest
   /** Les outils dont cette installation dispose. */
   readonly tools: () => readonly ToolDescriptor[]
+  /**
+   * Récupérer la `ContextView` que la mission nomme, et la vérifier — §12.3, `W20.ac`.
+   *
+   * Un **port**, comme les autres : ce module ne connaît pas le transport. Ce qu'il sait est que
+   * la vérification a lieu **avant** la session — §12.3 dit « vérifié avant démarrage » —, et que
+   * son échec lève. Il ne rend pas de verdict : un `Refusal` dirait « cet hôte ne peut pas », or
+   * l'hôte peut très bien ; c'est le contexte qui n'est pas celui qu'on croit, et §10.2 n'a pas de
+   * code pour ça — ni ne doit en gagner un, ADR 0017 interdisant d'ajouter une valeur
+   * d'énumération dans un mineur.
+   */
+  readonly contextView: (named: { readonly id: string; readonly hash: string }) => Promise<ContextView>
   /** Ouvrir une session amont à partir d'un plan. Données à l'aller, données au retour. */
   readonly openSession: (plan: SessionPlan) => Promise<SessionReport>
   /** Faire remonter des événements — `W2.12` les a déjà rendus coalescibles. */
@@ -184,6 +195,18 @@ export async function runLoop(ports: WorkerPorts): Promise<LoopOutcome> {
     })
   }
   await ports.emit([attemptEvents("attempt.started")])
+
+  // **La vue est vérifiée avant la session, et après `attempt.started`** — §12.3, `W20.ac`.
+  //
+  // Avant la session, parce que §12.3 dit « vérifié avant démarrage » : un contexte qu'on
+  // n'authentifie qu'après coup n'a servi à rien, le raisonnement ayant déjà eu lieu.
+  //
+  // Après `attempt.started`, parce que l'ordre inverse ferait disparaître de l'institution un
+  // attempt qui a bel et bien commencé — le bail est frappé, la tentative est ouverte, et un échec
+  // ici est un échec **de cette tentative-là**, pas une tentative qui n'aurait jamais existé. C'est
+  // le même raisonnement que pour l'émission du début : ce qui compte est que l'échec soit
+  // attribuable.
+  await ports.contextView(offer.mission.context_view)
 
   const report = await ports.openSession(mapped.plan)
   phases.push("session")

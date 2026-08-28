@@ -28,9 +28,10 @@
  */
 
 import { assertEndpointAcceptable, sameOrigin, type Credential } from "./auth.ts"
+import { assertNamedByMission, assertViewIntegrity } from "./context-materializer.ts"
 import { DEFAULT_TIMEOUT_MS, type FetchLike } from "./connection.ts"
 import { LocusResumeUnreadable, LocusServerRejected } from "./errors.ts"
-import type { Event } from "./lep/generated.ts"
+import type { ContextView, Event } from "./lep/generated.ts"
 import type { ResumeStore } from "./resume-store.ts"
 import type { SessionPlan } from "./session-map.ts"
 import type { Offer, SessionReport, WorkerPorts } from "./worker-loop.ts"
@@ -39,6 +40,18 @@ import type { Offer, SessionReport, WorkerPorts } from "./worker-loop.ts"
 export const CLAIM_PATH = "/lep/v1/claim"
 export const EVENTS_PATH = "/lep/v1/events"
 export const RESULT_PATH = "/lep/v1/result"
+
+/**
+ * Où la `ContextView` que la mission nomme se récupère — §16.2, `W20.ac`.
+ *
+ * **Hors de `/lep/`**, et le littéral le montre : ce n'est pas une commande de worker mais une
+ * lecture, servie comme `/graph/{revision_id}` l'est. Le chemin est écrit en clair des deux côtés du
+ * fil, pour la raison qui vaut déjà pour les trois autres — c'est la moitié client d'un contrat, et
+ * le changer casse un pair qu'on ne redéploie pas en même temps.
+ */
+export function contextViewPath(viewId: string): string {
+  return `/context-views/${encodeURIComponent(viewId)}`
+}
 
 /**
  * La clé d'idempotence que porte **chaque** enveloppe — §15.2, `W2.26`.
@@ -160,6 +173,15 @@ export async function lepCall(input: {
   readonly credential: Credential
   readonly body?: unknown
   readonly timeoutMs?: number
+  /**
+   * La méthode, `POST` par défaut — `W20.ac`.
+   *
+   * Une lecture n'envoie pas de corps, et un `POST` sur une route de lecture recevrait `405` sans
+   * que rien ne dise pourquoi. Le reste de la politique de §7.3 — origine, redirections, délai — est
+   * **le même** pour les deux : la dupliquer dans un second appelant en produirait une version qui
+   * divergerait, ce que l'en-tête de ce module refuse déjà.
+   */
+  readonly method?: "GET" | "POST"
 }): Promise<unknown | null> {
   const base = assertEndpointAcceptable(input.endpoint)
   const target = new URL(input.path, base).toString()
@@ -173,13 +195,13 @@ export async function lepCall(input: {
   try {
     const response = await input
       .fetch(target, {
-        method: "POST",
+        method: input.method ?? "POST",
         headers: {
           "content-type": "application/json",
           // Le secret du worker, jamais journalisé — `describeConfig` le rédige déjà partout ailleurs.
           authorization: `Bearer ${input.credential.credential}`,
         },
-        body: JSON.stringify(input.body ?? {}),
+        ...(input.method === "GET" ? {} : { body: JSON.stringify(input.body ?? {}) }),
         redirect: "manual",
         signal: controller.signal,
       })
@@ -246,6 +268,15 @@ export function workerPorts(input: ClientInput): WorkerPorts {
       body,
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     })
+  const read = (path: string) =>
+    lepCall({
+      endpoint: input.endpoint,
+      path,
+      fetch: input.fetch,
+      credential: input.credential,
+      method: "GET",
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    })
 
   return {
     now: () => Date.now(),
@@ -286,6 +317,32 @@ export function workerPorts(input: ClientInput): WorkerPorts {
         session_id: report.sessionId,
         output: report.output,
       })
+    },
+    /**
+     * Récupérer la vue que la mission nomme, et la **vérifier deux fois** — §12.3, `W20.ac`.
+     *
+     * Deux contrôles, parce qu'ils ne voient pas la même chose. `assertViewIntegrity` dit que le
+     * document est cohérent avec lui-même ; `assertNamedByMission` dit que c'est **celui-là**. Une
+     * vue échangée est cohérente aussi — c'est une vraie vue, scellée par le même plan de contrôle,
+     * simplement pas la bonne —, et le premier contrôle seul la laisserait passer.
+     *
+     * Un `204` n'a pas de sens ici : une route de lecture qui n'a rien à rendre répond `404`, que
+     * `lepCall` transforme déjà en refus. Le `null` est traité quand même, et **bruyamment** :
+     * rendre un document vide ferait échouer la vérification suivante sur une empreinte absente,
+     * c'est-à-dire au mauvais endroit avec le mauvais message.
+     */
+    contextView: async (named) => {
+      const document = await read(contextViewPath(named.id))
+      if (document === null) {
+        throw new LocusServerRejected({
+          endpoint: contextViewPath(named.id),
+          reason: "réponse sans document : une vue de contexte ne se récupère pas à moitié (§12.3)",
+        })
+      }
+      const view = document as ContextView
+      assertViewIntegrity(view)
+      assertNamedByMission(view, named)
+      return view
     },
     checkpoint: async (checkpoint) => {
       input.store.save(checkpoint)

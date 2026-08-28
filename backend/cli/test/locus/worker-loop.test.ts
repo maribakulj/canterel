@@ -64,14 +64,29 @@ function report(sessionId: string): SessionReport {
 }
 
 /** Un jeu de ports complet, dont chaque test ne remplace que ce qu'il éprouve. */
-function ports(over: Partial<WorkerPorts> = {}): WorkerPorts & { seen: { plans: SessionPlan[]; saved: Checkpoint[] } } {
-  const seen = { plans: [] as SessionPlan[], saved: [] as Checkpoint[] }
+function ports(
+  over: Partial<WorkerPorts> = {},
+): WorkerPorts & { seen: { plans: SessionPlan[]; saved: Checkpoint[]; vues: string[] } } {
+  const seen = { plans: [] as SessionPlan[], saved: [] as Checkpoint[], vues: [] as string[] }
   const mission = MISSION()
   const base: WorkerPorts = {
     now: () => 1_756_000_000_000,
     claim: async () => ({ mission, lease: lease(mission, 3) }) satisfies Offer,
     manifest: () => MANIFEST(),
     tools: () => TOOLS,
+    // Le port par défaut rend une vue **qui correspond**, parce que ces tests-ci éprouvent la
+    // boucle et non la vérification. Celle-ci a son test de sortie dans `context-view.test.ts`,
+    // et un test d'ici la remplace quand c'est elle qu'il vise.
+    contextView: async (named) => {
+      seen.vues.push(named.id)
+      return {
+        id: named.id,
+        confidentiality_ceiling: "internal",
+        source_event_watermark: 0,
+        content_hash: named.hash,
+        generated_at: "2026-08-24T12:00:00.000Z",
+      }
+    },
     openSession: async (plan) => {
       seen.plans.push(plan)
       return report("ses_01")

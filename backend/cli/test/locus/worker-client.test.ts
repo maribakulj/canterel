@@ -9,6 +9,7 @@ import { LocusResumeUnreadable, LocusServerRejected } from "../../src/locus/erro
 import { ResumeStore, type Checkpoint } from "../../src/locus/resume-store.ts"
 import type { CapabilityManifest, Lease, MissionEnvelope } from "../../src/locus/lep/generated.ts"
 import { CLAIM_PATH, EVENTS_PATH, lepCall, RESULT_PATH, workerPorts } from "../../src/locus/worker-client.ts"
+import { avecVue, estUneVue, vueScellee } from "./context-view-fixture.ts"
 import { runLoop, type SessionReport } from "../../src/locus/worker-loop.ts"
 import { loadConfig, runWorker } from "../../src/locus/index.ts"
 import { runConformance } from "./harness/index.ts"
@@ -372,12 +373,16 @@ describe("le client de réclamation — le test de sortie de W2.21", () => {
    * l'inverse.
    */
   test("un tour complet aboutit sur les ports HTTP réels", async () => {
-    const mission = MISSION()
+    const vue = vueScellee()
+    const mission = avecVue(MISSION(), vue)
     const rendus: string[] = []
     const port = client(async (url) => {
       if (url.endsWith(CLAIM_PATH)) {
         return new Response(JSON.stringify({ mission, lease: lease(mission, 5) }), { status: 200 })
       }
+      // La vue que la mission nomme, servie comme `locusd` la sert — sans quoi la boucle refuserait
+      // de démarrer la session, ce qui est exactement ce que `W20.ac` lui demande de faire.
+      if (estUneVue(url)) return new Response(JSON.stringify(vue), { status: 200 })
       rendus.push(url)
       return new Response("{}", { status: 200 })
     })
@@ -490,13 +495,18 @@ describe("la boucle passe la conformance de W0.9", () => {
    * qu'on remplace.
    */
   test("un worker bâti sur la boucle satisfait les vérifications", async () => {
-    const mission = MISSION()
+    const vue = vueScellee()
+    const mission = avecVue(MISSION(), vue)
     const bail = lease(mission, 1)
     let sortie: Awaited<ReturnType<typeof runLoop>> | undefined
 
-    const ports = client(async () => new Response("{}", { status: 200 }), {
-      openSession: async () => ({ sessionId: "ses_conformance", events: [], output: {} }),
-    })
+    const ports = client(
+      async (url) =>
+        estUneVue(url) ? new Response(JSON.stringify(vue), { status: 200 }) : new Response("{}", { status: 200 }),
+      {
+        openSession: async () => ({ sessionId: "ses_conformance", events: [], output: {} }),
+      },
+    )
 
     const worker: WorkerUnderTest = {
       register: () => MANIFEST(),
@@ -531,7 +541,8 @@ describe("`runWorker` cesse d'être inerte quand on lui donne de quoi agir — W
    * `missing`. Avec les ports de `W2.21`, `ports` en sort — et le worker rend ce qu'il a fait.
    */
   test("une installation configurée et outillée rend un tour, pas un constat", async () => {
-    const mission = MISSION()
+    const vue = vueScellee()
+    const mission = avecVue(MISSION(), vue)
     const config = loadConfig({ LOCUS_ENDPOINT: "https://locus.example", LOCUS_IDENTITY: "wk_01" })
 
     const inerte = await runWorker(config)
@@ -540,11 +551,12 @@ describe("`runWorker` cesse d'être inerte quand on lui donne de quoi agir — W
 
     const actif = await runWorker(
       config,
-      client(async (url) =>
-        url.endsWith(CLAIM_PATH)
-          ? new Response(JSON.stringify({ mission, lease: lease(mission, 2) }), { status: 200 })
-          : new Response("{}", { status: 200 }),
-      ),
+      client(async (url) => {
+        if (url.endsWith(CLAIM_PATH)) {
+          return new Response(JSON.stringify({ mission, lease: lease(mission, 2) }), { status: 200 })
+        }
+        return estUneVue(url) ? new Response(JSON.stringify(vue), { status: 200 }) : new Response("{}", { status: 200 })
+      }),
     )
     expect(actif.status).toBe("ran")
     if (actif.status !== "ran") return
