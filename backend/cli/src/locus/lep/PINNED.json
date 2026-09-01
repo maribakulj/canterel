@@ -1,6 +1,6 @@
 {
   "repo": "https://github.com/maribakulj/locusolus",
-  "commit": "32ee03649c5a258af448ef38049f2ba851e661a2",
+  "commit": "222996325489e3e9ada9a4cb807dc87ef1d02f06",
   "files": {
     "backend/cli/src/locus/lep/generated.ts": {
       "source": "packages/lep/src/generated.ts",

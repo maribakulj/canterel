@@ -2487,7 +2487,7 @@ producteur ; ici, on tient la copie à jour.
 restrictive, qui est `docs/locus/SPEC_V1.md` §10.3 **ici** et « Garanties » du journal chez l'amont.
 La correction est amont ; la copie la suit, avec sa réécriture d'import déclarée.
 
-**Ce que `PINNED.json` nomme.** Le commit `32ee036` est la **révision de branche** de `W5.ag` dans
+**Ce que `PINNED.json` nomme.** Le commit `2229963` est la **révision de branche** de `W5.ag` dans
 `locusolus`, pas encore sa révision de fusion : l'ordre n'est pas libre dans l'autre sens, puisque le
 job `e2e` de l'amont monte ce dépôt à la révision épinglée et y joue `check:worker-pin` en mode
 strict — la relecture doit donc exister **avant** que l'amont fusionne. Le champ est
