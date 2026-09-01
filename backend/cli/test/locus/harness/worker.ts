@@ -16,7 +16,8 @@ export type WorkerUnderTest = {
    * Une offre de mission. Le worker accepte en rendant `true`, refuse en rendant `false`.
    *
    * Un refus n'est pas une faute : la politique locale d'un worker peut être plus restrictive que
-   * son manifeste (§10.2), et un worker qui accepte tout ce qu'on lui propose est le vrai défaut.
+   * son manifeste (`repos/canterel/SPEC_V1.md` §10.3), et un worker qui accepte tout ce qu'on lui
+   * propose est le vrai défaut.
    */
   offer(mission: MissionEnvelope): Promise<boolean> | boolean;
 

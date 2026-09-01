@@ -2482,7 +2482,12 @@ dérive de sa source ne se voit pas d'ici — ce dépôt n'a pas le droit de lir
 dérive de `W16.d` a vécu des semaines parce que personne ne la mesurait. La garde vit chez le
 producteur ; ici, on tient la copie à jour.
 
-**Ce que `PINNED.json` nomme.** Le commit `9fa0c1b` est la **révision de branche** de `W5.ag` dans
+**Un troisième fichier a suivi.** `packages/testing/src/worker.ts` — vendu sous
+`test/locus/harness/worker.ts` — portait une citation `§10.2` pour la politique locale plus
+restrictive, qui est `docs/locus/SPEC_V1.md` §10.3 **ici** et « Garanties » du journal chez l'amont.
+La correction est amont ; la copie la suit, avec sa réécriture d'import déclarée.
+
+**Ce que `PINNED.json` nomme.** Le commit `32ee036` est la **révision de branche** de `W5.ag` dans
 `locusolus`, pas encore sa révision de fusion : l'ordre n'est pas libre dans l'autre sens, puisque le
 job `e2e` de l'amont monte ce dépôt à la révision épinglée et y joue `check:worker-pin` en mode
 strict — la relecture doit donc exister **avant** que l'amont fusionne. Le champ est
