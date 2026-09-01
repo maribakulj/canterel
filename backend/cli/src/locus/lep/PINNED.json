@@ -1,11 +1,11 @@
 {
   "repo": "https://github.com/maribakulj/locusolus",
-  "commit": "bb5259f65aecb9a17efa2b9ab27a98e6c333737c",
+  "commit": "222996325489e3e9ada9a4cb807dc87ef1d02f06",
   "files": {
     "backend/cli/src/locus/lep/generated.ts": {
       "source": "packages/lep/src/generated.ts",
-      "sha256_source": "ed6277100fbffb1e6f1160f4d666694b14affb7286ee5f54d7c908a3cb82b097",
-      "sha256_vendored": "ed6277100fbffb1e6f1160f4d666694b14affb7286ee5f54d7c908a3cb82b097"
+      "sha256_source": "557c1f397549223e5ff2162401f129753193466b50ac2977de32180b4149cb96",
+      "sha256_vendored": "557c1f397549223e5ff2162401f129753193466b50ac2977de32180b4149cb96"
     },
     "backend/cli/src/locus/lep/negotiate.ts": {
       "source": "packages/lep/src/index.ts",
@@ -19,8 +19,8 @@
     },
     "backend/cli/test/locus/harness/worker.ts": {
       "source": "packages/testing/src/worker.ts",
-      "sha256_source": "696879ba7ad93b7265256130d6ebdfe65ca4435a132d0ee49b04f8fc261da94e",
-      "sha256_vendored": "3f64c2f8e9c612c3bcc1a77122a0bc722bc96f6c4cab1bcfd366140db63fe05f"
+      "sha256_source": "5eaf84c366528c08b8dfe301868de0417bba30fca14fb4832570ef26d6566525",
+      "sha256_vendored": "62f558f173ba73aaca3c7f72a350e9e0bf809db0595e915404440c55758ea891"
     },
     "backend/cli/test/locus/harness/harness.ts": {
       "source": "packages/testing/src/harness.ts",
@@ -44,8 +44,8 @@
     },
     "backend/cli/test/locus/fixtures/manifest-macos.json": {
       "source": "schemas/examples/capability-manifest.json",
-      "sha256_source": "4835ef20b1561a03cd37445b55d1c172dda8e58c36ef27c0241ede025c5efbbb",
-      "sha256_vendored": "4835ef20b1561a03cd37445b55d1c172dda8e58c36ef27c0241ede025c5efbbb"
+      "sha256_source": "17dd680f59cbdf36a77c51c265cd2e1f034c3d222fbaaf1284ab4b56abd0c5f9",
+      "sha256_vendored": "17dd680f59cbdf36a77c51c265cd2e1f034c3d222fbaaf1284ab4b56abd0c5f9"
     },
     "backend/cli/test/locus/fixtures/mission-accepted.json": {
       "source": "schemas/examples/mission-envelope-nominal.json",

@@ -83,6 +83,24 @@ export type Reason =
       readonly proven?: SandboxLevel | undefined;
     }
   /**
+   * Une campagne a conclu pour cet hôte et ce worker, mais sous un mécanisme que le worker n'emploie pas — ADR 0035 décision 3. **Distinct de `level_not_attested`**, et la distinction est tout l'intérêt : « aucune campagne n'a conclu » envoie lancer les self-tests, celui-ci envoie en lancer une **autre**, sous le mécanisme que ce worker emploie réellement. Les fondre ferait relancer indéfiniment une campagne qui conclut déjà, et bien. Les deux noms sont au registre `schemas/lep/1.0/mechanisms.json` et ils désignent deux mécanismes différents : ADR 0035 et ADR 0036 les tiennent pour incomparables faute de les avoir mesurés l'un contre l'autre.
+   */
+  | {
+      readonly code: "mechanism_not_employed";
+      readonly required: SandboxLevel;
+      readonly employs: string;
+      readonly attested: readonly string[];
+    }
+  /**
+   * Le mécanisme attesté et celui du worker n'ont pas pu être **rapprochés**, faute d'un nom que le registre connaisse. Distinct de `mechanism_not_employed` : là, les deux noms sont connus et diffèrent ; ici, on ne sait pas ce qu'un nom désigne, et « ce n'est pas le même » serait une affirmation qu'on n'a pas les moyens de faire. `employs` est **absent** quand le manifeste ne nomme aucun mécanisme — `backend` est facultatif dans `CapabilityManifestSandbox` alors qu'il est obligatoire dans `SandboxAttestation` —, et ce n'est pas la même ignorance qu'un nom présent mais hors registre : l'une envoie faire annoncer son mécanisme au worker, l'autre envoie ajouter le nom au registre ou corriger l'émetteur. `unregistered` peut donc être **vide**, et il l'est exactement quand le défaut est du côté de l'annonce.
+   */
+  | {
+      readonly code: "mechanism_unresolved";
+      readonly required: SandboxLevel;
+      readonly employs?: string | undefined;
+      readonly unregistered: readonly string[];
+    }
+  /**
    * L'accélérateur **est** sur cet hôte, mais pas là où la mission veut être confinée. Distinct d'`accelerator_unavailable` : le dire « absent » enverrait chercher du matériel au lieu de choisir entre le conteneur et l'accélérateur.
    */
   | {
@@ -1024,7 +1042,7 @@ export type HumanReviewFinding = {
 };
 
 /**
- * Pourquoi une mission n'a pas été admise sur un hôte — SPEC_V1 §10.2, ADR 0017 §5.2, tranche 2 du mineur `lep/1.1`. Document **nouveau** : aucune énumération existante ne gagne un membre, ce que l'interdit 3 de l'ADR refuse. Il porte des données et pas seulement des codes — le niveau exigé, le meilleur niveau prouvé, le genre d'accélérateur — donc un membre de plus sur une énumération n'aurait de toute façon pas suffi.
+ * Pourquoi une mission n'a pas été admise sur un hôte — SPEC_V1 §12.2, ADR 0017 §5.2, tranche 2 du mineur `lep/1.1`. Document **nouveau** : aucune énumération existante ne gagne un membre, ce que l'interdit 3 de l'ADR refuse. Il porte des données et pas seulement des codes — le niveau exigé, le meilleur niveau prouvé, le genre d'accélérateur — donc un membre de plus sur une énumération n'aurait de toute façon pas suffi.
  */
 export type AdmissionRefusal = {
   readonly protocol: ProtocolVersion;
@@ -1090,3 +1108,20 @@ export const LEP_FEATURES = {
 } as const;
 
 export type LepFeature = keyof typeof LEP_FEATURES;
+
+/**
+ * Les mécanismes de confinement dont ce dépôt sait ce qu'ils désignent — registre
+ * `schemas/lep/1.0/mechanisms.json`, ADR 0035 décision 3. Ce n'est pas une énumération du
+ * fil : `backend` reste une chaîne libre dans les deux schémas qui le portent, et un nom
+ * absent d'ici n'est pas invalide — il est non rapproché, ce qui est un verdict différent de
+ * « ce n'est pas le même mécanisme ».
+ */
+export const LEP_MECHANISMS = [
+  "bubblewrap",
+  "bubblewrap+cgroup",
+  "podman-rootless",
+  "seatbelt",
+  "none",
+] as const;
+
+export type LepMechanism = (typeof LEP_MECHANISMS)[number];

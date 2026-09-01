@@ -37,7 +37,8 @@
     "network_modes": [
       "deny",
       "allowlist"
-    ]
+    ],
+    "backend": "seatbelt"
   },
   "data_classes": [
     "public",
@@ -46,6 +47,6 @@
   "_fixture": {
     "name": "capability-macos-canterel-oauth-local",
     "expect": "valid",
-    "note": "Worker macOS de confiance. Annonce le niveau de sandbox REEL: Seatbelt = S1/S2, jamais S3/S4. auth oauth-local admissible seulement sur worker local de confiance (docs/08)."
+    "note": "Worker macOS de confiance. Annonce le niveau de sandbox REEL: Seatbelt = S1/S2, jamais S3/S4. auth oauth-local admissible seulement sur worker local de confiance (docs/08). `backend` nomme le mecanisme, comme `sandboxBackend` de canterel l'ecrit reellement sur macOS: sans lui, la decision 3 de l'ADR 0035 n'a pas de troisieme terme et aucune attestation ne peut valoir pour ce worker (W5.ag)."
   }
 }

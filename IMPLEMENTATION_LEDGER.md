@@ -2452,3 +2452,47 @@ une assertion vérifie que les deux empreintes diffèrent avant que le refus soi
 **Prochain item.** `W20.ac` est clos par cette tranche. La frontière de `docs/10` redevient `W2.27`
 — les artefacts, l'`EpistemicCommit` et le compteur d'usage, qui attendent une session qui produise
 quelque chose, donc un hôte annonçant un modèle — et `W12.d`.
+
+## 2026-09-01 — W5.ag.1 — Le SDK relu porte les deux motifs de mécanisme
+
+**Périmètre.** `backend/cli/src/locus/lep/generated.ts`,
+`backend/cli/test/locus/fixtures/manifest-macos.json`, `backend/cli/src/locus/lep/PINNED.json`.
+Aucun code écrit ici : les deux fichiers sont des copies épinglées, recopiées à l'octet près —
+`REWRITES` les déclare sans réécriture — et le pin enregistre les nouvelles empreintes.
+
+**Ce qui a bougé en amont.** `locusolus` `W5.ag` rend décidable la décision 3 de l'ADR 0035 : une
+attestation de sandbox ne vaut pour un worker que si le mécanisme est un des siens. Deux
+conséquences traversent le SDK généré :
+
+1. `Reason` gagne `mechanism_not_employed` et `mechanism_unresolved`. Ils ne remplacent pas
+   `level_not_attested` — ils le complètent, parce que « prouvé, mais pour un autre mécanisme »
+   envoie lancer une **autre** campagne là où « jamais prouvé » envoie lancer la première.
+2. `LEP_MECHANISMS` entre : le registre des mécanismes que l'amont sait interpréter. Ce n'est pas
+   une énumération du fil — `backend` reste une chaîne libre dans les deux schémas —, donc rien de
+   ce que ce worker émet ne cesse d'être valide.
+
+`schemas/examples/capability-manifest.json`, dont `manifest-macos.json` est la copie, nomme
+désormais `"backend": "seatbelt"`. La fixture était en retard sur son propre émetteur :
+`capability-manifest.ts` écrit ce nom depuis `W2.6`, et le corpus amont ne le portait pas.
+
+**Ce que ce dépôt lit de tout cela : rien, et c'est le point.** Le refus de placement voyage de
+`locus-execd` vers `locusd` ; aucun module de `src/locus/**` ne décode un `AdmissionRefusal`. La
+relecture est donc mécanique, et elle est faite pour la raison que `W0.24` a nommée : une copie qui
+dérive de sa source ne se voit pas d'ici — ce dépôt n'a pas le droit de lire l'amont en CI — et la
+dérive de `W16.d` a vécu des semaines parce que personne ne la mesurait. La garde vit chez le
+producteur ; ici, on tient la copie à jour.
+
+**Un troisième fichier a suivi.** `packages/testing/src/worker.ts` — vendu sous
+`test/locus/harness/worker.ts` — portait une citation `§10.2` pour la politique locale plus
+restrictive, qui est `docs/locus/SPEC_V1.md` §10.3 **ici** et « Garanties » du journal chez l'amont.
+La correction est amont ; la copie la suit, avec sa réécriture d'import déclarée.
+
+**Ce que `PINNED.json` nomme.** Le commit `2229963` est la **révision de branche** de `W5.ag` dans
+`locusolus`, pas encore sa révision de fusion : l'ordre n'est pas libre dans l'autre sens, puisque le
+job `e2e` de l'amont monte ce dépôt à la révision épinglée et y joue `check:worker-pin` en mode
+strict — la relecture doit donc exister **avant** que l'amont fusionne. Le champ est
+documentaire ; ce que la garde compare sont les empreintes, et elles sont celles du contenu, pas
+d'un historique.
+
+**Vérifié.** `bun test test/locus/` — 485 tests, dont les dix de `pin.test.ts` qui rejouent la
+copie et ses réécritures déclarées. `bun run typecheck` sur les sept paquets.
