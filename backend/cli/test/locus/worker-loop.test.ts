@@ -11,6 +11,7 @@ import {
   advance,
   describeOutcome,
   PHASES,
+  REFUSAL_EVENTS,
   REFUSAL_PATH,
   RUN_PATH,
   runLoop,
@@ -20,6 +21,7 @@ import {
   type WorkerPorts,
 } from "../../src/locus/worker-loop.ts"
 import { canTransition } from "../../src/locus/attempt.ts"
+import { LEP_FEATURES } from "../../src/locus/lep/generated.ts"
 import { LocusAttemptPathBroken } from "../../src/locus/errors.ts"
 import { sessionOpener, sessionTitle } from "../../src/locus/session-open.ts"
 
@@ -146,6 +148,64 @@ describe("la boucle du worker — le test de sortie de W2.20", () => {
     expect(refuse.state).toBe("rejected")
     expect(refuse.phases).toEqual(["claim"])
     expect(refuse.refusal.code.length).toBeGreaterThan(0)
+  })
+
+  /**
+   * **Un refus est rapporté au plan de contrôle — mais seulement si la feature a été accordée.**
+   *
+   * Le test de sortie de `W19.c.2`, et il tient les **deux** sens parce que l'ADR 0037 l'exige.
+   *
+   * Le sens positif : sans cet envoi, la mission reste sous bail jusqu'à expiration et « le worker a
+   * refusé » se confond avec « le worker est mort ». Le sens négatif est celui qui porte la garantie :
+   * `task.refused` est un membre **neuf** d'une énumération fermée, et l'ADR 0037 n'en autorise
+   * l'entrée que gardée. Une garde qui ne dirait que « émis quand accordée » passerait aussi sur un
+   * émetteur qui émet toujours — et un plan de contrôle plus ancien recevrait une valeur qu'il ne
+   * sait pas lire, sans savoir qu'il vient de manquer un refus.
+   *
+   * Le troisième cas n'est pas décoratif : un port `granted` **absent** vaut « aucune feature », et
+   * non « toutes ». C'est l'interdit 4 de l'ADR 0017, et c'est le défaut qu'un worker mal assemblé
+   * rencontrera.
+   */
+  test("un refus est rapporté si et seulement si la feature a été accordée", async () => {
+    const mission = fixture<MissionEnvelope>("mission-refused.json")
+    const tour = async (granted?: () => readonly string[]) => {
+      const emis: Event[] = []
+      const verdict = await runLoop(
+        ports({
+          claim: async () => ({ mission, lease: lease(mission, 1) }),
+          manifest: () => fixture<CapabilityManifest>("manifest-macos.json"),
+          emit: async (events) => {
+            emis.push(...events)
+          },
+          ...(granted === undefined ? {} : { granted }),
+        }),
+      )
+      expect(verdict.status).toBe("refused")
+      return emis
+    }
+
+    const accordee = await tour(() => [REFUSAL_EVENTS])
+    expect(accordee).toHaveLength(1)
+    expect(accordee[0]?.event_type).toBe("task.refused")
+    expect(accordee[0]?.task_id).toBe(mission.task_id)
+    // Le code et les détails sont canoniques ; le message est le confort humain.
+    expect((accordee[0]?.payload as { code: string }).code.length).toBeGreaterThan(0)
+    expect((accordee[0]?.payload as { details: unknown }).details).toBeDefined()
+
+    expect(await tour(() => ["late-results"])).toEqual([])
+    expect(await tour()).toEqual([])
+  })
+
+  /**
+   * **La feature que ce module garde est celle que le registre définit.**
+   *
+   * Le nom est écrit ici plutôt qu'importé, parce que `LEP_FEATURES` porte ce que le **protocole**
+   * définit et que ce module a besoin de celle qu'il émet. Les deux doivent rester d'accord, et une
+   * confrontation vaut mieux qu'une supposition : un nom qui divergerait ne serait jamais accordé,
+   * donc l'événement ne partirait jamais, **en silence**.
+   */
+  test("le nom de la feature gardée est celui du registre", () => {
+    expect(Object.keys(LEP_FEATURES)).toContain(REFUSAL_EVENTS)
   })
 
   /**
