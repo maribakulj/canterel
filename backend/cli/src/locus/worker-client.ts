@@ -240,6 +240,14 @@ export type ClientInput = {
   readonly manifest: WorkerPorts["manifest"]
   readonly tools: WorkerPorts["tools"]
   readonly openSession: WorkerPorts["openSession"]
+  /**
+   * Ce que le handshake a accordé — `W19.c`, ADR 0037.
+   *
+   * **Passé** comme `manifest` et `tools`, et pour la même raison : la négociation est le fait de
+   * `registration.ts`, et ce module ne connaît que le transport. Absent, la boucle n'émet aucune
+   * valeur gardée — l'interdit 4 de l'ADR 0017 refuse qu'une capacité négociée soit présumée.
+   */
+  readonly granted?: WorkerPorts["granted"]
   readonly timeoutMs?: number
   /**
    * D'où vient la clé neuve de la réclamation — `W2.26`.
@@ -283,6 +291,7 @@ export function workerPorts(input: ClientInput): WorkerPorts {
     manifest: input.manifest,
     tools: input.tools,
     openSession: input.openSession,
+    ...(input.granted === undefined ? {} : { granted: input.granted }),
     claim: async () => {
       // Le manifeste part **à chaque réclamation**, et non une fois au handshake — `W20.q`.
       //

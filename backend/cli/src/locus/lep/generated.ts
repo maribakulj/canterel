@@ -39,6 +39,27 @@ export type ContainmentResult = "blocked" | "allowed" | "not-run";
 export type LimitResult = "enforced" | "unenforced" | "not-run";
 
 /**
+ * Les codes de refus d'admission **du worker** — `repos/canterel/SPEC_V1.md` §10.2, « Refus structuré ». À ne pas confondre avec les motifs de refus de placement du **broker**, que `admission-refusal.schema.json` porte et qui viennent de SPEC_V1 §12.2 : les deux répondent à des questions différentes, l'un « ce worker-ci ne peut pas », l'autre « aucun hôte ne convient ». Énumération **neuve**, donc l'interdit 3 de l'ADR 0017 ne mord pas dessus.
+ *
+ * L'ordre est celui du texte de §10.2. « Le message humain est secondaire ; le code et les détails structurés sont canoniques » — c'est pourquoi `code` et `details` sont obligatoires et `message` ne l'est pas.
+ */
+export type RefusalCode =
+  | "unsupported_protocol"
+  | "invalid_signature"
+  | "capability_missing"
+  | "model_unavailable"
+  | "tool_forbidden"
+  | "sandbox_unavailable"
+  | "network_policy_unsupported"
+  | "data_locality_violation"
+  | "confidentiality_unsupported"
+  | "resource_exhausted"
+  | "budget_unenforceable"
+  | "deadline_impossible"
+  | "worker_draining"
+  | "local_policy_denied";
+
+/**
  * Références à des artefacts, par identifiant et hash — la provenance passe par le contenu, pas par le nom.
  */
 export type Refs = readonly RefsItem[];
@@ -664,7 +685,11 @@ export type SandboxAttestation = {
 export type Event = {
   readonly protocol: ProtocolVersion;
   /**
-   * Fermé exprès, contrairement aux documents. Un type d'événement inconnu n'est pas un champ qu'on peut ignorer : le consommateur ne saura ni quoi en faire ni s'il vient de rater quelque chose. Un nouveau type est un ajout mineur qui met à jour cette liste.
+   * Fermé exprès, contrairement aux documents. Un type d'événement inconnu n'est pas un champ qu'on peut ignorer : le consommateur ne saura ni quoi en faire ni s'il vient de rater quelque chose.
+   *
+   * **Un membre n'entre donc que gardé par une feature négociée du même mineur** — ADR 0037. La phrase précédente de cette description disait « un nouveau type est un ajout mineur qui met à jour cette liste », ce qui est exactement ce que l'interdit 3 de l'ADR 0017 refuse, et elle a été corrigée avec `W19.c`. La garde est ce qui réconcilie les deux textes : un pair qui n'a pas négocié la feature ne reçoit jamais la valeur, donc la faute que l'interdit protège — manquer quelque chose sans le savoir — ne peut pas se produire. Ce qui la rend solide plutôt que pieuse est l'interdit 4 du même ADR : aucune feature n'est présumée.
+   *
+   * `task.refused` est le premier membre entré sous cette règle, gardé par `refusal-events`.
    */
   readonly event_type:
     | "worker.registered"
@@ -682,7 +707,8 @@ export type Event = {
     | "attempt.completed"
     | "attempt.failed"
     | "attempt.orphaned"
-    | "epistemic_commit.submitted";
+    | "epistemic_commit.submitted"
+    | "task.refused";
   /**
    * Monotone par connexion. C'est ce qui permet l'acquittement et la reprise de stream (§12.4) : sans lui, « rien perdu, rien dupliqué » n'est pas vérifiable.
    */
@@ -1105,6 +1131,10 @@ export const LEP_FEATURES = {
    * Le harnais déclare les sous-agents internes d'un attempt : qu'ils ont existé, leur classe de cognition, leur coût et leur résultat. **Facultative** au sens strict — un harnais qui ne subdivise pas n'a rien à déclarer, et l'obliger à déclarer « aucun » ferait payer la fonctionnalité à ceux qui ne l'utilisent pas. Ce qu'elle n'ouvre pas : le contexte et le raisonnement des sous-agents, que l'invariant 11 borne et que les trois classes de lecteurs de l'ADR 0027 gouvernent seules.
    */
   "subagent-visibility": "1.1",
+  /**
+   * Le worker fait remonter ses refus d'admission comme événements, sous `task.refused`. **Facultative parce qu'elle doit l'être** : `task.refused` est un membre neuf d'une énumération fermée, et l'ADR 0037 n'en autorise l'entrée que gardée par une feature négociée du même mineur — un pair qui ne l'a pas accordée ne reçoit jamais la valeur, donc ne peut pas manquer ce qu'il ne connaît pas. Ce qu'elle change quand elle est accordée : un refus cesse d'être muet. Sans elle, la boucle du worker refuse et rend la main, la mission reste sous bail jusqu'à expiration, et « le worker a refusé » se confond avec « le worker est mort ».
+   */
+  "refusal-events": "1.1",
 } as const;
 
 export type LepFeature = keyof typeof LEP_FEATURES;

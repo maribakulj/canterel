@@ -41,6 +41,7 @@ import type { CapabilityManifest, ContextView, Event, Lease, MissionEnvelope } f
 import type { ToolDescriptor } from "./tool-policy.ts"
 import { attemptEvent, coalesce } from "./event-bridge.ts"
 import { mapMission, type SessionPlan } from "./session-map.ts"
+import { PROTOCOL_VERSION } from "./protocol.ts"
 
 /** Ce que le plan de contrôle propose : une mission et le bail qui l'autorise. */
 export type Offer = {
@@ -86,6 +87,20 @@ export type WorkerPorts = {
   readonly openSession: (plan: SessionPlan) => Promise<SessionReport>
   /** Faire remonter des événements — `W2.12` les a déjà rendus coalescibles. */
   readonly emit: (events: readonly Event[]) => Promise<void>
+  /**
+   * Les features que le handshake a **accordées** — `W19.c`, ADR 0037.
+   *
+   * Facultatif, et son absence vaut « aucune » plutôt que « toutes ». Ce n'est pas une commodité de
+   * migration : c'est l'interdit 4 de l'ADR 0017, « aucune feature n'est présumée. Une capacité
+   * négociée absente du handshake est absente, jamais activée par défaut parce que le pair est
+   * sûrement récent ». Un port manquant est un handshake dont on ne sait rien, donc rien d'accordé.
+   *
+   * Ce qu'il garde : `task.refused` est un membre neuf d'une énumération fermée, et l'ADR 0037 n'en
+   * autorise l'émission que si le pair a accordé `refusal-events`. Sans cette garde, un plan de
+   * contrôle plus ancien recevrait une valeur qu'il ne sait pas lire — et ne saurait pas qu'il vient
+   * de manquer un refus.
+   */
+  readonly granted?: () => readonly string[]
   /** Rendre le résultat. */
   readonly report: (report: SessionReport, plan: SessionPlan) => Promise<void>
   /** Écrire un point de reprise — `W2.16`. */
@@ -95,6 +110,25 @@ export type WorkerPorts = {
 }
 
 /** Les étapes que la boucle traverse, dans l'ordre, et sous leur nom. */
+/**
+ * La feature qui garde `task.refused` — ADR 0037, et le nom est celui du registre amont.
+ *
+ * Écrit ici plutôt qu'importé du SDK : `LEP_FEATURES` porte les features que le **protocole**
+ * définit, et ce module a besoin de celle qu'il émet, sous son nom. Un test la confronte au registre
+ * plutôt que de les supposer d'accord.
+ */
+export const REFUSAL_EVENTS = "refusal-events"
+
+/**
+ * Ce que le handshake a accordé, ou rien.
+ *
+ * Rien, et non tout : l'interdit 4 de l'ADR 0017 refuse qu'une capacité négociée soit présumée. Un
+ * port absent est un handshake dont on ne sait rien.
+ */
+function granted(ports: WorkerPorts): readonly string[] {
+  return ports.granted?.() ?? []
+}
+
 export const PHASES = ["claim", "plan", "session", "emit", "report"] as const
 
 /** Une étape. */
@@ -162,6 +196,35 @@ export async function runLoop(ports: WorkerPorts): Promise<LoopOutcome> {
     // n'envoient pas chercher au même endroit — l'un un hôte incapable, l'autre un travail qui a
     // mal tourné.
     state = advance(state, "rejected")
+    // **Le refus cesse d'être muet** — `W19.c`. Sans cet envoi, la mission reste sous bail jusqu'à
+    // expiration et « le worker a refusé » se confond avec « le worker est mort », ce qui est la
+    // paire de silences que ce dépôt refuse partout ailleurs.
+    //
+    // Gardé par la feature, jamais émis d'office : `task.refused` est un membre neuf d'une
+    // énumération fermée, et l'ADR 0037 ne l'autorise qu'à cette condition.
+    // Aucune étape n'est poussée : `PHASES` décrit les cinq d'un tour **complet**, et un refus n'en
+    // est pas une sixième — il est l'autre branche. Ce qui est observable est l'événement lui-même,
+    // ce qui est plus fort qu'un nom d'étape : un test qui lirait la phase croirait à l'émission
+    // sans l'avoir vue.
+    if (granted(ports).includes(REFUSAL_EVENTS)) {
+      await ports.emit([
+        {
+          protocol: PROTOCOL_VERSION,
+          event_type: "task.refused",
+          sequence: 0,
+          occurred_at: new Date(ports.now()).toISOString(),
+          idempotency_key: `${offer.mission.task_id}:${offer.lease.attempt}:refused`,
+          task_id: offer.mission.task_id,
+          attempt: offer.lease.attempt,
+          lease_id: offer.lease.lease_id,
+          payload: {
+            code: mapped.refusal.code,
+            details: mapped.refusal.details,
+            message: mapped.refusal.message,
+          },
+        },
+      ])
+    }
     return { status: "refused", refusal: mapped.refusal, phases, state }
   }
   phases.push("plan")

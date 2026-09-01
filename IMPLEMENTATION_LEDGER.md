@@ -2496,3 +2496,40 @@ d'un historique.
 
 **Vérifié.** `bun test test/locus/` — 485 tests, dont les dix de `pin.test.ts` qui rejouent la
 copie et ses réécritures déclarées. `bun run typecheck` sur les sept paquets.
+
+## 2026-09-01 — W19.c.2 — L'émetteur gardé, et le refus cesse d'être muet
+
+**Périmètre.** `backend/cli/src/locus/worker-loop.ts`, `backend/cli/src/locus/worker-client.ts`,
+`backend/cli/src/locus/lep/{generated.ts,PINNED.json}`, `backend/cli/test/locus/worker-loop.test.ts`.
+
+**Ce que la boucle faisait, et qui manquait.** `runLoop` réclamait, `mapMission` refusait, et la
+boucle rendait la main **sans rien dire** : la mission restait sous bail jusqu'à expiration côté
+institution, et « le worker a refusé » se confondait avec « le worker est mort ». `ports.emit`
+existait pourtant déjà et servait deux fois dans la même fonction.
+
+**La garde, et pourquoi elle n'est pas une commodité.** `task.refused` est un membre **neuf** d'une
+énumération fermée. L'ADR 0037 n'en autorise l'entrée que si l'émission est gardée par une feature
+négociée du même mineur, ici `refusal-events` : un plan de contrôle qui ne l'a pas accordée ne reçoit
+jamais la valeur, donc ne peut pas manquer un refus sans le savoir.
+
+Le port `granted` est **facultatif**, et son absence vaut « aucune feature » plutôt que « toutes ».
+C'est l'interdit 4 de l'ADR 0017 pris au mot — « une capacité négociée absente du handshake est
+absente, jamais activée par défaut parce que le pair est sûrement récent » —, et c'est le défaut
+qu'un worker mal assemblé rencontrera : il n'émettra rien, ce qui est le comportement sûr.
+
+**Ce qui a été retiré en cours d'écriture, et le test l'a exigé.** Une première rédaction poussait
+une étape `refuse` dans `PHASES`. Le test de sortie de `W2.20` a rougi, et il avait raison : `PHASES`
+décrit les **cinq** étapes d'un tour complet, et un refus n'en est pas une sixième — il est l'autre
+branche. Ce qui est observable est l'événement lui-même, ce qui est d'ailleurs plus fort qu'un nom
+d'étape : un test qui lirait la phase croirait à l'émission sans l'avoir vue.
+
+**Tests — les deux sens, parce que l'ADR 0037 l'exige.** Émis quand la feature est accordée ; **rien**
+quand une autre feature l'est ; **rien** quand le port est absent. Une garde qui ne dirait que le
+premier passerait aussi sur un émetteur qui émet toujours. Un quatrième confronte le nom de la
+feature au registre du SDK plutôt que de supposer les deux d'accord : un nom qui divergerait ne
+serait jamais accordé, donc l'événement ne partirait jamais, **en silence**.
+
+**Re-vendoring.** `generated.ts` seul — le SDK amont porte désormais `task.refused` et
+`refusal-events`. Le pin nomme `235fb3f`, révision de branche de `W19.c.1` : l'ordre de l'ADR 0033
+veut que la relecture existe ici avant que le pin avance là-bas, et la révision de fusion n'existe
+donc pas encore.
