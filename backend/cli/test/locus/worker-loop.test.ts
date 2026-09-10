@@ -61,6 +61,7 @@ function report(sessionId: string): SessionReport {
   return {
     sessionId,
     events: [],
+    usages: [],
     output: { summary: "fait" },
   }
 }
@@ -368,7 +369,7 @@ describe("la boucle du worker — le test de sortie de W2.20", () => {
 
     const emis: (readonly Event[])[] = []
     const port = ports({
-      openSession: async () => ({ sessionId: "ses_02", events: produits, output: { summary: "fait" } }),
+      openSession: async () => ({ sessionId: "ses_02", events: produits, usages: [], output: { summary: "fait" } }),
       emit: async (events) => {
         emis.push(events)
       },

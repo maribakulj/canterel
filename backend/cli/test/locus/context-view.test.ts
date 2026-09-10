@@ -99,7 +99,7 @@ function worker(
     tools: () => [],
     openSession: async () => {
       vu.sessions += 1
-      return { sessionId: "ses_01", events: [], output: {} }
+      return { sessionId: "ses_01", events: [], usages: [], output: {} }
     },
   })
   return { tour: () => runLoop(ports), vu }

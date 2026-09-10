@@ -97,6 +97,11 @@ export const LOCUS_SEAMS: readonly { path: string; reason: string }[] = [
     reason:
       "La commande `canterel worker` (W2.3) : import dynamique de `@/locus` dans le handler, donc hors du graphe de démarrage. Mince exprès — ce qui est dans ce fichier est payé à chaque synchronisation amont.",
   },
+  {
+    path: "src/cli/cmd/worker-run.ts",
+    reason:
+      "Le pilote de session : il fait travailler la session d'une mission et oppose son budget, donc il connaît `@/locus/usage-meter` et `@/session/prompt` — les deux moitiés que l'ADR 0010 sépare. Il n'est atteint que par un `await import` depuis le handler de `worker.ts`, donc hors du graphe de démarrage comme elle. Un fichier séparé plutôt qu'un ajout dans la couture existante, précisément parce qu'elle est mince exprès : la grossir ferait payer ce code à chaque synchronisation amont, alors qu'il ne touche à rien de ce que l'amont réécrit.",
+  },
 ]
 
 function isSeam(file: string): boolean {

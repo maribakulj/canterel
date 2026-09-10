@@ -2,7 +2,14 @@ import { admit, type Refusal } from "./admission.ts"
 import { selectOverlay, type AgentOverlay } from "./agent-overlay.ts"
 import { modelUnavailableReason, usableModels, type ModelChoice } from "./model-policy.ts"
 import { partitionTools, type ToolDescriptor } from "./tool-policy.ts"
-import type { CapabilityManifest, DataClass, MissionEnvelope, SandboxLevel } from "./lep/generated.ts"
+import type {
+  CapabilityManifest,
+  DataClass,
+  MissionEnvelope,
+  MissionEnvelopeBudget,
+  SandboxLevel,
+} from "./lep/generated.ts"
+import type { Budget } from "./usage-meter.ts"
 
 /**
  * De la mission à la session — `SPEC_V1.md` §30.2, la couche d'adaptation vers l'amont.
@@ -43,6 +50,31 @@ export type SessionPlan = {
    * dire après coup à quoi une session avait effectivement droit.
    */
   readonly sandboxLevel: SandboxLevel
+  /**
+   * Ce que la mission demande, en clair — §15.4 `objective`.
+   *
+   * Le plan le portait déjà pour tout sauf ça : les modèles, les outils, le confinement, la vue de
+   * contexte. Il ne portait pas **la question**, et une session ouverte sans elle est une session
+   * qui n'a rien à faire, et c'est exactement ce qu'ouvrait `sessionOpener` : une session sans
+   * question, dont le rapport ne portait que son propre identifiant.
+   */
+  readonly objective: {
+    readonly statement: string
+    readonly successConditions: readonly string[]
+  }
+  /**
+   * Les bornes de dépense, traduites dans les dimensions de `UsageMeter`.
+   *
+   * Traduites plutôt que transportées telles quelles : `MissionEnvelopeBudget` nomme
+   * `max_model_calls`, le compteur nomme `model_calls`, et laisser les deux vocabulaires se
+   * rencontrer au point d'usage ferait porter la conversion à chaque appelant — donc la ferait
+   * diverger.
+   *
+   * Invariant 6 : les trois premières sont **obligatoires** dans l'enveloppe, « une seule d'entre
+   * elles laissée libre suffit à rendre le dépassement impossible à constater ». Le plan les porte
+   * donc toutes les trois, jamais partiellement.
+   */
+  readonly budget: Budget
 }
 
 export type MapInput = {
@@ -130,7 +162,32 @@ export function mapMission(input: MapInput): MapResult {
       blindReview: reviewPolicy === "independent-blind",
       contextViewId: readViewId(mission["context_view"]),
       sandboxLevel: admission.appliedLevel,
+      objective: {
+        statement: input.mission.objective.statement,
+        successConditions: input.mission.objective.success_conditions,
+      },
+      budget: budgetOf(input.mission.budget),
     },
+  }
+}
+
+/**
+ * Les bornes de l'enveloppe, dans les dimensions du compteur.
+ *
+ * `max_cost_micros` est **facultatif** dans l'enveloppe et le reste ici : une dimension absente du
+ * budget n'est pas mesurée, et lui donner un plafond par défaut inventerait une borne que personne
+ * n'a demandée. Les trois autres sont obligatoires, donc toujours présentes.
+ *
+ * Le coût passe des micros à l'unité de devise, parce que c'est ce que `cost` compte du côté du
+ * compteur ; mélanger les deux échelles ferait un plafond un million de fois trop haut, qui ne se
+ * déclencherait jamais et dont personne ne verrait qu'il ne se déclenche pas.
+ */
+export function budgetOf(budget: MissionEnvelopeBudget): Budget {
+  return {
+    model_calls: budget.max_model_calls,
+    input_tokens: budget.max_input_tokens,
+    output_tokens: budget.max_output_tokens,
+    ...(budget.max_cost_micros === undefined ? {} : { cost: budget.max_cost_micros / 1_000_000 }),
   }
 }
 

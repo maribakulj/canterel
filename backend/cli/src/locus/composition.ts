@@ -42,7 +42,7 @@ import type { FetchLike } from "./connection.ts"
 import { loadIdentity } from "./identity.ts"
 import { locusStateDir } from "./registration.ts"
 import { ResumeStore } from "./resume-store.ts"
-import { sessionOpener, type SessionCreator } from "./session-open.ts"
+import { sessionOpener, type SessionCreator, type SessionRunner } from "./session-open.ts"
 import { workerPorts } from "./worker-client.ts"
 import type { CapabilityManifestModelsItem } from "./lep/generated.ts"
 import type { WorkerPorts } from "./worker-loop.ts"
@@ -76,6 +76,15 @@ export type Surroundings = {
   readonly directory: () => string
   /** Ouvrir une session amont. */
   readonly create: SessionCreator
+  /**
+   * Faire **travailler** la session ouverte, et rendre ce qu'elle a dépensé.
+   *
+   * Optionnel, et son absence veut dire « ouvrir sans rien demander » — l'ancien comportement,
+   * qu'un assemblage de test garde volontiers. Elle ne veut pas dire « exécuter gratuitement » :
+   * une session qui n'a rien fait rend `usages: []`, ce qui est un compte, et le point de contrôle
+   * le distingue désormais d'un budget qu'on n'aurait pas mesuré.
+   */
+  readonly run?: SessionRunner
   /**
    * Les outils déclarés par cette installation.
    *
@@ -193,6 +202,10 @@ export async function assemblePorts(config: LocusConfig, surroundings: Surroundi
       openSession: sessionOpener({
         directory: surroundings.directory(),
         create: surroundings.create,
+        // Facultatif : sans lui la session s'ouvre et rien n'est demandé, ce qui reste le
+        // comportement d'un assemblage de test. C'est la couture qui le fournit, parce qu'elle
+        // seule connaît `src/session/**`.
+        ...(surroundings.run === undefined ? {} : { run: surroundings.run }),
       }),
     }),
   }

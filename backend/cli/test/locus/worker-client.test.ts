@@ -92,7 +92,7 @@ function client(
     store: store(),
     manifest: () => MANIFEST(),
     tools: () => [],
-    openSession: async (): Promise<SessionReport> => ({ sessionId: "ses_01", events: [], output: {} }),
+    openSession: async (): Promise<SessionReport> => ({ sessionId: "ses_01", events: [], usages: [], output: {} }),
     ...over,
   })
 }
@@ -504,7 +504,7 @@ describe("la boucle passe la conformance de W0.9", () => {
       async (url) =>
         estUneVue(url) ? new Response(JSON.stringify(vue), { status: 200 }) : new Response("{}", { status: 200 }),
       {
-        openSession: async () => ({ sessionId: "ses_conformance", events: [], output: {} }),
+        openSession: async () => ({ sessionId: "ses_conformance", events: [], usages: [], output: {} }),
       },
     )
 
@@ -631,7 +631,7 @@ describe("chaque enveloppe porte une clé d'idempotence — §15.2, W2.26", () =
     const { envoyes, fetchLike } = espion()
     const ports = client(fetchLike, { newKey: () => "jamais-utilisee-ici" })
     const plan = { task_id: "task_1", attempt_id: "att_1" } as Parameters<typeof ports.report>[1]
-    const rapport: SessionReport = { sessionId: "ses_01", events: [], output: {} }
+    const rapport: SessionReport = { sessionId: "ses_01", events: [], usages: [], output: {} }
 
     await ports.report(rapport, plan)
     await ports.report(rapport, plan)

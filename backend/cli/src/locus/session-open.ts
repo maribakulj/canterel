@@ -21,6 +21,7 @@
 
 import type { SessionPlan } from "./session-map.ts"
 import type { SessionReport } from "./worker-loop.ts"
+import type { Usage } from "./usage-meter.ts"
 
 /**
  * Ce que l'amont doit savoir faire pour qu'une session s'ouvre.
@@ -33,6 +34,30 @@ export type SessionCreator = (input: {
   readonly title: string
   readonly directory: string
 }) => Promise<{ readonly id: string }>
+
+/**
+ * Ce qui fait travailler une session ouverte, et rend ce qu'elle a dépensé.
+ *
+ * # La couture reste une frontière de données — ADR 0010
+ *
+ * Le plan entre, des observations sortent. Aucun handle de session, aucun message, aucun objet
+ * amont : `src/locus/**` n'importe rien de `src/session/**`, et c'est cette règle qui permet à une
+ * refonte amont de ne rien casser ici.
+ *
+ * # C'est l'amont qui arrête, et il a de quoi
+ *
+ * Le plan porte `budget`. §17.4 veut un « arrêt **sûr** au plafond », ce qui suppose de décider
+ * **entre** deux appels de modèle — un endroit auquel cette couche n'a pas accès, puisqu'elle ne
+ * voit que le début et la fin. L'arrêt appartient donc à l'implémentation, et ce qui remonte ici
+ * est le compte de ce qui a été dépensé, pas la permission de le dépenser.
+ */
+export type SessionRunner = (input: {
+  readonly sessionId: string
+  readonly plan: SessionPlan
+}) => Promise<{
+  readonly output: Record<string, unknown>
+  readonly usages: readonly Usage[]
+}>
 
 /**
  * Le titre que porte une session ouverte pour une mission.
@@ -57,16 +82,32 @@ export function sessionTitle(plan: SessionPlan): string {
 export function sessionOpener(input: {
   readonly create: SessionCreator
   readonly directory: string
+  /**
+   * Ce qui fait **travailler** la session.
+   *
+   * Facultatif, et c'est ce qui garde ce module utilisable sans amont : sans lui, la session est
+   * ouverte et rien n'est demandé, ce qui était le comportement entier jusqu'ici. La différence
+   * avec avant est qu'elle se lit maintenant dans le rapport — `usages: []` sur une session qui n'a
+   * rien dépensé, contre l'absence de la question.
+   */
+  readonly run?: SessionRunner
 }): (plan: SessionPlan) => Promise<SessionReport> {
   return async (plan) => {
     const created = await input.create({ title: sessionTitle(plan), directory: input.directory })
+    if (!input.run) {
+      return {
+        sessionId: created.id,
+        events: [],
+        usages: [],
+        output: { plan_task_id: plan.task_id, plan_attempt_id: plan.attempt_id },
+      }
+    }
+    const done = await input.run({ sessionId: created.id, plan })
     return {
       sessionId: created.id,
       events: [],
-      // Ce que la session a produit se remplira quand `W2.12` sera branché sur un vrai fil ; le
-      // laisser vide est exact aujourd'hui, et un champ absent aurait laissé croire que la question
-      // ne se pose pas. La session, elle, est bien ouverte — `sessionId` l'atteste.
-      output: { plan_task_id: plan.task_id, plan_attempt_id: plan.attempt_id },
+      usages: done.usages,
+      output: { plan_task_id: plan.task_id, plan_attempt_id: plan.attempt_id, ...done.output },
     }
   }
 }

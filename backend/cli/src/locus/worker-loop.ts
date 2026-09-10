@@ -40,7 +40,8 @@ import type { Refusal } from "./admission.ts"
 import type { CapabilityManifest, ContextView, Event, Lease, MissionEnvelope } from "./lep/generated.ts"
 import type { ToolDescriptor } from "./tool-policy.ts"
 import { attemptEvent, coalesce } from "./event-bridge.ts"
-import { mapMission, type SessionPlan } from "./session-map.ts"
+import { budgetOf, mapMission, type SessionPlan } from "./session-map.ts"
+import { UsageMeter, type Usage } from "./usage-meter.ts"
 import { PROTOCOL_VERSION } from "./protocol.ts"
 
 /** Ce que le plan de contrôle propose : une mission et le bail qui l'autorise. */
@@ -59,6 +60,18 @@ export type Offer = {
 export type SessionReport = {
   readonly sessionId: string
   readonly events: readonly Event[]
+  /**
+   * Ce que la session a **dépensé** — §17.2, des observations et jamais un solde.
+   *
+   * Traversent la couture comme le reste : ce sont des données sérialisables, pas un compteur
+   * vivant. Le compteur se reconstruit de ce côté-ci, à partir du budget que le plan porte, et
+   * c'est ce qui permet à la boucle de décider sans rien savoir de l'amont.
+   *
+   * Une liste **vide** dit « cette session n'a rien dépensé », ce qui est un fait. Le point de
+   * contrôle, lui, écrivait `budget_spent: {}` **en dur** : rien n'y distinguait « rien dépensé »
+   * de « rien compté », et les deux se lisaient comme un budget intact.
+   */
+  readonly usages: readonly Usage[]
   /** Ce que la session a produit, opaque ici : cette boucle le transporte, elle ne l'interprète pas. */
   readonly output: Record<string, unknown>
 }
@@ -337,12 +350,31 @@ function checkpointFor(input: {
     context_hash: input.mission.context_view.hash,
     worktree: {},
     partial_artifacts: [],
-    budget_spent: {},
+    // Ce que la session a réellement dépensé, et non plus `{}` en dur. Le compteur se construit sur
+    // le budget de la mission : sans lui, `totals()` compterait juste, mais rien ne dirait par
+    // rapport à quoi — et c'est le rapport au plafond qui décide d'un arrêt.
+    budget_spent: spent(input.mission, input.report.usages),
     next_operations: [],
     unserializable: [],
     through_sequence: input.report.events.length,
     taken_at: new Date(input.at).toISOString(),
   }
+}
+
+/**
+ * La dépense d'une session, rapportée aux dimensions que la mission borne.
+ *
+ * # Pourquoi passer par le compteur plutôt que sommer ici
+ *
+ * `UsageMeter.totals` fait une chose qu'une somme naïve ne fait pas : **le facturé remplace
+ * l'estimé** pour une même requête fournisseur. Additionner les deux compterait deux fois la même
+ * dépense, et un budget épuisé au double de sa vitesse arrêterait des missions qui avaient encore
+ * de la marge. Refaire ce calcul ici en ferait une seconde vérité.
+ */
+function spent(mission: MissionEnvelope, usages: readonly Usage[]): Record<string, number> {
+  const meter = new UsageMeter(budgetOf(mission.budget))
+  for (const usage of usages) meter.record(usage)
+  return meter.totals() as Record<string, number>
 }
 
 /**

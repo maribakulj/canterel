@@ -123,6 +123,7 @@ function reportLocusError(locus: typeof import("@/locus"), error: unknown): bool
 async function surroundingsFor(locus: typeof import("@/locus")): Promise<Parameters<typeof locus.assemblePorts>[1]> {
   const { Global } = await import("@/global")
   const { Session } = await import("@/session")
+  const { sessionRunner } = await import("./worker-run.ts")
   const { Instance } = await import("@/project/instance")
 
   return {
@@ -134,6 +135,10 @@ async function surroundingsFor(locus: typeof import("@/locus")): Promise<Paramet
     // `canterel worker --locus <url>`, là où `W2.3` promet un constat.
     directory: () => Instance.directory,
     create: async (input) => Session.createNext({ title: input.title, directory: input.directory }),
+    // Ce qui fait travailler la session, et ce qui **oppose** le budget de la mission : c'est ici
+    // que les deux mondes se touchent, et le seul endroit qui a le droit de les connaître tous les
+    // deux. Le point de contrôle rendait `budget_spent: {}` en dur tant que ce port n'existait pas.
+    run: sessionRunner(),
     // Aucun outil déclaré tant que l'inventaire d'outils n'est pas branché : une liste inventée
     // ferait admettre des missions que cette installation ne sait pas honorer.
     tools: () => [],
