@@ -71,7 +71,51 @@ export function isCrossOrigin(
   origin: string | undefined,
   secFetchSite: string | undefined,
   extraWhitelist: string[] = [],
+  navigation?: { mode?: string; dest?: string; method?: string },
 ): boolean {
   if (origin !== undefined) return !isAllowedOrigin(origin, extraWhitelist)
-  return secFetchSite === "cross-site"
+  if (secFetchSite !== "cross-site") return false
+  return !isTopLevelDocumentNavigation(navigation)
+}
+
+/**
+ * A cross-site *navigation* to the UI is a person following a link, not an attack.
+ *
+ * Rejecting it broke the ordinary flow: the CLI prints `http://localhost:4096`, the
+ * browser opens it from whatever page was in front (a new tab, a terminal's link
+ * handler, a chat window), and that navigation carries `Sec-Fetch-Site: cross-site`
+ * with no `Origin` — so the guard answered `{"error":"Forbidden origin"}` and the
+ * workspace never loaded. Typing the same URL by hand worked, which made the failure
+ * look random.
+ *
+ * The exemption is narrow, and each condition removes one attack:
+ *
+ * - **`method` is GET/HEAD** — a navigation cannot be a state change. Every mutating
+ *   route is POST/PUT/DELETE, and a cross-site form post *does* carry `Origin`, so it
+ *   still hits the check above.
+ * - **`dest` is `document`** — this is the top-level page, not a `fetch`, an `img`, a
+ *   `script` or a WebSocket upgrade. Sub-resource and upgrade requests keep the old,
+ *   strict answer.
+ * - **`mode` is `navigate`** — set by the browser itself for address-bar and link
+ *   navigations; script-initiated `fetch` cannot forge it, the `Sec-Fetch-*` family
+ *   being forbidden header names.
+ *
+ * What it does **not** open: an attacker page that navigates the user here replaces its
+ * own tab, and the same-origin policy still forbids it from reading a single byte of
+ * what loads. DNS rebinding remains barred by `isAllowedHost` — the `Host` header must
+ * be loopback, and browsers do not let a page forge it.
+ *
+ * A client that sends no `Sec-Fetch-*` at all — curl, a script — is unchanged: `mode`
+ * and `dest` are then undefined, the exemption does not apply, and the loopback bind is
+ * what gates it, exactly as before.
+ */
+function isTopLevelDocumentNavigation(navigation?: {
+  mode?: string
+  dest?: string
+  method?: string
+}): boolean {
+  if (!navigation) return false
+  const method = (navigation.method ?? "").toUpperCase()
+  if (method !== "GET" && method !== "HEAD") return false
+  return navigation.mode === "navigate" && navigation.dest === "document"
 }

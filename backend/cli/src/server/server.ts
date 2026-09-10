@@ -149,7 +149,13 @@ export namespace Server {
           // 2. Cross-origin defense (covers WebSocket upgrades, which CORS does
           //    not). A foreign Origin — or a cross-site fetch that omits Origin
           //    (e.g. a no-cors GET) — is rejected. See isCrossOrigin.
-          if (isCrossOrigin(c.req.header("origin"), c.req.header("sec-fetch-site"), _corsWhitelist)) {
+          if (
+            isCrossOrigin(c.req.header("origin"), c.req.header("sec-fetch-site"), _corsWhitelist, {
+              mode: c.req.header("sec-fetch-mode"),
+              dest: c.req.header("sec-fetch-dest"),
+              method: c.req.method,
+            })
+          ) {
             return c.json({ error: "Forbidden origin" }, 403)
           }
           return next()
