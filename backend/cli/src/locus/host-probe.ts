@@ -38,6 +38,7 @@
  * sans avoir besoin d'un hôte cassé sous la main.
  */
 
+import { Sandbox } from "@/sandbox/sandbox"
 import type { HostProbe } from "./capability-manifest.ts"
 
 /** Le résultat d'un lancement : abouti, refusé, ou pas tenté. */
@@ -54,6 +55,13 @@ export type Sensors = {
   which(binary: string): string | null
   launch(command: readonly string[]): Launch
   freeBytes(path: string): number | undefined
+  /**
+   * Ce processus peut-il subdiviser son propre cgroup, et y écrire des bornes ?
+   *
+   * `undefined` quand la question n'a pas pu être posée. Comme `launch`, c'est un capteur et non un
+   * verdict : il essaie, et rend ce que la machine a répondu.
+   */
+  bounds(): boolean | undefined
   readonly cpuCores: number
   readonly memoryMb: number
   readonly platform: string
@@ -103,12 +111,16 @@ export function freeDiskMb(sensors: Sensors, path: string): number | undefined {
 export function probeFrom(sensors: Sensors, path: string): HostProbe {
   const disk = freeDiskMb(sensors, path)
   const bwrap = bubblewrapStarts(sensors)
+  // Mesuré une fois, comme `bwrap` : la réponse ne change pas d'un appel à l'autre, et la sonde a
+  // un effet de bord — elle écrit réellement dans `cgroup.subtree_control`.
+  const bounded = sensors.bounds()
   return {
     platform: sensors.platform,
     arch: sensors.arch,
     ...(sensors.release ? { release: sensors.release } : {}),
     which: (binary) => sensors.which(binary),
     bubblewrapWorks: () => bwrap,
+    boundsResources: () => bounded,
     cpuCores: sensors.cpuCores,
     memoryMb: sensors.memoryMb,
     diskFreeMb: disk,
@@ -147,6 +159,7 @@ export function realSensors(): Sensors {
         return undefined
       }
     },
+    bounds: () => Sandbox.bounds(),
     cpuCores: navigator.hardwareConcurrency,
     memoryMb: Math.round(Number(require("node:os").totalmem()) / 1024 / 1024),
     platform: process.platform,

@@ -42,6 +42,19 @@ export type HostProbe = {
    * tautologie incapable de refuser.
    */
   bubblewrapWorks(): boolean | undefined
+  /**
+   * Vrai quand ce processus peut réellement **borner** les ressources d'une commande.
+   *
+   * `undefined` quand la sonde n'a pas pu conclure, et l'absence ne donne jamais la capacité — même
+   * règle que `bubblewrapWorks`, et pour la même raison : c'est le nom du mécanisme qui en dépend,
+   * et un nom de mécanisme décide d'un placement.
+   *
+   * Deux faits distincts s'y cachent, et le second est celui qui compte : que l'hôte **délègue** des
+   * contrôleurs se lit dans `cgroup.controllers` ; que ce processus-ci puisse écrire dans
+   * `cgroup.subtree_control` ne se vérifie qu'en l'essayant. Un `session.scope` et un runner CI
+   * délèguent tous deux et refusent tous deux l'écriture.
+   */
+  boundsResources(): boolean | undefined
   readonly cpuCores: number
   readonly memoryMb: number
   /**
@@ -89,8 +102,19 @@ export function sandboxLevels(probe: HostProbe): readonly SandboxLevel[] {
   return sandboxBackend(probe) === "none" ? ["S1"] : ["S1", "S2"]
 }
 
-/** Le backend d'isolation effectif, ou `"none"`. */
-export function sandboxBackend(probe: HostProbe): "seatbelt" | "bubblewrap" | "none" {
+/**
+ * Le backend d'isolation effectif, ou `"none"`.
+ *
+ * Les noms sont ceux du registre `schemas/lep/1.0/mechanisms.json` chez `locusolus` : c'est sur eux
+ * que le placement rapproche une attestation d'un worker, et une orthographe à nous ferait refuser
+ * un placement légitime sous le motif « je ne sais pas ce que ce nom désigne ».
+ *
+ * `bubblewrap+cgroup` n'est pas un `bubblewrap` amélioré : l'ADR 0036 leur refuse un nom commun
+ * parce qu'ils s'installent différemment et échouent différemment. Une campagne conclue sous l'un
+ * ne vaut rien pour un worker qui emploie l'autre — c'est **pourquoi** la distinction est annoncée
+ * plutôt que masquée derrière un seul mot.
+ */
+export function sandboxBackend(probe: HostProbe): "seatbelt" | "bubblewrap" | "bubblewrap+cgroup" | "none" {
   if (probe.platform === "darwin") return probe.which("sandbox-exec") ? "seatbelt" : "none"
   if (probe.platform === "linux") {
     if (!probe.which("bwrap")) return "none"
@@ -100,7 +124,8 @@ export function sandboxBackend(probe: HostProbe): "seatbelt" | "bubblewrap" | "n
     // La comparaison est stricte : `undefined` — la sonde n'a pas conclu — ne donne pas la capacité.
     // Écrit `probe.bubblewrapWorks() ? …`, une ignorance se rangerait du bon côté par accident,
     // ce qui est vrai aujourd'hui et cesserait de l'être au premier changement de convention.
-    return probe.bubblewrapWorks() === true ? "bubblewrap" : "none"
+    if (probe.bubblewrapWorks() !== true) return "none"
+    return probe.boundsResources() === true ? "bubblewrap+cgroup" : "bubblewrap"
   }
   return "none"
 }
@@ -254,6 +279,7 @@ export function manifestHash(manifest: CapabilityManifest): string {
 export function hostProbe(deps: {
   readonly which: (binary: string) => string | null
   readonly bubblewrapWorks: () => boolean
+  readonly boundsResources: () => boolean
   readonly cpuCores: number
   readonly memoryMb: number
   readonly diskFreeMb: number
@@ -267,6 +293,7 @@ export function hostProbe(deps: {
     ...(deps.release ? { release: deps.release } : {}),
     which: deps.which,
     bubblewrapWorks: deps.bubblewrapWorks,
+    boundsResources: deps.boundsResources,
     cpuCores: deps.cpuCores,
     memoryMb: deps.memoryMb,
     diskFreeMb: deps.diskFreeMb,

@@ -26,6 +26,7 @@ function probeOf(over: Partial<HostProbe> & { binaries?: readonly string[] } = {
     ...(over.release ? { release: over.release } : {}),
     which: over.which ?? ((binary: string) => (binaries.has(binary) ? `/usr/bin/${binary}` : null)),
     bubblewrapWorks: over.bubblewrapWorks ?? (() => true),
+    boundsResources: over.boundsResources ?? (() => false),
     cpuCores: over.cpuCores ?? 8,
     memoryMb: over.memoryMb ?? 16384,
     diskFreeMb: over.diskFreeMb ?? 100_000,
@@ -86,6 +87,34 @@ describe("le niveau annoncé est le niveau réel", () => {
     const probe = probeOf({ binaries: ["bwrap"], bubblewrapWorks: () => false })
     expect(sandboxBackend(probe)).toBe("none")
     expect(sandboxLevels(probe)).toEqual(["S1"])
+  })
+
+  test("le mécanisme composé n'est annoncé que si le bornage marche vraiment", () => {
+    // `bubblewrap` et `bubblewrap+cgroup` sont deux mécanismes, pas deux qualités du même — l'ADR
+    // 0036 leur refuse un nom commun parce qu'une attestation obtenue sous l'un ne vaut rien pour
+    // un worker qui emploie l'autre. Les annoncer indifféremment ferait donc refuser un placement
+    // légitime, ou pire, en accorder un sur une preuve étrangère.
+    const nu = probeOf({ binaries: ["bwrap"] })
+    expect(sandboxBackend(nu)).toBe("bubblewrap")
+
+    const borne = probeOf({ binaries: ["bwrap"], boundsResources: () => true })
+    expect(sandboxBackend(borne)).toBe("bubblewrap+cgroup")
+  })
+
+  test("un bornage indéterminé ne donne pas le mécanisme composé", () => {
+    // `undefined` — la sonde n'a pas pu conclure — n'est ni oui ni non, et l'absence ne donne
+    // jamais la capacité. C'est la même règle que pour `bubblewrapWorks`, et elle compte autant :
+    // le nom annoncé décide d'un placement.
+    const probe = probeOf({ binaries: ["bwrap"], boundsResources: () => undefined })
+    expect(sandboxBackend(probe)).toBe("bubblewrap")
+  })
+
+  test("sans bwrap qui démarre, le bornage ne rattrape rien", () => {
+    // L'ordre des deux barrières compte : un cgroup borne les ressources, il ne confine ni les
+    // montages ni les namespaces. Annoncer `bubblewrap+cgroup` sans bubblewrap promettrait une
+    // isolation dont la moitié n'existe pas.
+    const probe = probeOf({ binaries: ["bwrap"], bubblewrapWorks: () => false, boundsResources: () => true })
+    expect(sandboxBackend(probe)).toBe("none")
   })
 
   test("une plateforme sans backend connu n'invente rien", () => {

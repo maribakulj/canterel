@@ -27,6 +27,7 @@ function probeOf(binaries: readonly string[] = ["sandbox-exec"]): HostProbe {
     arch: "arm64",
     which: (binary) => (present.has(binary) ? `/usr/bin/${binary}` : null),
     bubblewrapWorks: () => false,
+    boundsResources: () => false,
     cpuCores: 8,
     memoryMb: 16384,
     diskFreeMb: 50_000,

@@ -436,7 +436,9 @@ class PythonKernel implements Kernel {
 
   async interrupt() {
     if (!this.proc || !this.busy || !KernelProcessIdentity.matches(this.proc, this.process)) return false
-    if (this.environment?.sandbox.backend === "bubblewrap") {
+    // Les deux mécanismes bubblewrap, borné ou non : l'enveloppeur qui entre dans le cgroup
+    // `exec` bwrap, donc le processus qu'on voit **est** bwrap dans les deux cas.
+    if (this.environment?.sandbox.backend.startsWith("bubblewrap")) {
       return Shell.interruptDescendants(this.proc, { exclude: ["bwrap"] })
     }
     return Shell.interruptTree(this.proc, { detached: process.platform !== "win32" })

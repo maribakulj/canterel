@@ -32,7 +32,16 @@ const log = Log.create({ service: "sandbox" })
  * exfiltration.
  */
 export namespace Sandbox {
-  export type Backend = "seatbelt" | "bubblewrap" | "none"
+  /**
+   * Le mécanisme de confinement, sous le nom du **registre LEP** — `schemas/lep/1.0/mechanisms.json`
+   * chez `locusolus`.
+   *
+   * `bubblewrap` et `bubblewrap+cgroup` ne sont pas deux façons d'écrire la même garantie : le
+   * premier compose des namespaces et des montages, le second borne en plus les ressources. Ils
+   * échouent différemment et s'installent différemment, et l'ADR 0036 leur refuse un nom commun —
+   * une attestation obtenue sous l'un ne vaut pas pour un worker qui emploie l'autre.
+   */
+  export type Backend = "seatbelt" | "bubblewrap" | "bubblewrap+cgroup" | "none"
 
   export interface Policy {
     /** Absolute paths the sandboxed process may write to. */
@@ -115,7 +124,12 @@ export namespace Sandbox {
     if (process.platform === "linux") {
       const bin = Bun.which("bwrap")
       if (!bin) return "none"
-      return probeBubblewrap(bin) ? "bubblewrap" : "none"
+      if (!probeBubblewrap(bin)) return "none"
+      // Le nom suit ce que la machine sait faire, et la seule façon de le savoir est d'essayer :
+      // `bounds()` écrit réellement dans `cgroup.subtree_control`. L'effet de bord — le processus
+      // descend d'un cran dans sa propre hiérarchie — est sans conséquence sur ses limites, et il
+      // est le prix d'une réponse mesurée plutôt que devinée.
+      return bounds() ? "bubblewrap+cgroup" : "bubblewrap"
     }
     return "none"
   })
@@ -139,7 +153,8 @@ export namespace Sandbox {
   } {
     const b = backend()
     if (b === "seatbelt") return { platform: process.platform, backend: b, available: true, tool: "sandbox-exec" }
-    if (b === "bubblewrap") return { platform: process.platform, backend: b, available: true, tool: "bwrap" }
+    if (b === "bubblewrap" || b === "bubblewrap+cgroup")
+      return { platform: process.platform, backend: b, available: true, tool: "bwrap" }
     const reason =
       process.platform === "darwin"
         ? "sandbox-exec not found on PATH"
@@ -298,13 +313,197 @@ export namespace Sandbox {
     return args
   }
 
+
+  // ── Linux: le cgroup qui borne, quand le déploiement en délègue un ──────────
+
+  /**
+   * Les bornes de ressources qu'un commande doit subir, quand l'appelant en connaît.
+   *
+   * Toutes facultatives, et une borne absente n'est **pas** une borne infinie écrite à zéro : elle
+   * veut dire que personne n'a réservé cette dimension, et le fichier de contrôle correspondant
+   * n'est simplement pas écrit.
+   */
+  export interface Limits {
+    /** Millicores — `1000` vaut un cœur. */
+    cpuMillicores?: number
+    memoryMb?: number
+    pids?: number
+  }
+
+  /** La période CFS, en microsecondes. Celle de `locus-execd`, pour que `cpu.max` se lise pareil. */
+  const CPU_PERIOD_US = 100_000
+
+  /** Où le superviseur se range pour laisser sa racine subdivisible. */
+  const SUPERVISOR = "canterel-superviseur"
+
+  /** Le préfixe des cgroups de commande — c'est aussi ce que le balayage reconnaît. */
+  const COMMAND_PREFIX = "canterel-cmd-"
+
+  /** Ce que le noyau montre à un processus qui lit ses propres bornes. */
+  const CGROUP_VIEW = "/sys/fs/cgroup"
+
+  /**
+   * La racine cgroup que ce processus peut **subdiviser**, ou null.
+   *
+   * # Deux faits distincts, et l'un ne se déduit pas de l'autre
+   *
+   * Que l'hôte délègue des contrôleurs se lit dans `cgroup.controllers`. Que *ce processus-ci*
+   * puisse écrire dans `cgroup.subtree_control` est autre chose : sur un `session.scope` comme sur
+   * un runner CI, les contrôleurs sont délégués et l'écriture est refusée. Seule la seconde compte
+   * ici, et elle ne se vérifie qu'en l'essayant.
+   *
+   * # Le processus descend d'un cran avant de subdiviser
+   *
+   * Le noyau refuse `cgroup.subtree_control` sur un cgroup qui contient des processus. Le refus est
+   * `EBUSY` — « Device or resource busy » —, qui ne ressemble à rien de ce qu'on cherchait. Le
+   * superviseur se range donc dans un enfant, ce qui libère la racine pour les cgroups de commande.
+   *
+   * Mesuré une fois par processus : la réponse ne change pas en cours de route, et la sonder à
+   * chaque commande déplacerait le superviseur à chaque fois.
+   */
+  const delegatedRoot = lazy<string | null>(() => {
+    if (process.platform !== "linux") return null
+    try {
+      const own = fs
+        .readFileSync("/proc/self/cgroup", "utf8")
+        .split("\n")
+        .find((line) => line.startsWith("0::"))
+        ?.slice(3)
+        .trim()
+      if (!own) return null
+      const root = path.join("/sys/fs/cgroup", own)
+      fs.mkdirSync(path.join(root, SUPERVISOR), { recursive: true })
+      fs.writeFileSync(path.join(root, SUPERVISOR, "cgroup.procs"), String(process.pid))
+      fs.writeFileSync(path.join(root, "cgroup.subtree_control"), "+cpu +memory +pids")
+      const enabled = fs.readFileSync(path.join(root, "cgroup.subtree_control"), "utf8")
+      // Écrire n'est pas activer : un contrôleur que le parent ne délègue pas est accepté en
+      // silence par certains noyaux et n'apparaît pas ici. On ne borne que ce qui s'y trouve.
+      if (!enabled.includes("cpu") || !enabled.includes("memory") || !enabled.includes("pids")) {
+        log.info("cgroup delegated but controllers incomplete", { enabled: enabled.trim() })
+        return null
+      }
+      log.info("cgroup delegation usable", { root })
+      return root
+    } catch (err) {
+      log.info("no writable cgroup delegation", { reason: (err as Error).message })
+      return null
+    }
+  })
+
+  /** Ce processus peut-il borner les ressources d'une commande ? */
+  export function bounds(): boolean {
+    return delegatedRoot() !== null
+  }
+
+  /**
+   * Retirer les cgroups de commande qui ne contiennent plus personne.
+   *
+   * # Pourquoi un balayage plutôt qu'un nettoyage à la fin
+   *
+   * `Sandbox` rend un argv, pas un processus : personne ne lui dit qu'une commande s'est terminée,
+   * et un rappel demanderait que chacun des sept appelants s'en souvienne. Un `rmdir` sur un cgroup
+   * **échoue tant qu'il reste un processus dedans** — le noyau le garantit —, donc balayer est sûr
+   * par construction et se répare tout seul après un arrêt brutal.
+   */
+  function sweep(root: string): void {
+    try {
+      for (const entry of fs.readdirSync(root)) {
+        if (!entry.startsWith(COMMAND_PREFIX)) continue
+        try {
+          fs.rmdirSync(path.join(root, entry))
+        } catch {
+          // Il reste quelqu'un dedans : c'est une commande qui tourne, pas une erreur.
+        }
+      }
+    } catch {
+      // La racine a disparu — le superviseur a été déplacé. Rien à balayer.
+    }
+  }
+
+  /** Ce que `cpu.max` doit porter pour ce nombre de millicores. */
+  function cpuMax(millicores: number): string {
+    // Au moins une période : un quota nul suspendrait la commande pour toujours, ce qui se lirait
+    // comme un blocage et non comme une borne mal calculée.
+    const quota = Math.max(1000, Math.round((millicores * CPU_PERIOD_US) / 1000))
+    return `${quota} ${CPU_PERIOD_US}`
+  }
+
+  /**
+   * Poser un cgroup pour cette commande, et rendre son répertoire.
+   *
+   * `null` quand rien n'est délégué, quand aucune borne n'est demandée, ou quand le noyau refuse —
+   * dans les trois cas la commande tourne sous `bubblewrap` nu, ce qui est plus faible et honnête.
+   * Une borne qu'on croit posée est pire que pas de borne.
+   */
+  function place(limits?: Limits): string | null {
+    const root = delegatedRoot()
+    if (!root || !limits) return null
+    const written: [string, string][] = []
+    if (limits.cpuMillicores !== undefined) written.push(["cpu.max", cpuMax(limits.cpuMillicores)])
+    if (limits.memoryMb !== undefined) written.push(["memory.max", String(limits.memoryMb * 1024 * 1024)])
+    if (limits.pids !== undefined) written.push(["pids.max", String(limits.pids)])
+    if (written.length === 0) return null
+
+    sweep(root)
+    const directory = path.join(root, `${COMMAND_PREFIX}${process.pid}-${counter++}`)
+    try {
+      fs.mkdirSync(directory)
+      for (const [file, value] of written) fs.writeFileSync(path.join(directory, file), value)
+      return directory
+    } catch (err) {
+      log.warn("cgroup placement failed; running unbounded", { reason: (err as Error).message })
+      try {
+        fs.rmdirSync(directory)
+      } catch {
+        // Il n'a peut-être jamais existé.
+      }
+      return null
+    }
+  }
+
+  let counter = 0
+
+  /**
+   * L'enveloppeur qui **entre dans le cgroup** avant de lancer la sandbox.
+   *
+   * Un processus s'inscrit dans `cgroup.procs` entre le fork et l'exec : avant, ce serait le worker
+   * qu'on déplacerait ; après, la commande aurait déjà tourné hors de toute borne. Un shell qui
+   * s'inscrit puis `exec` fait exactement ça sans code natif.
+   *
+   * Le `&&` n'est pas une élégance : si l'inscription échoue, la sandbox **ne se lance pas**. Un
+   * `;` la lancerait quand même, hors du cgroup, ce qui est le mode d'échec silencieux qu'on évite.
+   * Le `exec` non plus : sans lui le shell resterait entre le worker et la sandbox, compterait dans
+   * `pids.max` et recevrait les signaux à la place de `bwrap`.
+   */
+  function joined(directory: string, spec: Spec): Spec {
+    const quoted = [spec.file, ...spec.args].map(shellQuote).join(" ")
+    return {
+      file: "/bin/sh",
+      args: ["-c", `echo $$ > ${shellQuote(path.join(directory, "cgroup.procs"))} && exec ${quoted}`],
+    }
+  }
+
+  /** Un argument rendu inoffensif pour un shell POSIX. */
+  function shellQuote(argument: string): string {
+    return `'${argument.replaceAll("'", `'\\''`)}'`
+  }
+
   /** Wrap an arbitrary argv under the active backend, or null when unavailable. */
-  function specForArgv(argv: string[], policy: Policy): Spec | null {
+  function specForArgv(argv: string[], policy: Policy, limits?: Limits): Spec | null {
     switch (backend()) {
       case "seatbelt":
         return { file: "sandbox-exec", args: ["-p", seatbeltProfile(policy), ...argv] }
       case "bubblewrap":
-        return { file: "bwrap", args: [...bubblewrapArgs(policy), "--", ...argv] }
+      case "bubblewrap+cgroup": {
+        const directory = place(limits)
+        // Le cgroup est monté en lecture seule sur le chemin où un processus lit **ses propres**
+        // bornes. Deux raisons, et la seconde n'est pas de la prudence : une commande qui pourrait
+        // écrire dans son `cpu.max` lèverait la borne qu'on vient de poser ; et c'est ce répertoire
+        // qui est monté, pas la hiérarchie de l'hôte, qui montrerait tous les cgroups de la machine.
+        const view = directory ? ["--ro-bind", directory, CGROUP_VIEW] : []
+        const spec = { file: "bwrap", args: [...bubblewrapArgs(policy), ...view, "--", ...argv] }
+        return directory ? joined(directory, spec) : spec
+      }
       default:
         return null
     }
@@ -352,6 +551,8 @@ export namespace Sandbox {
     cwd: string
     /** Workspace roots (Instance.directory + worktree) that stay writable. */
     workspace: string[]
+    /** Les bornes de ressources, quand l'appelant en connaît. Sans elles, rien n'est borné. */
+    limits?: Limits
     options?: Options
   }): Plan {
     const { backend: b, warning } = decide(input.options)
@@ -359,7 +560,7 @@ export namespace Sandbox {
       return { file: input.command, useShell: input.shell, sandboxed: false, backend: "none", warning }
     }
     const policy = buildPolicy({ workspace: input.workspace, options: input.options! })
-    const s = specForArgv([input.shell, "-c", input.command], policy)!
+    const s = specForArgv([input.shell, "-c", input.command], policy, input.limits)!
     log.info("sandboxing command", { backend: b, network: policy.network, writable: policy.writable.length })
     return { file: s.file, args: s.args, useShell: false, sandboxed: true, backend: b, warning }
   }
@@ -379,6 +580,8 @@ export namespace Sandbox {
     extraWritable?: string[]
     /** Exact host credential files to mask from the process. */
     unreadable?: string[]
+    /** Les bornes de ressources, quand l'appelant en connaît. Sans elles, rien n'est borné. */
+    limits?: Limits
     options?: Options
   }): Wrapped {
     const { backend: b, warning } = decide(input.options)
@@ -391,7 +594,7 @@ export namespace Sandbox {
       unreadable: input.unreadable,
       options: input.options!,
     })
-    const s = specForArgv([input.file, ...input.args], policy)!
+    const s = specForArgv([input.file, ...input.args], policy, input.limits)!
     log.info("sandboxing process", { backend: b, network: policy.network, writable: policy.writable.length })
     return { file: s.file, args: s.args, sandboxed: true, backend: b, warning }
   }

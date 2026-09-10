@@ -52,6 +52,7 @@ function probe(s2: boolean) {
     release: "6.1.0",
     which: (binary: string) => (binary === "bwrap" && s2 ? "/usr/bin/bwrap" : null),
     bubblewrapWorks: () => s2,
+    boundsResources: () => false,
     cpuCores: 8,
     memoryMb: 16_384,
     diskFreeMb: 100_000,

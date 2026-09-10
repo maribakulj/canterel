@@ -180,7 +180,7 @@ export namespace ComputeJobs {
       .object({
         requested: z.boolean(),
         enforced: z.boolean(),
-        backend: z.enum(["seatbelt", "bubblewrap", "none"]),
+        backend: z.enum(["seatbelt", "bubblewrap", "bubblewrap+cgroup", "none"]),
         network: z.enum(["allow", "deny"]),
         warning: z.string().optional(),
       })
