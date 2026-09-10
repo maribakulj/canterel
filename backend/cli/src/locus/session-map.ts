@@ -7,6 +7,7 @@ import type {
   DataClass,
   MissionEnvelope,
   MissionEnvelopeBudget,
+  NetworkMode,
   SandboxLevel,
 } from "./lep/generated.ts"
 import type { Budget } from "./usage-meter.ts"
@@ -75,6 +76,20 @@ export type SessionPlan = {
    * donc toutes les trois, jamais partiellement.
    */
   readonly budget: Budget
+  /**
+   * Le mode réseau que la mission **impose** — §15.4 `sandbox.network`.
+   *
+   * Porté par le plan parce qu'il doit atteindre la sandbox : la politique de bac à sable de
+   * l'installation est machine-globale par conception, et une mission qui déclare `deny` doit
+   * l'obtenir même sur une machine dont la configuration ouvre le réseau — comme une mission qui
+   * déclare `full` doit l'obtenir sur une machine qui le ferme par défaut.
+   *
+   * Sans ce champ, le mode déclaré ne servait à rien : `networkModes` annonce que ce worker sait
+   * appliquer `deny` **et** `full`, et il appliquait en réalité ce que sa configuration disait.
+   * Mesuré : une mission `full` dont le `curl` rendait une réponse vide, et un modèle qui a
+   * fabriqué des chiffres plutôt que de dire qu'il n'avait rien reçu.
+   */
+  readonly network: NetworkMode
 }
 
 export type MapInput = {
@@ -167,6 +182,9 @@ export function mapMission(input: MapInput): MapResult {
         successConditions: input.mission.objective.success_conditions,
       },
       budget: budgetOf(input.mission.budget),
+      // Le local ci-dessus, qui porte déjà le défaut `deny` : une mission dont le
+      // champ est absent n'ouvre pas le réseau par omission.
+      network,
     },
   }
 }

@@ -120,6 +120,40 @@ describe("politique de modèles — le producteur de `model_unavailable`", () =>
     expect(modelUnavailableReason(remote, "public")).toBeNull()
   })
 
+  test("le plan porte le mode réseau que la mission déclare", () => {
+    // Sans ce champ, le mode voyageait du daemon jusqu'au plan et s'arrêtait là : `networkModes`
+    // annonce que ce worker sait appliquer `deny` **et** `full`, et il appliquait en réalité la
+    // configuration machine-globale de l'installation. L'annonce était donc fausse.
+    //
+    // Mesuré sur un vrai worker : une mission `full` dont le `curl` rendait une réponse vide, et
+    // un modèle qui a fabriqué des dimensions d'image plutôt que de dire qu'il n'avait rien reçu.
+    // Le manifeste annonce les deux modes, comme le fait un worker qui a une sandbox :
+    // `networkModes` rend `["deny", "full"]` dès qu'un backend d'isolation existe. Avec un
+    // manifeste qui n'annonce que `deny`, l'admission refuse `full` avant d'en arriver au plan —
+    // et c'est juste, mais ce n'est pas ce que ce test éprouve.
+    const manifest = {
+      ...MANIFEST(),
+      sandbox: { ...MANIFEST().sandbox, network_modes: ["deny", "full"] },
+    } as unknown as CapabilityManifest
+    for (const mode of ["full", "deny"] as const) {
+      const mission = { ...MISSION(), sandbox: { ...MISSION().sandbox, network: mode } } as unknown as MissionEnvelope
+      const result = mapMission({ mission, manifest, tools: TOOLS, containedWrites: true })
+      if (!result.ok) throw new Error(`refusée pour ${mode} : ${result.refusal.code} — ${result.refusal.message}`)
+      expect(result.plan.network).toBe(mode)
+    }
+  })
+
+  test("une mission sans mode réseau déclaré n'ouvre pas le réseau par omission", () => {
+    // L'absence est l'endroit où les défauts se prennent, et celui-ci se prend du côté fermé :
+    // un document qui ne demande rien ne demande pas le réseau.
+    const sandbox = { ...MISSION().sandbox } as Record<string, unknown>
+    delete sandbox["network"]
+    const mission = { ...MISSION(), sandbox } as unknown as MissionEnvelope
+    const result = mapMission({ mission, manifest: MANIFEST(), tools: TOOLS, containedWrites: true })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.plan.network).toBe("deny")
+  })
+
   test("une mission confidentielle sans modèle local est refusée avec le bon code", () => {
     const mission = { ...MISSION(), confidentiality_ceiling: "confidential" } as unknown as MissionEnvelope
     const manifest = {

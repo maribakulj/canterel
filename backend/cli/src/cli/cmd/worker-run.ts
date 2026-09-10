@@ -98,6 +98,16 @@ export function sessionRunner(): SessionRunner {
       return { output: { refused: "aucun modèle utilisable dans le plan" }, usages: [] }
     }
 
+    // # Le mode réseau de la mission, appliqué à cette session
+    //
+    // La politique de bac à sable de l'installation est machine-globale ; la mission, elle, porte
+    // la sienne, et le manifeste annonce que ce worker sait appliquer les deux. Sans cette ligne,
+    // l'annonce était fausse : le mode voyageait du daemon jusqu'au plan et s'arrêtait là.
+    //
+    // `finally` rend la contrainte : elle ne doit pas survivre à la mission qui l'a demandée.
+    const { ExecutionAuthority } = await import("@/project/execution")
+    ExecutionAuthority.constrainSession(sessionId, plan.network === "deny" ? "deny" : "allow")
+
     let arrete = false
     const desabonner = Bus.subscribe(MessageV2.Event.Updated, (event) => {
       const info = event.properties.info
@@ -129,6 +139,7 @@ export function sessionRunner(): SessionRunner {
       })
     } finally {
       desabonner()
+      ExecutionAuthority.releaseSession(sessionId)
     }
 
     const rapport = meter.report()

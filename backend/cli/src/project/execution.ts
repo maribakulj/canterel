@@ -59,6 +59,46 @@ export namespace ExecutionAuthority {
 
   export const DeniedError = NamedError.create("ExecutionAuthorityDeniedError", Decision)
 
+  /**
+   * Per-session network constraints, keyed by session id.
+   *
+   * # Why a session may override a machine-wide setting
+   *
+   * The sandbox policy is deliberately machine-wide: it is a safety setting of the installation,
+   * and a project-scoped value would be silently ignored (see `Config.setSandbox`). A Locus
+   * mission is a different thing — an institutional decision, admitted by this worker, which
+   * states the network mode the attempt must run under. §15.4 carries it, and the capability
+   * manifest advertises that this worker can enforce *both* `deny` and `full`.
+   *
+   * Without this, that advertisement was false: the mode travelled from the daemon to the plan and
+   * stopped there, and every attempt ran under whatever the installation happened to be
+   * configured for. Measured: a mission declaring `full` whose `curl` returned nothing, and a
+   * model that fabricated numbers rather than report the empty response.
+   *
+   * # In memory, and deliberately so
+   *
+   * A persisted override would outlive the mission that asked for it. The worker process handles
+   * one attempt and exits; an override that survived it would apply to whatever ran next, which is
+   * the failure mode this exists to prevent.
+   */
+  const sessionNetwork = new Map<string, "allow" | "deny">()
+
+  /**
+   * Bind SESSION to NETWORK for as long as this process lives.
+   *
+   * Called by the Locus seam once a mission is admitted, from the mode the mission declares. Not
+   * exposed to tools or to the model: a session that could widen its own network boundary would
+   * make the declaration meaningless.
+   */
+  export function constrainSession(sessionID: string, network: "allow" | "deny") {
+    sessionNetwork.set(sessionID, network)
+  }
+
+  /** Forget SESSION's constraint. */
+  export function releaseSession(sessionID: string) {
+    sessionNetwork.delete(sessionID)
+  }
+
   export async function decide(input: {
     projectID?: string
     sessionID: string
@@ -79,7 +119,9 @@ export namespace ExecutionAuthority {
     const backend = Sandbox.describe()
     const sandbox = {
       enabled: policy.enabled ?? true,
-      network: policy.network ?? "deny",
+      // The mission's mode wins when there is one. Absent, the installation's setting applies —
+      // which is what every non-Locus session gets, unchanged.
+      network: sessionNetwork.get(input.sessionID) ?? policy.network ?? "deny",
       allowWrite: policy.allowWrite ?? [],
       onUnavailable: policy.onUnavailable ?? "error",
       backend: backend.backend,
