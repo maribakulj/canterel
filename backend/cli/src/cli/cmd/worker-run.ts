@@ -24,6 +24,7 @@
  */
 
 import { Bus } from "@/bus"
+import { Session } from "@/session"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { Log } from "@/util/log"
@@ -133,6 +134,13 @@ export function sessionRunner(): SessionRunner {
     const rapport = meter.report()
     return {
       output: {
+        // **Ce que la session a répondu**, et c'est le champ qui compte.
+        //
+        // Sans lui, le résultat d'une mission ne portait que l'état de son budget : `locusd` le
+        // stockait, la route `GET /tasks/{id}/result` le resservait fidèlement, et une étape
+        // d'orchestration qui relisait la précédente y trouvait « budget_stage: nominal » — donc
+        // rien d'utilisable. Le relais était complet de bout en bout et vide de substance.
+        summary: await derniereReponse(sessionId),
         stopped_on_budget: arrete,
         budget_stage: rapport.stage,
         budget_exceeded: rapport.exceeded,
@@ -140,6 +148,37 @@ export function sessionRunner(): SessionRunner {
       usages: meter.observations(),
     }
   }
+}
+
+/**
+ * Le texte de la dernière réponse de l'assistant, ou une chaîne vide.
+ *
+ * # Relu du stockage plutôt que retenu du bus
+ *
+ * Les fragments arrivent sur le bus, et les assembler à la volée demanderait de suivre l'ordre des
+ * parties, les révisions, et les messages abandonnés. Le stockage a déjà fait ce travail : après
+ * `prompt`, la session **est** son état final, et le relire est exact par construction.
+ *
+ * Vide quand la session n'a rien produit — un budget épuisé au premier appel, par exemple. Une
+ * chaîne vide dit « rien à relayer » ; inventer un texte dirait le contraire.
+ */
+async function derniereReponse(sessionId: string): Promise<string> {
+  try {
+    const messages = await Session.messages({ sessionID: sessionId })
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+      if (message?.info.role !== "assistant") continue
+      const texte = message.parts
+        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("")
+        .trim()
+      if (texte.length > 0) return texte
+    }
+  } catch (err) {
+    log.warn("réponse illisible", { sessionId, reason: (err as Error).message })
+  }
+  return ""
 }
 
 /**
