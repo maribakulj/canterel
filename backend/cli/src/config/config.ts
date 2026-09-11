@@ -1117,6 +1117,23 @@ export namespace Config {
         .optional()
         .describe("Command configuration, see https://syntheticsciences.ai/docs/commands"),
       skills: Skills.optional().describe("Additional skill folder paths"),
+      locus: z
+        .object({
+          capabilityModels: z
+            .record(z.string(), z.string())
+            .optional()
+            .describe(
+              "Which model serves a Locus mission that requires a given capability, as " +
+                '`{"vision": "mistral/pixtral-12b"}`. A mission declares what it needs in ' +
+                "`required_capabilities` (SPEC_V1 §15.4); this table says, for this installation, " +
+                "which model answers that need. It belongs here rather than in the protocol: the " +
+                "capability is what the institution asks for, the model is what this machine " +
+                "happens to have, and binding the two upstream would make every mission name a " +
+                "vendor.",
+            ),
+        })
+        .optional()
+        .describe("Locus Solus worker settings that are local to this installation."),
       watcher: z
         .object({
           ignore: z.array(z.string()).optional(),

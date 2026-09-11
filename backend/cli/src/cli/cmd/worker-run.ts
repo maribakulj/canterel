@@ -85,10 +85,7 @@ export function sessionRunner(): SessionRunner {
   return async ({ sessionId, plan }) => {
     const { UsageMeter } = await import("@/locus/usage-meter")
     const meter = new UsageMeter(plan.budget)
-    // Le premier choix utilisable du plan : `usableModels` les a déjà filtrés par classe de
-    // données, et le premier est celui que la politique préfère. En choisir un autre ici
-    // reviendrait à décider à sa place, hors de l'endroit qui porte la règle.
-    const choix = plan.models.find((entree) => entree.models.length > 0)
+    const choix = await modelePour(plan)
 
     // Un plan sans modèle utilisable ne s'exécute pas, et `mapMission` refuse déjà la mission dans
     // ce cas (`model_unavailable`). Arriver ici sans modèle serait donc un défaut d'ici ; le dire
@@ -133,7 +130,7 @@ export function sessionRunner(): SessionRunner {
     try {
       await SessionPrompt.prompt({
         sessionID: sessionId,
-        model: { providerID: choix.provider, modelID: choix.models[0]! },
+        model: choix,
         agent: plan.overlay.agent,
         parts: [{ type: "text", text: question(plan) }],
       })
@@ -155,10 +152,64 @@ export function sessionRunner(): SessionRunner {
         stopped_on_budget: arrete,
         budget_stage: rapport.stage,
         budget_exceeded: rapport.exceeded,
+        // **Ce que cette étape a coûté**, dans le résultat et pas seulement dans le point de
+        // contrôle. Un orchestrateur qui enchaîne dix étapes doit pouvoir tenir un plafond sur
+        // l'ensemble ; il ne lit que les résultats, et le point de contrôle ne lui est pas servi.
+        // Sans ce champ, un plafond de plan ne peut porter que sur le nombre d'étapes — ce qui
+        // borne la patience, pas la dépense.
+        budget_spent: rapport.totals,
       },
       usages: meter.observations(),
     }
   }
+}
+
+/**
+ * Le modèle qui sert ce plan, selon ce que la mission exige.
+ *
+ * # Une capacité n'est pas un nom de modèle
+ *
+ * §15.4 fait déclarer à une mission ce dont elle a besoin — « vision » pour lire une planche —
+ * jamais quel modèle le lui donne. Quel modèle y répond est une propriété de **cette
+ * installation**, et la table vit donc dans sa configuration : `locus.capabilityModels`.
+ *
+ * Sans ce détour, une mission qui exigeait « vision » recevait le premier modèle utilisable du
+ * plan, et c'était le premier venu qui répondait — ou pas. Mesuré : une reconnaissance conduite
+ * par un modèle de douze milliards de paramètres a mal lu sa propre sortie `jq`, conclu à une
+ * panne DNS qui n'existait pas, et bouclé cinquante-trois appels sur des données qu'il avait
+ * déjà. Le budget l'a arrêtée ; il avait dépensé trente centimes à se tromper.
+ *
+ * # Ce que la table ne peut pas faire
+ *
+ * Nommer un modèle que le plan n'offre pas. Le plan vient de `usableModels`, qui filtre déjà sur
+ * la classe de données — un modèle distant est écarté d'une mission confidentielle, et la table
+ * ne doit pas le réintroduire par la bande. Une entrée qui désigne un modèle absent du plan est
+ * donc ignorée, et le choix retombe sur l'ordre de la politique.
+ */
+async function modelePour(plan: {
+  readonly capabilities: readonly string[]
+  readonly models: readonly { readonly provider: string; readonly models: readonly string[] }[]
+}): Promise<{ providerID: string; modelID: string } | undefined> {
+  const offerts = plan.models.flatMap((entree) =>
+    entree.models.map((modele) => ({ providerID: entree.provider, modelID: modele })),
+  )
+  if (offerts.length === 0) return undefined
+
+  const { Config } = await import("@/config/config")
+  const table = (await Config.get()).locus?.capabilityModels ?? {}
+  for (const capacite of plan.capabilities) {
+    const vise = table[capacite]
+    if (!vise) continue
+    const [fournisseur, ...reste] = vise.split("/")
+    const modele = reste.join("/")
+    const trouve = offerts.find((o) => o.providerID === fournisseur && o.modelID === modele)
+    if (trouve) {
+      log.info("modèle choisi par capacité", { capacite, modele: vise })
+      return trouve
+    }
+    log.warn("capacité sans modèle disponible", { capacite, vise })
+  }
+  return offerts[0]
 }
 
 /**

@@ -90,6 +90,18 @@ export type SessionPlan = {
    * fabriqué des chiffres plutôt que de dire qu'il n'avait rien reçu.
    */
   readonly network: NetworkMode
+  /**
+   * Ce que la mission **exige** de l'hôte — `required_capabilities` de §15.4.
+   *
+   * Porté tel quel, sans être traduit : une capacité est ce que l'institution demande, et ce
+   * qu'une installation y répond — quel modèle, quel outil — est une décision locale. Les lier
+   * en amont ferait nommer un fournisseur à chaque mission.
+   *
+   * `selectOverlay` s'en sert déjà pour choisir un agent ; le plan les porte maintenant aussi
+   * pour que le choix du **modèle** puisse en dépendre. Sans elles, une mission qui exige
+   * « vision » obtenait le premier modèle venu, et c'est le premier venu qui répondait — ou pas.
+   */
+  readonly capabilities: readonly string[]
 }
 
 export type MapInput = {
@@ -185,6 +197,7 @@ export function mapMission(input: MapInput): MapResult {
       // Le local ci-dessus, qui porte déjà le défaut `deny` : une mission dont le
       // champ est absent n'ouvre pas le réseau par omission.
       network,
+      capabilities: readStrings(mission["required_capabilities"]),
     },
   }
 }
